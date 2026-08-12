@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+
+node_modules/
+coverage/
+.claude-flow/
+
+*.log
+~$*.xlsx
