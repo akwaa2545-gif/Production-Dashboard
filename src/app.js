@@ -2,10 +2,11 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ExcelJS from 'exceljs';
-import { publicConfig, publicDataModel, publicScYieldConfig, publicTaYieldConfig, readCellCommentConfig, readDatasetConfig, readMtdTargetConfig, readScYieldConfig, readScYieldTargetConfig, readTaYieldConfig, readTaYieldTargetConfig } from './config.js';
+import { publicConfig, publicDataModel, publicScYieldConfig, publicTaYieldConfig, read901StagingConfig, readCellCommentConfig, readDatasetConfig, readMtdTargetConfig, readScYieldConfig, readScYieldTargetConfig, readTaYieldConfig, readTaYieldTargetConfig } from './config.js';
 import { MtdTargetRepository } from './mtdTargetRepository.js';
 import { CellCommentRepository } from './cellCommentRepository.js';
 import { SqlRepository } from './sqlRepository.js';
+import { Staging901Repository } from './staging901Repository.js';
 import { ScYieldRepository } from './scYieldRepository.js';
 import { TaYieldRepository } from './taYieldRepository.js';
 import { ScYieldTargetRepository } from './scYieldTargetRepository.js';
@@ -131,7 +132,7 @@ async function completionWorkbook(rows) {
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
-export function createApp({ environment = process.env, repository, scYieldRepository, taYieldRepository, mtdTargetRepository, scYieldTargetRepository, taYieldTargetRepository, cellCommentRepository, cache } = {}) {
+export function createApp({ environment = process.env, repository, scYieldRepository, taYieldRepository, mtdTargetRepository, scYieldTargetRepository, taYieldTargetRepository, cellCommentRepository, staging901Repository, cache } = {}) {
   const configs = { closed: readDatasetConfig(environment, 'closed'), lot: readDatasetConfig(environment, 'lot') };
   const scYieldConfig = readScYieldConfig(environment);
   const taYieldConfig = readTaYieldConfig(environment);
@@ -139,6 +140,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   const scYieldTargetConfig = readScYieldTargetConfig(environment);
   const taYieldTargetConfig = readTaYieldTargetConfig(environment);
   const commentConfig = readCellCommentConfig(environment);
+  const staging901Config = read901StagingConfig(environment);
   const repositories = new Map();
   let scYieldMapping;
   let taYieldMapping;
@@ -147,6 +149,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   const scYieldTargets = scYieldTargetRepository || (scYieldTargetConfig.ready ? new ScYieldTargetRepository(scYieldTargetConfig) : undefined);
   const taYieldTargets = taYieldTargetRepository || (taYieldTargetConfig.ready ? new TaYieldTargetRepository(taYieldTargetConfig) : undefined);
   const comments = cellCommentRepository || (commentConfig.ready ? new CellCommentRepository(commentConfig) : undefined);
+  const staging901 = staging901Repository || (staging901Config.enabled && staging901Config.ready ? new Staging901Repository(staging901Config) : undefined);
   const responseCache = cache || new TtlCache({ maxEntries: Math.min(Math.max(Number(environment.DASHBOARD_CACHE_MAX_ENTRIES) || 500, 10), 2000) });
   const app = express();
   app.use(express.json({ limit: '8kb' }));
@@ -204,6 +207,10 @@ export function createApp({ environment = process.env, repository, scYieldReposi
 
   function databaseFor(config) {
     return [...repositories.values()].find((database) => database.config === config || database === repository);
+  }
+
+  function dashboardDatabase(context) {
+    return context.dataset === 'closed' && staging901 ? staging901 : context.database;
   }
 
   app.get('/api/config', (request, response) => {
@@ -335,13 +342,13 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const context = contextFor(request, response); if (!context) return undefined;
     const cacheEntry = context.dataset === 'ta-yield' ? { key: 'ta-yield:options', ttlMs: 300000 } : undefined;
     if (!cacheEntry) response.set('Cache-Control', 'no-store');
-    return useDatabase(() => context.database.getOptions(validation.filters, false), response, context.config, false, cacheEntry);
+    return useDatabase(() => dashboardDatabase(context).getOptions(validation.filters, false), response, context.config, false, cacheEntry);
   });
   app.get('/api/part-numbers', (request, response) => {
     const validation = validatedPartNumberQuery(request.query);
     if (validation.error) return response.status(400).json({ success: false, error: validation.error });
     const context = contextFor(request, response); if (!context) return undefined;
-    return useDatabase(() => context.database.getPartNumbers(validation.filters, validation.search, validation.offset), response, context.config, false, { key: `${context.dataset}:part-numbers:${JSON.stringify([validation.filters, validation.search, validation.offset])}`, ttlMs: 600000 });
+    return useDatabase(() => dashboardDatabase(context).getPartNumbers(validation.filters, validation.search, validation.offset), response, context.config, false, { key: `${context.dataset}:part-numbers:${JSON.stringify([validation.filters, validation.search, validation.offset])}`, ttlMs: 600000 });
   });
   app.get('/api/auth/login', async (_request, response) => {
     const context = contextFor(_request, response); if (!context) return undefined;
@@ -359,7 +366,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const validation = validatedFilters(request.query);
     if (validation.error) return response.status(400).json({ success: false, error: validation.error });
     const context = contextFor(request, response); if (!context) return undefined;
-    return useDatabase(() => context.database.getQuantity(validation.filters), response, context.config, false, { key: `${context.dataset}:quantity:${JSON.stringify(validation.filters)}`, ttlMs: 120000 });
+    return useDatabase(() => dashboardDatabase(context).getQuantity(validation.filters), response, context.config, false, { key: `${context.dataset}:quantity:${JSON.stringify(validation.filters)}`, ttlMs: 120000 });
   });
   app.get('/api/sc-yield', (request, response) => {
     const validation = validatedFilters(request.query);
@@ -412,7 +419,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     if (validation.error) return response.status(400).json({ success: false, error: validation.error });
     const context = contextFor(request, response); if (!context) return undefined;
     if (context.dataset !== 'closed') return response.status(400).json({ success: false, error: 'MTD result quantity is available for Completion 901 only.' });
-    return useDatabase(() => context.database.getQuantity(validation.filters, { mtd: true }), response, context.config, false, { key: `${context.dataset}:mtd-quantity:${JSON.stringify(validation.filters)}`, ttlMs: 120000 });
+    return useDatabase(() => staging901 ? staging901.getQuantity(validation.filters) : context.database.getQuantity(validation.filters, { mtd: true }), response, context.config, false, { key: `${context.dataset}:mtd-quantity:${JSON.stringify(validation.filters)}`, ttlMs: 120000 });
   });
   app.get('/api/export/completion', async (request, response) => {
     const validation = validatedFilters(request.query);
@@ -420,7 +427,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const context = contextFor(request, response); if (!context) return undefined;
     if (!context.config.ready) return response.status(503).json({ success: false, error: 'Database configuration is incomplete. Check the server environment.' });
     try {
-      const cached = await responseCache.getOrSet(`${context.dataset}:quantity:${JSON.stringify(validation.filters)}`, 120000, () => context.database.getQuantity(validation.filters));
+      const cached = await responseCache.getOrSet(`${context.dataset}:quantity:${JSON.stringify(validation.filters)}`, 120000, () => dashboardDatabase(context).getQuantity(validation.filters));
       const filename = `${context.dataset === 'closed' ? '901' : 'wip'}-series-completion-${validation.filters.startDate}-to-${validation.filters.endDate}.xlsx`;
       response.set('X-Dashboard-Cache', cached.status);
       response.attachment(filename);

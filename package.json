@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "refresh:901-staging": "node src/refresh901Staging.js",
     "deploy:portable": "deploy-portable.cmd",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage"

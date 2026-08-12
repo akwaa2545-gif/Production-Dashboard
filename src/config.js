@@ -104,6 +104,19 @@ export function readMtdTargetConfig(environment = process.env) {
   return { ...config, ready: Boolean(config.server && config.database && config.user && config.password && isSafeView(config.table)) };
 }
 
+export function read901StagingConfig(environment = process.env) {
+  const config = {
+    enabled: environment.DASHBOARD_901_STAGING_ENABLED === 'true',
+    server: environment.STAGING_SQL_SERVER,
+    database: environment.STAGING_SQL_DATABASE,
+    user: environment.STAGING_SQL_USER,
+    password: environment.STAGING_SQL_PASSWORD,
+    table: environment.STAGING_901_SQL_TABLE || 'dbo.Dashboard901Daily',
+    trustServerCertificate: environment.STAGING_SQL_TRUST_SERVER_CERTIFICATE === 'true'
+  };
+  return { ...config, ready: Boolean(config.server && config.database && config.user && config.password && isSafeView(config.table)) };
+}
+
 export function readScYieldTargetConfig(environment = process.env) {
   const base = readMtdTargetConfig(environment);
   const table = environment.SC_YIELD_TARGETS_SQL_TABLE || 'dbo.DashboardScYieldTarget';
