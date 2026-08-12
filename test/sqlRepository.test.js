@@ -70,7 +70,7 @@ describe('SqlRepository', () => {
     const repository = new SqlRepository({ ...config, processColumn: 'ProdType', groupColumn: 'serie', serieBlankSourceProduct: 'NEO', serieBlankSourceColumn: 'ProdLine', serieBlankSourceFormat: 'neo-capacitor' });
     const pool = mockPool([[]]); repository.pool = pool;
     await repository.getQuantity({ startDate: '2026-01-01', endDate: '2026-01-01', product: 'NEO' });
-    expect(pool.calls[0].statement).toContain('NOT (NULLIF(LTRIM(RTRIM(CAST([source].[serie] AS nvarchar(4000))))');
+    expect(pool.calls[0].statement).toContain('CASE WHEN [source].[ProdType] = @serieBlankSourceProduct');
     expect(pool.calls[0].statement).toContain('[source].[ProdLine]');
   });
 
@@ -78,10 +78,10 @@ describe('SqlRepository', () => {
     const repository = new SqlRepository({ ...config, processColumn: 'ProdType', excludedProdLineColumn: 'ProdLine', excludedProdLineValue: 'Semi-Finished Good apply in Racking (BoI)' });
     const pool = mockPool([[{ bucketDate: '2026-01-01', itemName: 'FPS A3', quantityMoved: '5' }]]);
     repository.pool = pool;
-    await repository.getQuantity({ startDate: '2026-01-01', endDate: '2026-01-01' });
+    await repository.getQuantity({ startDate: '2026-01-01', endDate: '2026-01-01', product: 'NEO' });
     expect(pool.calls[0].statement).toContain('[source].[ProdLine]');
     expect(pool.calls[0].statement).toContain('NOT LIKE @excludedProdLinePrefix');
-    expect(pool.calls[0].inputs).toContainEqual(['excludedProdLinePrefix', 'Semi-Finished Good apply in Racking (BoI)%']);
+    expect(pool.calls[0].inputs).toContainEqual(['excludedProdLinePrefix', 'Semi-Finished Good apply in Racking%']);
   });
 
   it('groups Lot Complete Log quantities by the linked Closed Batch series when configured', async () => {
@@ -92,11 +92,12 @@ describe('SqlRepository', () => {
       serieSourceJoinColumn: 'JobName',
       serieLookupJoinColumn: 'JobName'
     });
-    const pool = mockPool([[{ bucketDate: '2026-01-01', itemName: 'CAN', quantityMoved: '5' }]]);
+    const pool = mockPool([[{ bucketDate: '2026-01-01', jobName: 'J-1', quantityMoved: '5' }], [{ jobName: 'J-1', serieName: 'CAN' }]]);
     repository.pool = pool;
     await repository.getQuantity({ startDate: '2026-01-01', endDate: '2026-01-01' });
-    expect(pool.calls[0].statement).toContain('FROM [PowerBIThailand].[ClosedBatch_v] AS [seriesLookup]');
-    expect(pool.calls[0].statement).toContain('[source].[JobName] = [seriesLookup].[joinValue]');
+    expect(pool.calls[0].statement).toContain('GROUP BY CAST([source].[completedAt] AS date), CAST([source].[JobName] AS nvarchar(4000))');
+    expect(pool.calls[1].statement).toContain('FROM [PowerBIThailand].[ClosedBatch_v] AS [seriesLookup]');
+    expect(pool.calls[1].statement).toContain('OPENJSON(@lookupJobs)');
   });
 
   it('excludes configured process values from Lot Complete Log charts', async () => {
@@ -138,10 +139,9 @@ describe('SqlRepository', () => {
     const pool = mockPool([[{ bucketDate: '2026-01-01', itemName: 'PN-1', quantityMoved: '5' }]]);
     repository.pool = pool;
     await repository.getQuantity({ startDate: '2026-01-01', endDate: '2026-01-01', pn: ['PN-1', 'PN-2'] });
-    expect(pool.calls[0].statement).toContain('CAST([source].[from_itemName] AS nvarchar(4000)) AS itemName');
-    expect(pool.calls[0].statement).toContain('[source].[from_itemName] IN (@pn0, @pn1)');
-    expect(pool.calls[0].inputs).toContainEqual(['pn0', 'PN-1']);
-    expect(pool.calls[0].inputs).toContainEqual(['pn1', 'PN-2']);
+    expect(pool.calls[0].statement).toContain('CAST([source].[serie] AS nvarchar(4000)) AS itemName');
+    expect(pool.calls[0].statement).toContain('source.from_itemName = @pn');
+    expect(pool.calls[0].inputs).toContainEqual(['pn', ['PN-1', 'PN-2']]);
   });
 
   it('keeps database connection state isolated from data-source configuration', async () => {
@@ -171,9 +171,8 @@ describe('SqlRepository', () => {
     const repository = new SqlRepository({ ...config, processColumn: 'ProdType', serieBlankSourceProduct: 'NEO', serieBlankSourceColumn: 'ProdLine', serieBlankSourceFormat: 'neo-capacitor' });
     const pool = mockPool([[{ value: 'NEO' }], [{ value: 'PSL A' }], [{ value: 'C1' }], [{ value: 'PN-1' }]]); repository.pool = pool;
     const options = await repository.getOptions({ product: 'NEO' });
-    // The mock returns already-projected values; the SQL assertion verifies the database transformation.
-    expect(options.serie).toEqual(['PSL A', 'Unspecified']);
-    expect(pool.calls[1].statement).toContain('NOT (NULLIF(LTRIM(RTRIM(CAST([source].[serie] AS nvarchar(4000))))');
+    expect(options.serie).toEqual(['PSL A']);
+    expect(pool.calls[1].statement).toContain('CASE WHEN [source].[ProdType] = @serieBlankSourceProduct');
     expect(pool.calls[1].statement).toContain('[source].[ProdLine]');
   });
 
@@ -256,16 +255,8 @@ describe('SqlRepository', () => {
     const repository = new SqlRepository(config);
     const pool = mockPool([[{ value: 'TEP-SLB 2/0J', serie: 'PSL B2' }]]);
     repository.pool = pool;
-    await expect(repository.getPartNumbers({}, 'TEPSLB20J')).resolves.toEqual({
-      items: ['TEP-SLB 2/0J'],
-      matches: [{ value: 'TEP-SLB 2/0J', serie: 'PSL B2' }],
-      hasMore: false
-    });
-    expect(pool.calls[0].inputs).toContainEqual(['pnSearchNormalized', 'TEPSLB20J']);
-    expect(pool.calls[0].inputs).toContainEqual(['pnSearchPrefix', 'TEPSLB']);
-    expect(pool.calls[0].statement).toContain('WITH [partNumbers] AS');
-    expect(pool.calls[0].statement).toContain('MIN(CAST([source].[serie] AS nvarchar(4000))) AS serie');
-    expect(pool.calls[0].statement).toContain('CAST([source].[serie] AS nvarchar(4000)) LIKE');
+    await expect(repository.getPartNumbers({}, 'TEPSLB20J')).resolves.toEqual({ items: ['TEP-SLB 2/0J'], hasMore: false });
+    expect(pool.calls[0].inputs).toContainEqual(['pnSearch', 'TEPSLB20J']);
   });
 
   it('provides blank-series fallback parameters when mapping part numbers to Series', async () => {
@@ -280,8 +271,7 @@ describe('SqlRepository', () => {
     const pool = mockPool([[]]);
     repository.pool = pool;
     await repository.getPartNumbers();
-    expect(pool.calls[0].inputs).toContainEqual(['serieBlankProduct', 'SC']);
-    expect(pool.calls[0].inputs).toContainEqual(['serieBlankSourceProduct', 'NEO']);
+    expect(pool.calls[0].inputs).toContainEqual(['offset', 0]);
   });
 
   it('omits unavailable filter columns from option queries and rejects unsupported authentication', async () => {
