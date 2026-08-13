@@ -552,7 +552,7 @@ function renderScYield(rows = latestScYieldData) {
   const totalYield = totals.input ? (totals.input - totals.defect) / totals.input * 100 : undefined; const totalDefectRate = totals.input ? totals.defect / totals.input * 100 : undefined;
   byId('scYieldInput').textContent = format.format(totals.input); byId('scYieldDefect').textContent = format.format(totals.defect); byId('scYieldDefectRate').textContent = totalDefectRate === undefined ? '-' : `${totalDefectRate.toFixed(2)}%`; byId('scYieldTotal').textContent = totalYield === undefined ? '-' : `${totalYield.toFixed(2)}%`;
   byId('scYieldScope').textContent = `${rows.length} month-series record${rows.length === 1 ? '' : 's'} | Completion 901 eligible jobs only`;
-  const tableGroups = ['Assembly', 'Appearance', 'CAP', 'LC', 'SD', 'ESR'];
+  const tableGroups = groups;
   const singleMonth = months.length === 1;
   byId('scYieldTableHead').innerHTML = `<tr><th>${singleMonth ? 'Series' : 'Month'}</th>${singleMonth ? '' : '<th>Series</th>'}<th>InputQ</th>${tableGroups.map((group) => `<th>${group}</th>`).join('')}<th>Defective</th></tr>`;
   byId('scYieldRows').innerHTML = rows.map((row) => { const quantities = Object.fromEntries(row.groups.map((group) => [group.group, group.quantity])); return `<tr><td>${escapeHtml(singleMonth ? row.line : row.month)}</td>${singleMonth ? '' : `<td>${escapeHtml(row.line)}</td>`}<td>${format.format(row.input)}</td>${tableGroups.map((group) => `<td>${format.format(quantities[group] || 0)}</td>`).join('')}<td>${format.format(row.defect)}</td></tr>`; }).join('') || `<tr><td colspan="${singleMonth ? 9 : 10}">No eligible SC Yield data matches the selected filters.</td></tr>`;
