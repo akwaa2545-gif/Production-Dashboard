@@ -36,6 +36,21 @@ export async function loadScYieldMapping(filename) {
   return mapping;
 }
 
+export async function loadScYieldSourceModes(filename) {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(resolveWorkbookPath(filename));
+  const sheet = workbook.worksheets[0];
+  if (!sheet) throw new Error('SC Yield mapping workbook has no worksheets.');
+  const modes = new Map();
+  sheet.eachRow((row, index) => {
+    if (index === 1) return;
+    const mode = text(row.getCell(2).value);
+    if (mode) modes.set(mode.toUpperCase(), mode);
+  });
+  if (!modes.size) throw new Error('SC Yield mapping workbook contains no source modes.');
+  return [...modes.values()].sort((left, right) => left.localeCompare(right));
+}
+
 export function mapScYieldRows(rows, mapping) {
   const includedModes = [...new Map([...mapping.values()].filter((entry) => entry.included).map((entry) => [entry.mode, entry])).values()].sort((left, right) => left.mode.localeCompare(right.mode));
   const inputByKey = new Map();

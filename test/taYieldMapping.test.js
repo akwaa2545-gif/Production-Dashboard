@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { chdir } from 'node:process';
 import { describe, expect, it } from 'vitest';
-import { loadTaYieldMapping, mapTaYieldLotDetails, mapTaYieldRows } from '../src/taYieldMapping.js';
+import { loadTaYieldMapping, mapTaWorkbookYieldRows, mapTaYieldLotDetails, mapTaYieldRows } from '../src/taYieldMapping.js';
 
 const mapping = new Map([
   ['0301_Sample_CV', { main: 'Inprocess Upstream' }],
@@ -181,5 +181,17 @@ describe('mapTaYieldRows', () => {
     ]));
     expect(detail.groups).toEqual([{ group: 'ACC', quantity: 2 }, { group: 'SH', quantity: 7 }]);
     expect(detail.defect).toBe(9);
+  });
+});
+
+describe('mapTaWorkbookYieldRows', () => {
+  it('uses the same InputF and Other2 Excel calculation as the TA DataTable', () => {
+    const rows = [
+      ['Input', 1000], ['Input-', 100], ['Good', 800], ['CO defect', 50]
+    ].map(([dispositionDescription, quantity]) => ({ line: 'FPS', lotNo: '6H01N00001', itemName: 'TEFPS', tapingDate: '2026-08-01', dispositionDescription, quantity }));
+    const [summary] = mapTaWorkbookYieldRows(rows, new Map([['Input', 'Input'], ['Input-', 'Input-'], ['Good', 'Good'], ['CO defect', 'CO']]));
+
+    expect(summary).toMatchObject({ input: 900, finalGood: 800, defect: 100, yield: 800 / 900 * 100, defectRate: 100 / 900 * 100 });
+    expect(summary.groups).toEqual(expect.arrayContaining([{ group: 'CO', quantity: 50, rate: 50 / 900 * 100 }, { group: 'Other2', quantity: 50, rate: 50 / 900 * 100 }]));
   });
 });

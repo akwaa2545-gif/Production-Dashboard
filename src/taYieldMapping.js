@@ -41,6 +41,10 @@ const reportingSeries = (line) => {
   const value = String(line || '').trim();
   return value || 'Other TA series';
 };
+const workbookDefectCategories = ['ACC', 'App', 'CO', 'Cap', 'DF', 'ESR', 'Inproc Dw', 'Inproc Up', 'LC', 'La/Ex1', 'La/Ex2-6', 'PULSE', 'SH'];
+export function calculateTaWorkbookLot(categories = {}) {
+  const value = (key) => number(categories[key]); const input = value('Input'); const inputMinus = value('Input-'); const good = value('Good'); const defect = workbookDefectCategories.reduce((sum, key) => sum + value(key), 0); const other1 = input - inputMinus - defect - good; const inputF = Math.abs(other1) > 500 ? input - inputMinus - other1 : input - inputMinus; const other2 = Math.abs(other1) > 500 ? 0 : other1; const goodRate = inputF ? good / inputF * 100 : undefined; const defectRate = inputF ? (defect + other2) / inputF * 100 : undefined; const ttl = Number.isFinite(goodRate) && Number.isFinite(defectRate) ? Math.round((goodRate + defectRate) * 100) / 100 : undefined; return { defect, other1, inputF, other2, goodRate, defectRate, ttl, check: Number.isFinite(ttl) ? Math.abs(ttl - 100) : undefined };
+}
 
 const collectLots = (rows) => {
   const lots = new Map();
@@ -86,6 +90,7 @@ export async function loadTaWorkbookReconciliationMapping(filename) {
 }
 
 export function mapTaWorkbookReconciliationRows(rows, categories) {
+  if (rows.every((row) => row && typeof row === 'object' && row.categories && typeof row.categories === 'object')) return rows.map((row) => ({ ...row, calculation: row.calculation || calculateTaWorkbookLot(row.categories) })).sort((left, right) => `${left.line}|${left.lotNo}`.localeCompare(`${right.line}|${right.lotNo}`));
   const lots = new Map();
   rows.forEach((row) => {
     const category = code(row.dispositionDescription) === 'ACC' ? 'ACC' : categories.get(code(row.dispositionDescription)) || '';
@@ -95,19 +100,20 @@ export function mapTaWorkbookReconciliationRows(rows, categories) {
     lot.categories = { ...lot.categories, [category]: Number(lot.categories[category] || 0) + Number(row.quantity || 0) };
     lots.set(key, lot);
   });
-  return [...lots.values()].sort((left, right) => `${left.line}|${left.lotNo}`.localeCompare(`${right.line}|${right.lotNo}`));
+  return [...lots.values()].map((lot) => ({ ...lot, calculation: calculateTaWorkbookLot(lot.categories) })).sort((left, right) => `${left.line}|${left.lotNo}`.localeCompare(`${right.line}|${right.lotNo}`));
 }
 
-export function mapTaWorkbookYieldRows(rows, categories) {
+export function mapTaWorkbookYieldRows(rows, categories, period = 'month') {
   const buckets = new Map();
   mapTaWorkbookReconciliationRows(rows, categories).forEach((lot) => {
-    const month = thailandDate(lot.tapingDate).slice(0, 7);
+    const date = thailandDate(lot.tapingDate); const parsed = new Date(`${date}T00:00:00Z`); const weekDate = new Date(parsed); weekDate.setUTCDate(parsed.getUTCDate() + 4 - (parsed.getUTCDay() || 7)); const yearStart = new Date(Date.UTC(weekDate.getUTCFullYear(), 0, 1)); const week = Math.ceil((((weekDate - yearStart) / 86400000) + 1) / 7); const month = period === 'day' ? date : period === 'week' ? `${weekDate.getUTCFullYear()}-W${String(week).padStart(2, '0')}` : date.slice(0, 7);
     const key = `${month}|${lot.line}`;
     const bucket = buckets.get(key) || { month, line: lot.line, input: 0, finalGood: 0, groups: new Map(), unmapped: 0 };
-    const values = lot.categories || {};
-    bucket.input += number(values.Input);
+    const values = lot.categories || {}; const calculation = lot.calculation || calculateTaWorkbookLot(values);
+    bucket.input += number(calculation.inputF);
     bucket.finalGood += number(values.Good);
     Object.entries(values).forEach(([group, quantity]) => { if (!['Input', 'Input-', 'Good'].includes(group)) bucket.groups.set(group, (bucket.groups.get(group) || 0) + number(quantity)); });
+    if (number(calculation.other2)) bucket.groups.set('Other2', (bucket.groups.get('Other2') || 0) + number(calculation.other2));
     buckets.set(key, bucket);
   });
   return [...buckets.values()].map((bucket) => { const groups = [...bucket.groups.entries()].map(([group, quantity]) => ({ group, quantity, rate: bucket.input ? quantity / bucket.input * 100 : undefined })).sort((a, b) => a.group.localeCompare(b.group)); const defect = groups.reduce((sum, group) => sum + group.quantity, 0); return { ...bucket, groups, defect, defectRate: bucket.input ? defect / bucket.input * 100 : undefined, yield: bucket.input ? bucket.finalGood / bucket.input * 100 : undefined }; }).sort((a, b) => `${a.month}|${a.line}`.localeCompare(`${b.month}|${b.line}`));
@@ -140,7 +146,7 @@ export function mapTaYieldRows(rows, mapping, period = 'month') {
     lot.modes.forEach((quantity, mode) => {
       const dispositionCode = baseCode(mode); const entry = codeMapping?.get(dispositionCode);
       const group = graphGroup(mode, dispositionCode, entry);
-      if (!inputCodes.has(dispositionCode) && group && quantity) qualityBucket.groups.set(group, (qualityBucket.groups.get(group) || 0) + quantity);
+      if (!inputCodes.has(dispositionCode) && entry?.included !== false && group && quantity) qualityBucket.groups.set(group, (qualityBucket.groups.get(group) || 0) + quantity);
       else if (!inputCodes.has(dispositionCode) && !entry && quantity) qualityBucket.unmapped += quantity;
     });
   });
@@ -154,7 +160,7 @@ export function mapTaYieldLotDetails(rows, mapping) {
     const grouped = new Map(); const modes = [];
     lot.modes.forEach((quantity, mode) => {
       const dispositionCode = baseCode(mode); const shFallback = isShFallback(mode); const shAccVoltZero = isShAccVoltZero(mode); const entry = codeMapping?.get(dispositionCode); const group = graphGroup(mode, dispositionCode, entry);
-      if (!inputCodes.has(dispositionCode) && group && quantity) grouped.set(group, (grouped.get(group) || 0) + quantity);
+      if (!inputCodes.has(dispositionCode) && entry?.included !== false && group && quantity) grouped.set(group, (grouped.get(group) || 0) + quantity);
       const accParameterMatch = dispositionCode === '1812_SH_PLS' && !shFallback && !shAccVoltZero && entry?.category === 'ACC';
       if (quantity) modes.push({ mode: dispositionCode, category: shFallback || shAccVoltZero ? 'SH' : entry?.category || 'Unmapped', quantity, role: inputCodes.has(dispositionCode) ? 'Input deduction' : 'Defect', shFallback, shAccVoltZero, accParameterMatch });
     });

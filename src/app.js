@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ExcelJS from 'exceljs';
-import { publicConfig, publicDataModel, publicScYieldConfig, publicTaYieldConfig, read901StagingConfig, readCellCommentConfig, readDatasetConfig, readMtdTargetConfig, readScYieldConfig, readScYieldTargetConfig, readTaYieldConfig, readTaYieldTargetConfig, readWipStagingConfig } from './config.js';
+import { publicConfig, publicDataModel, publicScYieldConfig, publicTaYieldConfig, read901StagingConfig, readCellCommentConfig, readDatasetConfig, readMtdTargetConfig, readScYieldConfig, readScYieldStagingConfig, readScYieldTargetConfig, readTaYieldConfig, readTaYieldTargetConfig, readWipStagingConfig, readYieldDefectSettingConfig, readTaYieldStagingConfig } from './config.js';
 import { MtdTargetRepository } from './mtdTargetRepository.js';
 import { CellCommentRepository } from './cellCommentRepository.js';
 import { SqlRepository } from './sqlRepository.js';
@@ -11,10 +11,13 @@ import { refresh901Staging } from './staging901Refresh.js';
 import { StagingWipRepository } from './stagingWipRepository.js';
 import { refreshWipStaging } from './stagingWipRefresh.js';
 import { ScYieldRepository } from './scYieldRepository.js';
+import { ScYieldStagingRepository } from './scYieldStagingRepository.js';
 import { TaYieldRepository } from './taYieldRepository.js';
 import { ScYieldTargetRepository } from './scYieldTargetRepository.js';
 import { TaYieldTargetRepository } from './taYieldTargetRepository.js';
-import { loadScYieldMapping, mapScYieldRows } from './scYieldMapping.js';
+import { YieldDefectSettingRepository } from './yieldDefectSettingRepository.js';
+import { TaYieldStagingRepository } from './taYieldStagingRepository.js';
+import { loadScYieldMapping, loadScYieldSourceModes, mapScYieldRows } from './scYieldMapping.js';
 import { loadTaWorkbookReconciliationMapping, loadTaYieldMapping, mapTaWorkbookReconciliationRows, mapTaWorkbookYieldRows, mapTaYieldLotDetails, mapTaYieldRows } from './taYieldMapping.js';
 import { TtlCache } from './ttlCache.js';
 
@@ -135,7 +138,7 @@ async function completionWorkbook(rows) {
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
-export function createApp({ environment = process.env, repository, scYieldRepository, taYieldRepository, mtdTargetRepository, scYieldTargetRepository, taYieldTargetRepository, cellCommentRepository, staging901Repository, stagingWipRepository, cache } = {}) {
+export function createApp({ environment = process.env, repository, scYieldRepository, taYieldRepository, mtdTargetRepository, scYieldTargetRepository, taYieldTargetRepository, cellCommentRepository, staging901Repository, stagingWipRepository, scYieldStagingRepository, taYieldStagingRepository, yieldDefectSettingRepository, cache } = {}) {
   const configs = { closed: readDatasetConfig(environment, 'closed'), lot: readDatasetConfig(environment, 'lot') };
   const scYieldConfig = readScYieldConfig(environment);
   const taYieldConfig = readTaYieldConfig(environment);
@@ -145,21 +148,75 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   const commentConfig = readCellCommentConfig(environment);
   const staging901Config = read901StagingConfig(environment);
   const stagingWipConfig = readWipStagingConfig(environment);
+  const scYieldStagingConfig = readScYieldStagingConfig(environment);
+  const yieldDefectSettingConfig = readYieldDefectSettingConfig(environment);
+  const taYieldStagingConfig = readTaYieldStagingConfig(environment);
   const repositories = new Map();
   let scYieldMapping;
+  let scYieldSourceModes;
   let taYieldMapping;
   let taWorkbookReconciliationMapping;
+  const workbookDescriptions = (mapping) => [...mapping.entries()].filter(([, category]) => category && category !== 'X').map(([description]) => description);
   const targets = mtdTargetRepository || (mtdTargetConfig.ready ? new MtdTargetRepository(mtdTargetConfig) : undefined);
   const scYieldTargets = scYieldTargetRepository || (scYieldTargetConfig.ready ? new ScYieldTargetRepository(scYieldTargetConfig) : undefined);
   const taYieldTargets = taYieldTargetRepository || (taYieldTargetConfig.ready ? new TaYieldTargetRepository(taYieldTargetConfig) : undefined);
   const comments = cellCommentRepository || (commentConfig.ready ? new CellCommentRepository(commentConfig) : undefined);
   const staging901 = staging901Repository || (staging901Config.enabled && staging901Config.ready ? new Staging901Repository(staging901Config) : undefined);
   const stagingWip = stagingWipRepository || (stagingWipConfig.enabled && stagingWipConfig.ready ? new StagingWipRepository(stagingWipConfig) : undefined);
+  const scYieldStaging = scYieldStagingRepository || (scYieldStagingConfig.enabled && scYieldStagingConfig.ready ? new ScYieldStagingRepository(scYieldStagingConfig) : undefined);
+  const yieldDefectSettings = yieldDefectSettingRepository || (yieldDefectSettingConfig.ready ? new YieldDefectSettingRepository(yieldDefectSettingConfig) : undefined);
+  const taYieldStaging = taYieldStagingRepository || (taYieldStagingConfig.enabled && taYieldStagingConfig.ready ? new TaYieldStagingRepository(taYieldStagingConfig) : undefined);
+  let taYieldQa = { status: 'NOT_RUN' };
   const responseCache = cache || new TtlCache({ maxEntries: Math.min(Math.max(Number(environment.DASHBOARD_CACHE_MAX_ENTRIES) || 500, 10), 2000) });
+  async function configuredScYieldMapping() { scYieldMapping ||= loadScYieldMapping(scYieldConfig.mappingFile); const [base, overrides] = await Promise.all([scYieldMapping, yieldDefectSettings ? yieldDefectSettings.list() : []]); const byMode = new Map(overrides.filter((item) => item.dataset === 'SC').map((item) => [item.mode.toUpperCase(), item])); return new Map([...base.entries()].map(([key, value]) => { const override = byMode.get(value.mode.toUpperCase()); return [key, override ? { ...value, group: override.group, included: override.included } : value]; })); }
+  async function configuredTaYieldMapping() { taYieldMapping ||= loadTaYieldMapping(taYieldConfig.mappingFile); const [base, overrides] = await Promise.all([taYieldMapping, yieldDefectSettings ? yieldDefectSettings.list() : []]); const byMode = new Map(overrides.filter((item) => item.dataset === 'TA').map((item) => [item.mode.toUpperCase(), item])); const configure = (entries) => new Map([...entries].map(([code, value]) => { const override = byMode.get(code.toUpperCase()); return [code, override ? { ...value, main: override.group, included: override.included } : value]; })); return { neo: configure(base.neo), gps: configure(base.gps) }; }
   const app = express();
   app.use(express.json({ limit: '8kb' }));
-  app.use(express.static(path.join(here, '../public')));
+  app.use(express.static(path.join(here, '../public'), { setHeaders: (response) => response.set('Cache-Control', 'no-store') }));
   app.get('/api/health', (_request, response) => response.json({ success: true, data: { status: 'ok' } }));
+  app.get('/api/defect-settings', async (_request, response) => {
+    try {
+      if (!repositories.has('ta-yield')) repositories.set('ta-yield', taYieldRepository || new TaYieldRepository(taYieldConfig));
+      if (!repositories.has('yield') && scYieldConfig.ready) repositories.set('yield', scYieldRepository || new ScYieldRepository(scYieldConfig));
+      const mesTaModesRequest = responseCache.getOrSet('ta-yield:defect-modes', 3600000, () => repositories.get('ta-yield').getDefectModes()).catch(() => ({ value: [] }));
+      const scModeToday = currentThailandMonthFilters(); const scModeFilters = { startDate: `${scModeToday.startDate.slice(0, 4)}-01-01`, endDate: scModeToday.endDate };
+      const mesScModesRequest = scYieldConfig.ready ? responseCache.getOrSet('sc-yield:defect-modes', 3600000, () => repositories.get('yield').getDefectModes(scModeFilters)).catch(() => ({ value: [] })) : Promise.resolve({ value: [] });
+      const mesTaModesFallback = new Promise((resolve) => { const timer = setTimeout(() => resolve({ value: [] }), 3000); timer.unref?.(); });
+      scYieldSourceModes ||= loadScYieldSourceModes(scYieldConfig.mappingFile);
+      const [scMappings, workbookScModes, taMappings, overrides, mesTaModes, mesScModes] = await Promise.all([configuredScYieldMapping(), scYieldSourceModes, configuredTaYieldMapping(), yieldDefectSettings ? yieldDefectSettings.list() : [], Promise.race([mesTaModesRequest, mesTaModesFallback]), Promise.race([mesScModesRequest, mesTaModesFallback])]);
+      const override = new Map(overrides.map((item) => [`${item.dataset}|${item.mode.toUpperCase()}`, item]));
+      const mappedScModes = new Map();
+      scMappings.forEach((value, key) => { mappedScModes.set(key.toUpperCase(), value); mappedScModes.set(value.mode.toUpperCase(), value); });
+      const allScModes = new Map([...workbookScModes, ...mesScModes.value.map((item) => item.mode)].map((mode) => { const canonical = mappedScModes.get(mode.toUpperCase())?.mode || mode; return [canonical.toUpperCase(), canonical]; }));
+      [...new Set(mappedScModes.values())].forEach((value) => { if (!allScModes.has(value.mode.toUpperCase())) allScModes.set(value.mode.toUpperCase(), value.mode); });
+      overrides.filter((item) => item.dataset === 'SC').forEach((item) => { if (!allScModes.has(item.mode.toUpperCase())) allScModes.set(item.mode.toUpperCase(), item.mode); });
+      const sc = [...allScModes.values()].map((mode) => { const mapped = mappedScModes.get(mode.toUpperCase()); const saved = override.get(`SC|${mode.toUpperCase()}`); return { mode, group: saved?.group || (mapped?.included ? mapped.group : 'Unmapped'), included: saved?.included ?? Boolean(mapped?.included) }; }).sort((a, b) => a.group.localeCompare(b.group) || a.mode.localeCompare(b.mode));
+      const mappedTaModes = new Map([...new Map([...taMappings.neo, ...taMappings.gps]).entries()].map(([source, target]) => [source.toUpperCase(), { source, target }]));
+      const allTaModes = new Map(mesTaModes.value.map((item) => [item.mode.toUpperCase(), { source: item.mode, description: item.description } ]));
+      mappedTaModes.forEach(({ source }, key) => { if (!allTaModes.has(key)) allTaModes.set(key, { source, description: '' }); });
+      overrides.filter((item) => item.dataset === 'TA').forEach((item) => { const key = item.mode.toUpperCase(); if (!allTaModes.has(key)) allTaModes.set(key, { source: item.mode, description: '' }); });
+      const ta = [...allTaModes.values()]
+        .map(({ source, description }) => { const target = mappedTaModes.get(source.toUpperCase())?.target; const saved = override.get(`TA|${source.toUpperCase()}`); return { source, description, target: saved?.group || target?.main || target?.category || 'Unmapped', included: saved?.included ?? Boolean(target?.main || target?.category) }; })
+        .sort((a, b) => a.target.localeCompare(b.target) || a.source.localeCompare(b.source));
+      response.json({ success: true, data: { sc, ta } });
+    } catch (error) { response.status(503).json({ success: false, error: 'Defect mapping settings are unavailable.' }); }
+  });
+  app.put('/api/defect-settings', async (request, response) => {
+    const dataset = request.body?.dataset; const mode = typeof request.body?.mode === 'string' ? request.body.mode.trim() : ''; const group = typeof request.body?.group === 'string' ? request.body.group.trim() : ''; const included = request.body?.included;
+    if (!['SC', 'TA'].includes(dataset) || !mode || mode.length > 300 || !group || group.length > 100 || typeof included !== 'boolean') return response.status(400).json({ success: false, error: 'Provide a valid SC or TA mode, group, and included setting.' });
+    if (!yieldDefectSettings) return response.status(503).json({ success: false, error: 'ProductionMES defect-settings storage is not configured.' });
+    try { await yieldDefectSettings.upsert({ dataset, mode, group, included, updatedBy: environment.COMMENT_DISPLAY_NAME || 'Production Dashboard' }); responseCache.clear(); response.json({ success: true, data: { dataset, mode, group, included } }); } catch { response.status(503).json({ success: false, error: 'Defect setting could not be saved to ProductionMES.' }); }
+  });
+  app.get('/api/staging-status', async (_request, response) => {
+    const intervalMs = Math.max(Number(environment.DASHBOARD_901_STAGING_INTERVAL_MS) || 300000, 60000);
+    const wipIntervalMs = Math.max(Number(environment.DASHBOARD_WIP_STAGING_INTERVAL_MS) || 300000, 60000);
+    const loadActivity = async (repository) => { try { return await repository.getActivity(); } catch (error) { return { unavailable: true, error: 'Staging database is unreachable.' }; } };
+    const [completion, wip, scYield, taWorkbook] = await Promise.all([staging901 ? loadActivity(staging901) : undefined, stagingWip ? loadActivity(stagingWip) : undefined, scYieldStaging ? loadActivity(scYieldStaging) : undefined, taYieldStaging ? loadActivity(taYieldStaging) : undefined]);
+    const row = (name, table, source, activity, enabled, interval, extra = {}) => ({ name, table, source, enabled, intervalMs: interval, activityAvailable: Boolean(activity && !activity.unavailable), activityError: activity?.error, rowCount: Number(activity?.rowCount || 0), firstDataDate: activity?.firstDataDate, lastDataDate: activity?.lastDataDate, lastRefreshedAt: activity?.lastRefreshedAt, ...extra });
+    const wipProcessActivity = wip?.unavailable ? wip : wip ? { rowCount: wip.processRowCount, lastRefreshedAt: wip.processLastRefreshedAt, firstDataDate: wip.firstDataDate, lastDataDate: wip.lastDataDate } : undefined;
+    const status = [row('Completion 901', staging901Config.table, 'MES Closed Batch → staging', completion, Boolean(staging901), intervalMs), row('WIP daily quantity', stagingWipConfig.table, 'MES Lot Complete Log → staging', wip, Boolean(stagingWip), wipIntervalMs), row('WIP process chart', stagingWipConfig.processTable, 'MES Lot Complete Log → staging', wipProcessActivity, Boolean(stagingWip), wipIntervalMs), row('SC Yield', scYieldStagingConfig.table, 'MES normalized SC Yield input/defect rows → staging', scYield, Boolean(scYieldStaging), Math.max(Number(environment.DASHBOARD_SC_YIELD_STAGING_INTERVAL_MS) || 300000, 60000), { plan: 'Monthly input and defect snapshots preserve the direct MES row shape before mapping.' }), row('TA Yield DataTable', taYieldStagingConfig.workbookTable, 'MES workbook reconciliation → staging', taWorkbook, Boolean(taYieldStaging), wipIntervalMs, { plan: 'Workbook rows retain the Excel reference conditions before mapping.' })];
+    response.json({ success: true, data: status, checkedAt: new Date().toISOString() });
+  });
 
   function contextFor(request, response) {
     const dataset = request.query.dataset || 'closed';
@@ -203,6 +260,57 @@ export function createApp({ environment = process.env, repository, scYieldReposi
       return { status: 'REFRESHED', ...result };
     } finally { wipStagingRefreshInProgress = false; }
   };
+  let scYieldStagingRefreshInProgress = false;
+  app.refreshScYieldStaging = async (requestedFilters = currentThailandMonthFilters()) => {
+    if (!scYieldStaging || scYieldStagingRefreshInProgress) return { status: 'SKIPPED' };
+    scYieldStagingRefreshInProgress = true;
+    try {
+      if (!repositories.has('yield')) repositories.set('yield', scYieldRepository || new ScYieldRepository(scYieldConfig));
+      const source = repositories.get('yield');
+      const [monthly, weekly] = await Promise.all([source.getYieldRows(requestedFilters), source.getYieldRows(requestedFilters, 'week')]);
+      await Promise.all([scYieldStaging.replaceYieldRows(monthly, requestedFilters, 'month'), scYieldStaging.replaceYieldRows(weekly, requestedFilters, 'week')]);
+      responseCache.clear();
+      return { status: 'REFRESHED', inputRows: monthly.inputs.length, defectRows: monthly.defects.length, ...requestedFilters };
+    } finally { scYieldStagingRefreshInProgress = false; }
+  };
+  app.refreshScYieldStagingHistory = async () => {
+    const today = currentThailandMonthFilters(); const historyStart = environment.DASHBOARD_SC_YIELD_STAGING_HISTORY_START || `${today.startDate.slice(0, 4)}-01-01`;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(historyStart) || historyStart > today.endDate) throw new Error('SC Yield staging history start date is invalid.');
+    const results = [];
+    for (let cursor = new Date(`${historyStart.slice(0, 7)}-01T00:00:00Z`); cursor <= new Date(`${today.startDate}T00:00:00Z`); cursor.setUTCMonth(cursor.getUTCMonth() + 1)) { const startDate = cursor.toISOString().slice(0, 10); const next = new Date(cursor); next.setUTCMonth(next.getUTCMonth() + 1); next.setUTCDate(0); const endDate = startDate.slice(0, 7) === today.startDate.slice(0, 7) ? today.endDate : next.toISOString().slice(0, 10); results.push(await app.refreshScYieldStaging({ startDate, endDate })); }
+    return { status: 'REFRESHED', months: results.length, inputRows: results.reduce((sum, result) => sum + Number(result.inputRows || 0), 0), defectRows: results.reduce((sum, result) => sum + Number(result.defectRows || 0), 0), startDate: historyStart, endDate: today.endDate };
+  };
+  let taYieldStagingRefreshInProgress = false;
+  app.refreshTaYieldStaging = async (requestedFilters = currentThailandMonthFilters()) => {
+    if (!taYieldStaging) return { status: 'SKIPPED' };
+    if (taYieldStagingRefreshInProgress) return { status: 'SKIPPED' };
+    taYieldStagingRefreshInProgress = true;
+    try {
+    if (!repositories.has('ta-yield')) repositories.set('ta-yield', taYieldRepository || new TaYieldRepository(taYieldConfig));
+    const filters = requestedFilters;
+    taWorkbookReconciliationMapping ||= loadTaWorkbookReconciliationMapping('TA/Yield_Data_Aug2026.xlsx');
+    const source = repositories.get('ta-yield');
+    const mapping = await taWorkbookReconciliationMapping;
+    const workbookRows = await source.getWorkbookReconciliationRows(filters, { descriptions: workbookDescriptions(mapping) });
+    const workbookLots = mapTaWorkbookReconciliationRows(workbookRows, mapping);
+    await taYieldStaging.replaceWorkbookRows(workbookLots, filters);
+    responseCache.clear();
+    return { status: 'REFRESHED', workbookRows: workbookRows.length, workbookLots: workbookLots.length, ...filters };
+    } finally { taYieldStagingRefreshInProgress = false; }
+  };
+  app.refreshTaYieldStagingHistory = async () => {
+    const today = currentThailandMonthFilters(); const historyStart = environment.DASHBOARD_TA_YIELD_STAGING_HISTORY_START || `${today.startDate.slice(0, 4)}-01-01`;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(historyStart) || historyStart > today.endDate) throw new Error('TA Yield staging history start date is invalid.');
+    const results = [];
+    for (let cursor = new Date(`${historyStart.slice(0, 7)}-01T00:00:00Z`); cursor <= new Date(`${today.startDate}T00:00:00Z`); cursor.setUTCMonth(cursor.getUTCMonth() + 1)) {
+      const startDate = cursor.toISOString().slice(0, 10); const next = new Date(cursor); next.setUTCMonth(next.getUTCMonth() + 1); next.setUTCDate(0);
+      const endDate = startDate.slice(0, 7) === today.startDate.slice(0, 7) ? today.endDate : next.toISOString().slice(0, 10);
+      results.push(await app.refreshTaYieldStaging({ startDate, endDate }));
+    }
+    return { status: 'REFRESHED', months: results.length, workbookRows: results.reduce((sum, result) => sum + Number(result.workbookRows || 0), 0), startDate: historyStart, endDate: today.endDate };
+  };
+  app.runTaYieldStagingQa = async () => { if (!taYieldStaging) return { status: 'SKIPPED' }; if (taYieldQa.status === 'RUNNING') return taYieldQa; const filters = currentThailandMonthFilters(); taYieldQa = { status: 'RUNNING', filters, startedAt: new Date().toISOString() }; try { if (!repositories.has('ta-yield')) repositories.set('ta-yield', taYieldRepository || new TaYieldRepository(taYieldConfig)); const direct = await repositories.get('ta-yield').getYieldRows(filters); const staged = await taYieldStaging.getYieldRows(filters); const totals = (rows) => ['inputQ', 'finalGoodQ', 'quantity'].reduce((result, key) => ({ ...result, [key]: rows.reduce((sum, row) => sum + Number(row[key] || 0), 0) }), { rows: rows.length }); const directTotals = totals(direct); const stagedTotals = totals(staged); const passed = Object.keys(directTotals).every((key) => directTotals[key] === stagedTotals[key]); taYieldQa = { status: passed ? 'PASSED' : 'FAILED', filters, direct: directTotals, staged: stagedTotals, completedAt: new Date().toISOString() }; return taYieldQa; } catch (error) { taYieldQa = { status: 'FAILED', filters, error: 'TA staging QA could not complete.', completedAt: new Date().toISOString() }; return taYieldQa; } };
+  app.get('/api/staging/ta-yield-qa', (_request, response) => response.json({ success: true, data: taYieldQa }));
 
   let cacheWarmInProgress = false;
   app.warmCurrentMonthCaches = async () => {
@@ -224,8 +332,8 @@ export function createApp({ environment = process.env, repository, scYieldReposi
       if (scYieldConfig.ready) {
         if (!repositories.has('yield')) repositories.set('yield', scYieldRepository || new ScYieldRepository(scYieldConfig));
         scYieldMapping ||= loadScYieldMapping(scYieldConfig.mappingFile);
-        await responseCache.getOrSet(`yield:summary:${JSON.stringify(filters)}`, 300000, async () => mapScYieldRows(await repositories.get('yield').getYieldRows(filters), await scYieldMapping), 30000);
-        await responseCache.getOrSet(`yield:weekly:${JSON.stringify(filters)}`, 300000, async () => mapScYieldRows(await repositories.get('yield').getYieldRows(filters, 'week'), await scYieldMapping), 30000);
+        await responseCache.getOrSet(`yield:summary:${JSON.stringify(filters)}`, 300000, async () => mapScYieldRows(await repositories.get('yield').getYieldRows(filters), await configuredScYieldMapping()), 30000);
+        await responseCache.getOrSet(`yield:weekly:${JSON.stringify(filters)}`, 300000, async () => mapScYieldRows(await repositories.get('yield').getYieldRows(filters, 'week'), await configuredScYieldMapping()), 30000);
       }
       if (taYieldConfig.ready) {
         if (!repositories.has('ta-yield')) repositories.set('ta-yield', taYieldRepository || new TaYieldRepository(taYieldConfig));
@@ -245,6 +353,11 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     if (context.dataset === 'closed' && staging901) return staging901;
     if (context.dataset === 'lot' && stagingWip && !filters.process && !filters.pn && !filters.case) return stagingWip;
     return context.database;
+  }
+
+  async function scYieldRows(context, filters, bucket = 'month') {
+    if (!scYieldStaging) return context.database.getYieldRows(filters, bucket);
+    try { return await scYieldStaging.getYieldRows(filters, bucket); } catch { return context.database.getYieldRows(filters, bucket); }
   }
 
   app.get('/api/config', (request, response) => {
@@ -334,9 +447,40 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   }
 
   async function sharedTaYieldRows(context, filters) {
-    const cached = await responseCache.getOrSet(`ta-yield:rows:${JSON.stringify(filters)}`, 300000, () => context.database.getYieldRows(filters));
+    const source = taYieldStaging && filters.startDate === currentThailandMonthFilters().startDate ? taYieldStaging : context.database; const cached = await responseCache.getOrSet(`ta-yield:rows:${JSON.stringify(filters)}`, 300000, () => source.getYieldRows(filters));
     return cached.value;
   }
+  async function sharedTaWorkbookYieldRows(context, filters) {
+    taWorkbookReconciliationMapping ||= loadTaWorkbookReconciliationMapping('TA/Yield_Data_Aug2026.xlsx');
+    const loadRows = async () => {
+      if (!taYieldStaging) return context.database.getWorkbookReconciliationRows(filters, { descriptions: workbookDescriptions(await taWorkbookReconciliationMapping) });
+      const ready = typeof taYieldStaging.hasWorkbookCoverage !== 'function' || await taYieldStaging.hasWorkbookCoverage(filters).catch(() => false);
+      if (!ready) throw new Error('TA Yield staging is still syncing this date range. Check Staging status and try again when the range is Active.');
+      return taYieldStaging.getWorkbookRows(filters);
+    };
+    const cached = await responseCache.getOrSet(`ta-yield:workbook-dashboard:${JSON.stringify(filters)}`, 300000, loadRows);
+    const selectedSeries = filters.serie ? (Array.isArray(filters.serie) ? filters.serie : [filters.serie]) : [];
+    const rows = selectedSeries.length ? cached.value.filter((row) => selectedSeries.includes(row.line)) : cached.value;
+    return { rows, mapping: await taWorkbookReconciliationMapping };
+  }
+  const taYieldDashboardCacheKey = (filters, period) => `ta-yield:dashboard:${period}:${JSON.stringify(filters)}`;
+  async function sharedTaYieldDashboardResult(context, filters, period = 'month') {
+    const cached = await responseCache.getOrSet(taYieldDashboardCacheKey(filters, period), 300000, async () => {
+      const { rows, mapping } = await sharedTaWorkbookYieldRows(context, filters);
+      return mapTaWorkbookYieldRows(rows, mapping, period);
+    });
+    return cached.value;
+  }
+  app.warmTaYieldDashboard = async () => {
+    if (!taYieldStaging) return { status: 'SKIPPED' };
+    const today = currentThailandMonthFilters();
+    const historyStart = environment.DASHBOARD_TA_YIELD_STAGING_HISTORY_START || `${today.startDate.slice(0, 4)}-01-01`;
+    const filters = { startDate: historyStart, endDate: today.endDate, product: 'NEO' };
+    if (!await taYieldStaging.hasWorkbookCoverage(filters)) return { status: 'WAITING_FOR_STAGING', filters };
+    const context = { database: repositories.get('ta-yield') || taYieldRepository || new TaYieldRepository(taYieldConfig) };
+    await Promise.all(['month', 'week'].map((period) => sharedTaYieldDashboardResult(context, filters, period)));
+    return { status: 'WARMED', filters };
+  };
 
   app.get('/api/columns', (request, response) => {
     const context = contextFor(request, response); if (!context) return undefined;
@@ -374,6 +518,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const validation = validatedOptionFilters(request.query);
     if (validation.error) return response.status(400).json({ success: false, error: validation.error });
     const context = contextFor(request, response); if (!context) return undefined;
+    if (context.dataset === 'ta-yield' && taYieldStaging) return useDatabase(() => taYieldStaging.getWorkbookOptions(), response, context.config, false, { key: 'ta-yield:staging-options', ttlMs: 300000 });
     const cacheEntry = context.dataset === 'ta-yield' ? { key: 'ta-yield:options', ttlMs: 300000 } : undefined;
     if (!cacheEntry) response.set('Cache-Control', 'no-store');
     return useDatabase(() => dashboardDatabase(context).getOptions(validation.filters, false), response, context.config, false, cacheEntry);
@@ -408,8 +553,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const context = contextFor(request, response); if (!context) return undefined;
     if (context.dataset !== 'yield') return response.status(400).json({ success: false, error: 'SC Yield is available for the SC Yield data source only.' });
     return useDatabase(async () => {
-      scYieldMapping ||= loadScYieldMapping(context.config.mappingFile);
-      const [mapping, rows] = await Promise.all([scYieldMapping, context.database.getYieldRows(validation.filters)]);
+      const [mapping, rows] = await Promise.all([configuredScYieldMapping(), scYieldRows(context, validation.filters)]);
       return mapScYieldRows(rows, mapping);
     }, response, context.config, false, { key: `${context.dataset}:summary:${JSON.stringify(validation.filters)}`, ttlMs: 120000 });
   });
@@ -418,17 +562,17 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     if (validation.error) return response.status(400).json({ success: false, error: validation.error });
     const context = contextFor(request, response); if (!context) return undefined;
     if (context.dataset !== 'yield') return response.status(400).json({ success: false, error: 'SC Yield is available for the SC Yield data source only.' });
-    return useDatabase(async () => { scYieldMapping ||= loadScYieldMapping(context.config.mappingFile); const [mapping, rows] = await Promise.all([scYieldMapping, context.database.getYieldRows(validation.filters, 'week')]); return mapScYieldRows(rows, mapping); }, response, context.config, false, { key: `${context.dataset}:weekly:${JSON.stringify(validation.filters)}`, ttlMs: 120000 });
+    return useDatabase(async () => { const [mapping, rows] = await Promise.all([configuredScYieldMapping(), scYieldRows(context, validation.filters, 'week')]); return mapScYieldRows(rows, mapping); }, response, context.config, false, { key: `${context.dataset}:weekly:${JSON.stringify(validation.filters)}`, ttlMs: 120000 });
   });
   app.get('/api/ta-yield', (request, response) => {
     const validation = validatedFilters(request.query); if (validation.error) return response.status(400).json({ success: false, error: validation.error }); const context = contextFor(request, response); if (!context) return undefined;
     if (context.dataset !== 'ta-yield') return response.status(400).json({ success: false, error: 'TA Yield is available for the TA Yield data source only.' });
-    return useDatabase(async () => { taYieldMapping ||= loadTaYieldMapping(context.config.mappingFile); const [maps, rows] = await Promise.all([taYieldMapping, sharedTaYieldRows(context, validation.filters)]); return mapTaYieldRows(rows, maps); }, response, context.config, false, undefined, context.dataset);
+    return useDatabase(() => sharedTaYieldDashboardResult(context, validation.filters), response, context.config, false, undefined, context.dataset);
   });
   app.get('/api/ta-yield-weekly', (request, response) => {
     const validation = validatedFilters(request.query); if (validation.error) return response.status(400).json({ success: false, error: validation.error }); const context = contextFor(request, response); if (!context) return undefined;
     if (context.dataset !== 'ta-yield') return response.status(400).json({ success: false, error: 'TA weekly yield is available for the TA Yield data source only.' });
-    return useDatabase(async () => { taYieldMapping ||= loadTaYieldMapping(context.config.mappingFile); const [maps, rows] = await Promise.all([taYieldMapping, sharedTaYieldRows(context, validation.filters)]); return mapTaYieldRows(rows, maps, 'week'); }, response, context.config, false, undefined, context.dataset);
+    return useDatabase(() => sharedTaYieldDashboardResult(context, validation.filters, 'week'), response, context.config, false, undefined, context.dataset);
   });
   app.get('/api/ta-yield-tendency', (request, response) => {
     const validation = validatedFilters(request.query); if (validation.error) return response.status(400).json({ success: false, error: validation.error });
@@ -436,17 +580,17 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     if (!['day', 'week', 'month'].includes(interval)) return response.status(400).json({ success: false, error: 'Interval must be day, week, or month.' });
     const context = contextFor(request, response); if (!context) return undefined;
     if (context.dataset !== 'ta-yield') return response.status(400).json({ success: false, error: 'TA Yield is available for the TA Yield data source only.' });
-    return useDatabase(async () => { taYieldMapping ||= loadTaYieldMapping(context.config.mappingFile); const [maps, rows] = await Promise.all([taYieldMapping, sharedTaYieldRows(context, validation.filters)]); return mapTaYieldRows(rows, maps, interval); }, response, context.config, false, undefined, context.dataset);
+    return useDatabase(() => sharedTaYieldDashboardResult(context, validation.filters, interval), response, context.config, false, undefined, context.dataset);
   });
   app.get('/api/ta-yield-lots', (request, response) => {
     const validation = validatedFilters(request.query); if (validation.error) return response.status(400).json({ success: false, error: validation.error }); const context = contextFor(request, response); if (!context) return undefined;
     if (context.dataset !== 'ta-yield') return response.status(400).json({ success: false, error: 'TA Yield lot detail is available for the TA Yield data source only.' });
-    return useDatabase(async () => { taYieldMapping ||= loadTaYieldMapping(context.config.mappingFile); const [maps, rows] = await Promise.all([taYieldMapping, sharedTaYieldRows(context, validation.filters)]); return mapTaYieldLotDetails(rows, maps); }, response, context.config, false, undefined, context.dataset);
+    return useDatabase(async () => { const [maps, rows] = await Promise.all([configuredTaYieldMapping(), sharedTaYieldRows(context, validation.filters)]); return mapTaYieldLotDetails(rows, maps); }, response, context.config, false, undefined, context.dataset);
   });
   app.get('/api/ta-yield-workbook-reconciliation', (request, response) => {
     const validation = validatedFilters(request.query); if (validation.error) return response.status(400).json({ success: false, error: validation.error }); const context = contextFor(request, response); if (!context) return undefined;
     if (context.dataset !== 'ta-yield') return response.status(400).json({ success: false, error: 'TA workbook reconciliation is available for the TA Yield data source only.' });
-    return useDatabase(async () => { taWorkbookReconciliationMapping ||= loadTaWorkbookReconciliationMapping('TA/Yield_Data_Aug2026.xlsx'); const [mapping, rows] = await Promise.all([taWorkbookReconciliationMapping, context.database.getWorkbookReconciliationRows(validation.filters)]); return mapTaWorkbookReconciliationRows(rows, mapping); }, response, context.config, false, { key: `ta-yield:workbook-reconciliation:v2:${JSON.stringify(validation.filters)}`, ttlMs: 300000 }, context.dataset);
+    return useDatabase(async () => { const { rows, mapping } = await sharedTaWorkbookYieldRows(context, validation.filters); return mapTaWorkbookReconciliationRows(rows, mapping); }, response, context.config, false, { key: `ta-yield:workbook-reconciliation:v3:${JSON.stringify(validation.filters)}`, ttlMs: 300000 }, context.dataset);
   });
   app.get('/api/mtd-quantity', (request, response) => {
     const validation = validatedFilters(request.query);

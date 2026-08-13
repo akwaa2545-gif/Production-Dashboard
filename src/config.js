@@ -124,6 +124,36 @@ export function readWipStagingConfig(environment = process.env) {
   return { ...base, enabled: environment.DASHBOARD_WIP_STAGING_ENABLED === 'true', table, processTable, ready: Boolean(base.server && base.database && base.user && base.password && isSafeView(table) && isSafeView(processTable)) };
 }
 
+export function readYieldDefectSettingConfig(environment = process.env) {
+  const base = read901StagingConfig(environment);
+  const table = environment.YIELD_DEFECT_SETTINGS_SQL_TABLE || 'dbo.DashboardYieldDefectSetting';
+  return { ...base, table, ready: Boolean(base.server && base.database && base.user && base.password && isSafeView(table)) };
+}
+
+export function readTaYieldStagingConfig(environment = process.env) {
+  const base = read901StagingConfig(environment);
+  const table = environment.STAGING_TA_YIELD_LOT_SQL_TABLE || 'dbo.DashboardTaYieldLotInput';
+  const workbookTable = environment.STAGING_TA_YIELD_WORKBOOK_SQL_TABLE || 'dbo.DashboardTaYieldWorkbook';
+  return {
+    ...base,
+    enabled: environment.DASHBOARD_TA_YIELD_STAGING_ENABLED === 'true',
+    table,
+    workbookTable,
+    ready: Boolean(base.server && base.database && base.user && base.password && isSafeView(table) && isSafeView(workbookTable))
+  };
+}
+
+export function readScYieldStagingConfig(environment = process.env) {
+  const base = read901StagingConfig(environment);
+  const table = environment.STAGING_SC_YIELD_SQL_TABLE || 'dbo.DashboardScYieldInputDaily';
+  return {
+    ...base,
+    enabled: environment.DASHBOARD_SC_YIELD_STAGING_ENABLED === 'true',
+    table,
+    ready: Boolean(base.server && base.database && base.user && base.password && isSafeView(table))
+  };
+}
+
 export function readScYieldTargetConfig(environment = process.env) {
   const base = readMtdTargetConfig(environment);
   const table = environment.SC_YIELD_TARGETS_SQL_TABLE || 'dbo.DashboardScYieldTarget';
@@ -235,7 +265,7 @@ export function readScYieldConfig(environment = process.env) {
 export function readTaYieldConfig(environment = process.env) {
   const configuredView = environment.TA_YIELD_DB_VIEW;
   const view = configuredView === 'PowerBIThailand.Yield_v' ? 'PowerBIThailand.ClosedBatch_v' : configuredView || 'PowerBIThailand.ClosedBatch_v';
-  const config = { server: environment.SQL_SERVER, database: environment.SQL_DATABASE, auth: environment.DB_AUTH || 'ActiveDirectoryInteractive', appUrl: environment.APP_URL || 'http://localhost:3000/', tenantId: environment.AZURE_TENANT_ID, requestTimeout: Number(environment.SQL_REQUEST_TIMEOUT || 0), trustServerCertificate: environment.SQL_TRUST_SERVER_CERTIFICATE === 'true', view, releasedJobView: environment.TA_YIELD_RELEASED_JOB_DB_VIEW || 'KMESV3.ReleasedJob', defectView: environment.TA_YIELD_DEFECT_DB_VIEW || 'PowerBIThailand.CompleteAction_v', parameterView: environment.TA_YIELD_PARAMETER_VIEW || 'PowerBIThailand.ParametersECP_v', finalGoodDispositionCode: environment.TA_YIELD_FINAL_GOOD_DISPOSITION_CODE || 'To rteTaping_ALL', productValue: environment.TA_YIELD_PRODUCT_VALUE || 'NEO', linePrefix: environment.TA_YIELD_LINE_PREFIX || 'Ta NEO Capacitor%', mappingFile: environment.TA_YIELD_MAPPING_FILE || 'TA/Direction and guidance for TA Yield report.xlsx', excludedJobType: environment.TA_YIELD_EXCLUDED_JOB_TYPE || 'NON-STANDARD' };
+  const config = { server: environment.SQL_SERVER, database: environment.SQL_DATABASE, auth: environment.DB_AUTH || 'ActiveDirectoryInteractive', appUrl: environment.APP_URL || 'http://localhost:3000/', tenantId: environment.AZURE_TENANT_ID, requestTimeout: Number(environment.SQL_REQUEST_TIMEOUT || 0), trustServerCertificate: environment.SQL_TRUST_SERVER_CERTIFICATE === 'true', view, releasedJobView: environment.TA_YIELD_RELEASED_JOB_DB_VIEW || 'KMESV3.ReleasedJob', defectView: environment.TA_YIELD_DEFECT_DB_VIEW || 'PowerBIThailand.CompleteAction_v', parameterView: environment.TA_YIELD_PARAMETER_VIEW || 'PowerBIThailand.ParametersECP_v', finalGoodDispositionCode: environment.TA_YIELD_FINAL_GOOD_DISPOSITION_CODE || 'To rteTaping_ALL', palletAssemblyDispositionDescription: environment.TA_YIELD_PALLET_ASSEMBLY_DISPOSITION_DESCRIPTION || 'To rtePalletAssembly', productValue: environment.TA_YIELD_PRODUCT_VALUE || 'NEO', linePrefix: environment.TA_YIELD_LINE_PREFIX || 'Ta NEO Capacitor%', mappingFile: environment.TA_YIELD_MAPPING_FILE || 'TA/Direction and guidance for TA Yield report.xlsx', excludedJobType: environment.TA_YIELD_EXCLUDED_JOB_TYPE || 'NON-STANDARD' };
   const invalid = [['TA_YIELD_DB_VIEW', config.view, isSafeView], ['TA_YIELD_RELEASED_JOB_DB_VIEW', config.releasedJobView, isSafeView], ['TA_YIELD_DEFECT_DB_VIEW', config.defectView, isSafeView], ['TA_YIELD_PARAMETER_VIEW', config.parameterView, isSafeView]].filter(([, value, check]) => !check(value)).map(([name]) => name);
   const missing = ['SQL_SERVER', 'SQL_DATABASE'].filter((setting) => !environment[setting]);
   return { ...config, invalid, missing, ready: !missing.length && !invalid.length, metadataReady: Boolean(config.server && config.database) && !invalid.length };

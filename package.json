@@ -8,6 +8,8 @@
     "dev": "node --watch src/server.js",
     "refresh:901-staging": "node src/refresh901Staging.js",
     "refresh:wip-staging": "node src/refreshWipStaging.js",
+    "refresh:ta-yield-staging": "node src/refreshTaYieldStaging.js",
+    "refresh:ta-yield-staging-history": "node src/refreshTaYieldStaging.js --history",
     "validate:staging": "node src/validateStaging.js",
     "deploy:portable": "deploy-portable.cmd",
     "test": "vitest run",

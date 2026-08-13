@@ -73,13 +73,25 @@ describe('dashboard API', () => {
     expect(wrongSource.status).toBe(400);
   });
 
+  it('falls back to direct MES SC Yield rows when the requested range is not staged exactly', async () => {
+    const scYieldRepository = { getYieldRows: () => Promise.resolve({ inputs: [{ bucketMonth: '2026-07', line: 'FM', quantity: 100 }], defects: [] }) };
+    const scYieldStagingRepository = { getYieldRows: () => Promise.reject(new Error('SC Yield staging snapshot does not exactly match the requested end date.')) };
+    const response = await request(createApp({ environment: configuredEnvironment, scYieldRepository, scYieldStagingRepository }))
+      .get('/api/sc-yield?dataset=yield&startDate=2026-07-02&endDate=2026-07-10');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data[0]).toMatchObject({ input: 100, defect: 0, yield: 100 });
+  });
+
   it('returns workbook-reconciliation rows only for the TA Yield source', async () => {
-    const taYieldRepository = { getWorkbookReconciliationRows: () => Promise.resolve([{ line: 'Ta NEO Capacitor FPS series B3 case', lotNo: '6H01N00002', itemName: 'TEFPS', tapingDate: '2026-08-01', dispositionDescription: 'Cam1 defective for GPS', quantity: 13 }]) };
-    const app = createApp({ environment: configuredEnvironment, taYieldRepository });
-    const response = await request(app).get('/api/ta-yield-workbook-reconciliation?dataset=ta-yield&startDate=2026-08-01&endDate=2026-08-07');
+    const stagedRows = [{ line: 'Ta NEO Capacitor FPS series B3 case', lotNo: '6H01N00002', itemName: 'TEFPS', tapingDate: '2026-08-01', dispositionDescription: 'Cam1 defective for GPS', quantity: 13 }];
+    const taYieldRepository = { getWorkbookReconciliationRows: () => Promise.reject(new Error('MES must not be queried when the workbook snapshot exists')) };
+    const taYieldStagingRepository = { getWorkbookRows: (filters) => Promise.resolve(filters.endDate === '2026-08-13' ? stagedRows : []) };
+    const app = createApp({ environment: { ...configuredEnvironment, DASHBOARD_TA_YIELD_STAGING_ENABLED: 'true', STAGING_SQL_SERVER: 'svr120a', STAGING_SQL_DATABASE: 'ProductionMES', STAGING_SQL_USER: 'test', STAGING_SQL_PASSWORD: 'test' }, taYieldRepository, taYieldStagingRepository });
+    const response = await request(app).get('/api/ta-yield-workbook-reconciliation?dataset=ta-yield&startDate=2026-08-01&endDate=2026-08-13');
     expect(response.status).toBe(200);
     expect(response.body.data).toEqual([expect.objectContaining({ lotNo: '6H01N00002', categories: expect.objectContaining({ App: 13, ACC: 0 }) })]);
-    expect((await request(app).get('/api/ta-yield-workbook-reconciliation?dataset=closed&startDate=2026-08-01&endDate=2026-08-07')).status).toBe(400);
+    expect((await request(app).get('/api/ta-yield-workbook-reconciliation?dataset=closed&startDate=2026-08-01&endDate=2026-08-13')).status).toBe(400);
   });
 
   it('rejects invalid quantity date ranges before accessing SQL', async () => {

@@ -12,7 +12,26 @@ const optionalParameterViewUnavailable = (error, parameterView) => {
 };
 
 export class TaYieldRepository extends SqlRepository {
-  async getWorkbookReconciliationRows(filters) {
+  async getDefectModes() {
+    const pool = await this.getPool();
+    const request = pool.request();
+    request.timeout = 15000;
+    request.input('taProduct', sql.NVarChar(100), this.config.productValue);
+    const result = await request.query(`
+      SELECT DISTINCT
+        LTRIM(RTRIM(CAST([action].[DispositionCode] AS nvarchar(4000)))) AS [mode],
+        LTRIM(RTRIM(CAST([action].[DispositionDescription] AS nvarchar(4000)))) AS [description]
+      FROM ${quoted(this.config.defectView)} AS [action]
+      WHERE [action].[ProdType] = @taProduct
+        AND UPPER(LTRIM(RTRIM(CAST([action].[CatMajor] AS nvarchar(100))))) = N'FG'
+        AND [action].[OccuredOn] >= DATEFROMPARTS(2025, 1, 1)
+        AND NULLIF(LTRIM(RTRIM(CAST([action].[DispositionCode] AS nvarchar(4000)))), N'') IS NOT NULL
+      ORDER BY [mode]
+    `);
+    return result.recordset.map((row) => ({ mode: row.mode, description: row.description || '' }));
+  }
+
+  async getWorkbookReconciliationRows(filters, { descriptions = [] } = {}) {
     const pool = await this.getPool();
     const request = pool.request();
     const config = this.config;
@@ -20,6 +39,7 @@ export class TaYieldRepository extends SqlRepository {
     request.input('taFinalGoodDisposition', sql.NVarChar(4000), config.finalGoodDispositionCode);
     request.input('startDate', sql.Date, filters.startDate);
     request.input('endDate', sql.Date, filters.endDate);
+    request.input('taDescriptions', sql.NVarChar(sql.MAX), JSON.stringify([...new Set(descriptions.map((value) => String(value).trim()).filter(Boolean))]));
     return (await request.query(`
       WITH [finalLots] AS (
         SELECT CAST([final].[JobName] AS nvarchar(4000)) AS [lotNo], MAX([final].[OccuredOn]) AS [tapingDate]
@@ -30,6 +50,10 @@ export class TaYieldRepository extends SqlRepository {
           AND [final].[OccuredOn] >= ${thaiUtcBoundary('@startDate')}
           AND [final].[OccuredOn] < ${thaiUtcBoundary('DATEADD(day, 1, @endDate)')}
         GROUP BY CAST([final].[JobName] AS nvarchar(4000))
+      ), [selectedDescriptions] AS (
+        SELECT LTRIM(RTRIM(CAST([value] AS nvarchar(4000)))) AS [description]
+        FROM OPENJSON(@taDescriptions)
+        WHERE [type] = 1
       )
       SELECT CAST([action].[ProdLine] AS nvarchar(4000)) AS line,
         CAST([action].[JobName] AS nvarchar(4000)) AS lotNo,
@@ -45,6 +69,7 @@ export class TaYieldRepository extends SqlRepository {
         COALESCE(TRY_CONVERT(decimal(19, 4), [action].[QuantityMoved]), 0) AS quantity
       FROM ${quoted(config.defectView)} AS [action]
       INNER JOIN [finalLots] AS [lots] ON CAST([action].[JobName] AS nvarchar(4000)) = [lots].[lotNo]
+      INNER JOIN [selectedDescriptions] AS [selected] ON LTRIM(RTRIM(CAST([action].[DispositionDescription] AS nvarchar(4000)))) = [selected].[description]
       WHERE [action].[ProdType] = @taProduct
         AND UPPER(LTRIM(RTRIM(CAST([action].[CatMajor] AS nvarchar(100))))) = N'FG'
         AND [action].[OccuredOn] >= ${thaiUtcBoundary('DATEADD(month, -3, @startDate)')}

@@ -36,6 +36,7 @@ describe('TaYieldRepository action-date population', () => {
     expect(pool.calls[0].statement).toContain('DATEADD(month, -3, @startDate)');
     expect(pool.calls[0].statement).toContain("N'SH pulse defective'");
     expect(pool.calls[0].statement).toContain('[parameters].[ParameterValue]');
+    expect(pool.calls[0].statement).toContain('OPENJSON(@taDescriptions)');
   });
   it('uses the SH fallback when the optional TA parameter view is unavailable', async () => {
     const repository = createRepository();

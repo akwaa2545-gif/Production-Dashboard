@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { loadScYieldMapping, mapScYieldRows } from '../src/scYieldMapping.js';
+import { loadScYieldMapping, loadScYieldSourceModes, mapScYieldRows } from '../src/scYieldMapping.js';
 
 describe('mapScYieldRows', () => {
+  it('exposes every SC source mode in the reference workbook, including modes excluded from calculation', async () => {
+    const modes = await loadScYieldSourceModes('SC/Yield Calculation SC.xlsx');
+
+    expect(modes).toHaveLength(192);
+    expect(modes).toContain('1111_Element NG');
+    expect(modes).toContain('3611_ESR NG');
+  });
+
   it('keeps 2411_Marking NG included but outside the Assembly column', async () => {
     const mapping = await loadScYieldMapping('SC/Yield Calculation SC.xlsx');
 

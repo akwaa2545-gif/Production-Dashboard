@@ -8,6 +8,27 @@ const closedColumn = (column) => quoted(`closed.${column}`);
 export class ScYieldRepository extends SqlRepository {
   constructor(config) { super(config); }
 
+  async getDefectModes(filters) {
+    if (filters?.startDate && filters?.endDate) {
+      const { defects } = await this.getYieldRows(filters);
+      return [...new Set(defects.map((row) => String(row.dispositionCode || '').trim()).filter(Boolean))].sort().map((mode) => ({ mode }));
+    }
+    const pool = await this.getPool();
+    const request = pool.request();
+    request.timeout = 15000;
+    request.input('scYieldProduct', sql.NVarChar(100), this.config.productValue);
+    request.input('scrapDisposition', sql.NVarChar(100), 'SCRAP');
+    const result = await request.query(`
+      SELECT TOP (50000) LTRIM(RTRIM(CAST(${sourceColumn(this.config.dispositionCodeColumn)} AS nvarchar(4000)))) AS [mode]
+      FROM ${quoted(this.config.view)} AS [source]
+      WHERE ${sourceColumn(this.config.productColumn)} = @scYieldProduct
+        AND ${sourceColumn(this.config.dispositionTypeColumn)} = @scrapDisposition
+        AND ${sourceColumn(this.config.dateColumn)} >= DATEFROMPARTS(2025, 1, 1)
+        AND NULLIF(LTRIM(RTRIM(CAST(${sourceColumn(this.config.dispositionCodeColumn)} AS nvarchar(4000)))), N'') IS NOT NULL
+    `);
+    return [...new Set(result.recordset.map((row) => row.mode).filter(Boolean))].sort().map((mode) => ({ mode }));
+  }
+
   completionJoin(request) {
     const config = this.config;
     request.input('scYieldProduct', sql.NVarChar(100), config.productValue);
