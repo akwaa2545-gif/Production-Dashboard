@@ -5,7 +5,7 @@
 .comment-hint { color: #a33d25; font-size: 11px; font-weight: 800; }
 .export-completion { height: 30px; border: 1px solid #28358c; border-radius: 3px; background: #28358c; padding: 0 11px; color: #fff; font: 800 11px Bahnschrift, "Aptos", "Segoe UI", sans-serif; cursor: pointer; }.export-completion:hover { background: #1d2872; }.export-completion:disabled { cursor: wait; opacity: .65; }
 .chart-fit { height: 29px; border: 1px solid #cbd1df; border-radius: 3px; background: #fff; padding: 0 10px; color: #28358c; font: 800 10px Bahnschrift, "Aptos", "Segoe UI", sans-serif; cursor: pointer; }.chart-fit:hover { background: #edf0ff; }.chart-fit.active { border-color: #28358c; background: #28358c; color: #fff; }
-.chart-scroll { width: 100%; height: 100%; overflow: auto hidden; }
+.chart-scroll { width: 100%; height: 100%; overflow: auto hidden; }.chart-loading { display: grid; height: 100%; place-items: center; align-content: center; gap: 12px; color: #596783; font-size: 14px; font-weight: 700; }.chart-loading i { width: 30px; height: 30px; border: 4px solid #dbe1f4; border-top-color: #4c35ad; border-radius: 50%; animation: chart-spinner .8s linear infinite; } @keyframes chart-spinner { to { transform: rotate(360deg); } }
 .chart-scroll-fit { overflow: hidden; }
 .chart-scroll svg { display: block; min-width: 100%; }
 body { margin: 0; background: #fff; }

@@ -117,6 +117,13 @@ export function read901StagingConfig(environment = process.env) {
   return { ...config, ready: Boolean(config.server && config.database && config.user && config.password && isSafeView(config.table)) };
 }
 
+export function readWipStagingConfig(environment = process.env) {
+  const base = read901StagingConfig(environment);
+  const table = environment.STAGING_WIP_SQL_TABLE || 'dbo.DashboardWipDaily';
+  const processTable = environment.STAGING_WIP_PROCESS_SQL_TABLE || 'dbo.DashboardWipProcessDaily';
+  return { ...base, enabled: environment.DASHBOARD_WIP_STAGING_ENABLED === 'true', table, processTable, ready: Boolean(base.server && base.database && base.user && base.password && isSafeView(table) && isSafeView(processTable)) };
+}
+
 export function readScYieldTargetConfig(environment = process.env) {
   const base = readMtdTargetConfig(environment);
   const table = environment.SC_YIELD_TARGETS_SQL_TABLE || 'dbo.DashboardScYieldTarget';

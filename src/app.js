@@ -2,11 +2,14 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ExcelJS from 'exceljs';
-import { publicConfig, publicDataModel, publicScYieldConfig, publicTaYieldConfig, read901StagingConfig, readCellCommentConfig, readDatasetConfig, readMtdTargetConfig, readScYieldConfig, readScYieldTargetConfig, readTaYieldConfig, readTaYieldTargetConfig } from './config.js';
+import { publicConfig, publicDataModel, publicScYieldConfig, publicTaYieldConfig, read901StagingConfig, readCellCommentConfig, readDatasetConfig, readMtdTargetConfig, readScYieldConfig, readScYieldTargetConfig, readTaYieldConfig, readTaYieldTargetConfig, readWipStagingConfig } from './config.js';
 import { MtdTargetRepository } from './mtdTargetRepository.js';
 import { CellCommentRepository } from './cellCommentRepository.js';
 import { SqlRepository } from './sqlRepository.js';
 import { Staging901Repository } from './staging901Repository.js';
+import { refresh901Staging } from './staging901Refresh.js';
+import { StagingWipRepository } from './stagingWipRepository.js';
+import { refreshWipStaging } from './stagingWipRefresh.js';
 import { ScYieldRepository } from './scYieldRepository.js';
 import { TaYieldRepository } from './taYieldRepository.js';
 import { ScYieldTargetRepository } from './scYieldTargetRepository.js';
@@ -132,7 +135,7 @@ async function completionWorkbook(rows) {
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
-export function createApp({ environment = process.env, repository, scYieldRepository, taYieldRepository, mtdTargetRepository, scYieldTargetRepository, taYieldTargetRepository, cellCommentRepository, staging901Repository, cache } = {}) {
+export function createApp({ environment = process.env, repository, scYieldRepository, taYieldRepository, mtdTargetRepository, scYieldTargetRepository, taYieldTargetRepository, cellCommentRepository, staging901Repository, stagingWipRepository, cache } = {}) {
   const configs = { closed: readDatasetConfig(environment, 'closed'), lot: readDatasetConfig(environment, 'lot') };
   const scYieldConfig = readScYieldConfig(environment);
   const taYieldConfig = readTaYieldConfig(environment);
@@ -141,6 +144,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   const taYieldTargetConfig = readTaYieldTargetConfig(environment);
   const commentConfig = readCellCommentConfig(environment);
   const staging901Config = read901StagingConfig(environment);
+  const stagingWipConfig = readWipStagingConfig(environment);
   const repositories = new Map();
   let scYieldMapping;
   let taYieldMapping;
@@ -150,6 +154,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   const taYieldTargets = taYieldTargetRepository || (taYieldTargetConfig.ready ? new TaYieldTargetRepository(taYieldTargetConfig) : undefined);
   const comments = cellCommentRepository || (commentConfig.ready ? new CellCommentRepository(commentConfig) : undefined);
   const staging901 = staging901Repository || (staging901Config.enabled && staging901Config.ready ? new Staging901Repository(staging901Config) : undefined);
+  const stagingWip = stagingWipRepository || (stagingWipConfig.enabled && stagingWipConfig.ready ? new StagingWipRepository(stagingWipConfig) : undefined);
   const responseCache = cache || new TtlCache({ maxEntries: Math.min(Math.max(Number(environment.DASHBOARD_CACHE_MAX_ENTRIES) || 500, 10), 2000) });
   const app = express();
   app.use(express.json({ limit: '8kb' }));
@@ -171,6 +176,33 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date()).reduce((values, part) => ({ ...values, [part.type]: part.value }), {});
     return { startDate: `${parts.year}-${parts.month}-01`, endDate: `${parts.year}-${parts.month}-${parts.day}` };
   }
+
+  let stagingRefreshInProgress = false;
+  app.refresh901Staging = async () => {
+    if (!staging901) return { status: 'SKIPPED' };
+    if (stagingRefreshInProgress) return { status: 'SKIPPED' };
+    stagingRefreshInProgress = true;
+    try {
+      if (!repositories.has('closed')) repositories.set('closed', repository || new SqlRepository(configs.closed));
+      const filters = currentThailandMonthFilters();
+      const result = await refresh901Staging({ source: repositories.get('closed'), sourceConfig: configs.closed, target: staging901, targetConfig: staging901Config, ...filters });
+      responseCache.clear();
+      return { status: 'REFRESHED', ...result };
+    } finally { stagingRefreshInProgress = false; }
+  };
+
+  let wipStagingRefreshInProgress = false;
+  app.refreshWipStaging = async () => {
+    if (!stagingWip || wipStagingRefreshInProgress) return { status: 'SKIPPED' };
+    wipStagingRefreshInProgress = true;
+    try {
+      if (!repositories.has('lot')) repositories.set('lot', repository || new SqlRepository(configs.lot));
+      const filters = currentThailandMonthFilters();
+      const result = await refreshWipStaging({ source: repositories.get('lot'), target: stagingWip, targetConfig: stagingWipConfig, ...filters });
+      responseCache.clear();
+      return { status: 'REFRESHED', ...result };
+    } finally { wipStagingRefreshInProgress = false; }
+  };
 
   let cacheWarmInProgress = false;
   app.warmCurrentMonthCaches = async () => {
@@ -209,8 +241,10 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     return [...repositories.values()].find((database) => database.config === config || database === repository);
   }
 
-  function dashboardDatabase(context) {
-    return context.dataset === 'closed' && staging901 ? staging901 : context.database;
+  function dashboardDatabase(context, filters = {}) {
+    if (context.dataset === 'closed' && staging901) return staging901;
+    if (context.dataset === 'lot' && stagingWip && !filters.process && !filters.pn && !filters.case) return stagingWip;
+    return context.database;
   }
 
   app.get('/api/config', (request, response) => {
@@ -366,7 +400,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const validation = validatedFilters(request.query);
     if (validation.error) return response.status(400).json({ success: false, error: validation.error });
     const context = contextFor(request, response); if (!context) return undefined;
-    return useDatabase(() => dashboardDatabase(context).getQuantity(validation.filters), response, context.config, false, { key: `${context.dataset}:quantity:${JSON.stringify(validation.filters)}`, ttlMs: 120000 });
+    return useDatabase(() => dashboardDatabase(context, validation.filters).getQuantity(validation.filters), response, context.config, false, { key: `${context.dataset}:quantity:${JSON.stringify(validation.filters)}`, ttlMs: 120000 });
   });
   app.get('/api/sc-yield', (request, response) => {
     const validation = validatedFilters(request.query);
@@ -427,7 +461,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const context = contextFor(request, response); if (!context) return undefined;
     if (!context.config.ready) return response.status(503).json({ success: false, error: 'Database configuration is incomplete. Check the server environment.' });
     try {
-      const cached = await responseCache.getOrSet(`${context.dataset}:quantity:${JSON.stringify(validation.filters)}`, 120000, () => dashboardDatabase(context).getQuantity(validation.filters));
+      const cached = await responseCache.getOrSet(`${context.dataset}:quantity:${JSON.stringify(validation.filters)}`, 120000, () => dashboardDatabase(context, validation.filters).getQuantity(validation.filters));
       const filename = `${context.dataset === 'closed' ? '901' : 'wip'}-series-completion-${validation.filters.startDate}-to-${validation.filters.endDate}.xlsx`;
       response.set('X-Dashboard-Cache', cached.status);
       response.attachment(filename);
@@ -443,7 +477,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const validation = validatedFilters(request.query);
     if (validation.error) return response.status(400).json({ success: false, error: validation.error });
     const context = contextFor(request, response); if (!context) return undefined;
-    return useDatabase(() => context.database.getChartData(validation.filters), response, context.config, false, { key: `${context.dataset}:chart:${JSON.stringify(validation.filters)}`, ttlMs: 120000 });
+    return useDatabase(() => dashboardDatabase(context, validation.filters).getChartData(validation.filters), response, context.config, false, { key: `${context.dataset}:chart:${JSON.stringify(validation.filters)}`, ttlMs: 120000 });
   });
   app.get('/api/operation-transitions', (request, response) => {
     const validation = validatedFilters(request.query);

@@ -7,6 +7,8 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "refresh:901-staging": "node src/refresh901Staging.js",
+    "refresh:wip-staging": "node src/refreshWipStaging.js",
+    "validate:staging": "node src/validateStaging.js",
     "deploy:portable": "deploy-portable.cmd",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage"

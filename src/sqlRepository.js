@@ -554,7 +554,7 @@ export class SqlRepository {
     return [...totals.entries()].map(([key, quantityMoved]) => { const [bucketDate, itemName] = key.split('|'); return { bucketDate, itemName, quantityMoved }; }).sort((left, right) => `${left.bucketDate}|${left.itemName}`.localeCompare(`${right.bucketDate}|${right.itemName}`));
   }
 
-  async getChartData(filters) {
+  async getChartData(filters, daily = false) {
     if (!this.config.chartColumn) return [];
     const pool = await this.getPool();
     const request = pool.request();
@@ -584,6 +584,7 @@ export class SqlRepository {
     });
     const result = await request.query(`
       SELECT
+        ${daily ? `CONVERT(varchar(10), CAST(${dateColumn} AS date), 23) AS bucketDate,` : ''}
         CAST(${chartColumn} AS nvarchar(4000)) AS chartName,
         CAST(${seriesColumn} AS nvarchar(4000)) AS seriesName,
         ${fromRouteStepColumn ? `MIN(CAST(${fromRouteStepColumn} AS nvarchar(4000))) AS fromRouteStepName,` : ''}
@@ -596,7 +597,7 @@ export class SqlRepository {
       FROM ${quoted(this.config.view)} AS [source]
       ${series?.join || ''}
       WHERE ${clauses.join(' AND ')} 
-      GROUP BY CAST(${chartColumn} AS nvarchar(4000)), CAST(${seriesColumn} AS nvarchar(4000))
+      ${daily ? `GROUP BY CAST(${dateColumn} AS date), ` : 'GROUP BY '}CAST(${chartColumn} AS nvarchar(4000)), CAST(${seriesColumn} AS nvarchar(4000))
       ORDER BY chartName ASC, seriesName ASC`);
     return result.recordset.map((row) => ({
       ...row,
