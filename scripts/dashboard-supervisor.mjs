@@ -3,6 +3,7 @@ import { execFile, spawn } from 'node:child_process';
 import http from 'node:http';
 import { promisify } from 'node:util';
 import { DeploymentSupervisor } from '../src/deploymentSupervisor.js';
+import { isChildRunning } from '../src/dashboardProcessManager.js';
 
 const execFileAsync = promisify(execFile);
 const projectDirectory = process.cwd();
@@ -58,14 +59,14 @@ const processManager = {
     dashboard.once('error', (error) => console.error(`Dashboard process failed to start: ${error.message}`));
   },
   async stop() {
-    if (!dashboard || dashboard.exitCode !== null) return;
+    if (!this.isRunning()) return;
     const exiting = new Promise((resolve) => dashboard.once('exit', resolve));
     dashboard.kill();
     const stopped = await Promise.race([exiting.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 15000))]);
     if (!stopped) throw new Error('Dashboard did not stop within 15 seconds.');
   },
   isRunning() {
-    return Boolean(dashboard && dashboard.exitCode === null && !dashboard.killed);
+    return isChildRunning(dashboard);
   }
 };
 
