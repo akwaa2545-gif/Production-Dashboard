@@ -42,6 +42,7 @@ describe('DeploymentSupervisor', () => {
     await expect(supervisor.checkForUpdate()).resolves.toEqual({ updated: true, revision: 'new-sha' });
     expect(command).toHaveBeenCalledWith('git', ['reset', '--hard', 'new-sha']);
     expect(command).toHaveBeenCalledWith('npm', ['ci', '--omit=dev']);
+    expect(command).toHaveBeenCalledWith('git', ['restore', '--', 'package-lock.json']);
     expect(processManager.stop).toHaveBeenCalledTimes(1);
     expect(processManager.start).toHaveBeenCalledTimes(1);
     expect(healthCheck).toHaveBeenCalledTimes(1);

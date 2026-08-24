@@ -46,6 +46,7 @@ export class DeploymentSupervisor {
       await this.processManager.stop();
       await this.command('git', ['reset', '--hard', nextRevision]);
       await this.command('npm', ['ci', '--omit=dev']);
+      await this.command('git', ['restore', '--', 'package-lock.json']);
       await this.processManager.start(nextRevision);
       if (!await this.healthCheck(nextRevision) || !this.processManager.isRunning()) throw new Error('Dashboard health check did not succeed.');
       this.logger.info(`Deployment ${nextRevision} is healthy.`);
@@ -62,6 +63,7 @@ export class DeploymentSupervisor {
       await this.command('git', ['reset', '--hard', revision]);
       await this.command('git', ['clean', '-fd']);
       await this.command('npm', ['ci', '--omit=dev']);
+      await this.command('git', ['restore', '--', 'package-lock.json']);
       await this.processManager.start(revision);
       if (!await this.healthCheck(revision) || !this.processManager.isRunning()) throw new Error('The restored dashboard did not pass its health check.');
     } catch (rollbackFailure) {
