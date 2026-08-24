@@ -173,7 +173,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   const app = express();
   app.use(express.json({ limit: '8kb' }));
   app.use(express.static(path.join(here, '../public'), { setHeaders: (response) => response.set('Cache-Control', 'no-store') }));
-  app.get('/api/health', (_request, response) => response.json({ success: true, data: { status: 'ok' } }));
+  app.get('/api/health', (_request, response) => response.json({ success: true, data: { status: 'ok', ...(environment.DEPLOY_REVISION ? { revision: environment.DEPLOY_REVISION } : {}) } }));
   app.get('/api/defect-settings', async (_request, response) => {
     try {
       if (!repositories.has('ta-yield')) repositories.set('ta-yield', taYieldRepository || new TaYieldRepository(taYieldConfig));

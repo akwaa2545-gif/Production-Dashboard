@@ -4,6 +4,7 @@
 
 node_modules/
 coverage/
+.restore-points/
 .claude-flow/
 
 *.log
