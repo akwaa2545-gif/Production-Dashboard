@@ -1,3 +1,6 @@
-export function npmCommandForPlatform(platform = process.platform) {
-  return platform === 'win32' ? 'npm.cmd' : 'npm';
+export function commandInvocation(file, args, platform = process.platform) {
+  if (platform === 'win32' && file === 'npm') {
+    return { file: 'cmd.exe', args: ['/d', '/s', '/c', 'npm', ...args] };
+  }
+  return { file, args };
 }

@@ -4,7 +4,7 @@ import http from 'node:http';
 import { promisify } from 'node:util';
 import { DeploymentSupervisor } from '../src/deploymentSupervisor.js';
 import { isChildRunning } from '../src/dashboardProcessManager.js';
-import { npmCommandForPlatform } from '../src/deploymentCommand.js';
+import { commandInvocation } from '../src/deploymentCommand.js';
 
 const execFileAsync = promisify(execFile);
 const projectDirectory = process.cwd();
@@ -14,8 +14,8 @@ const healthUrl = process.env.DEPLOY_HEALTH_URL || `http://127.0.0.1:${process.e
 const healthTimeoutMs = Math.max(Number(process.env.DEPLOY_HEALTH_TIMEOUT_MS) || 60000, 10000);
 
 function command(file, args) {
-  const executable = file === 'npm' ? npmCommandForPlatform() : file;
-  return execFileAsync(executable, args, { cwd: projectDirectory, windowsHide: true }).then(({ stdout }) => stdout);
+  const invocation = commandInvocation(file, args);
+  return execFileAsync(invocation.file, invocation.args, { cwd: projectDirectory, windowsHide: true }).then(({ stdout }) => stdout);
 }
 
 function requestHealth(expectedRevision) {

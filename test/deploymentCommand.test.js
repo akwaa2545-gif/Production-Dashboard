@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { npmCommandForPlatform } from '../src/deploymentCommand.js';
+import { commandInvocation } from '../src/deploymentCommand.js';
 
-describe('npmCommandForPlatform', () => {
-  it('uses npm.cmd on Windows so Node can launch npm directly', () => {
-    expect(npmCommandForPlatform('win32')).toBe('npm.cmd');
+describe('commandInvocation', () => {
+  it('runs npm through cmd.exe on Windows', () => {
+    expect(commandInvocation('npm', ['ci', '--omit=dev'], 'win32')).toEqual({ file: 'cmd.exe', args: ['/d', '/s', '/c', 'npm', 'ci', '--omit=dev'] });
   });
 
-  it('uses npm on non-Windows hosts', () => {
-    expect(npmCommandForPlatform('linux')).toBe('npm');
+  it('runs commands directly on non-Windows hosts', () => {
+    expect(commandInvocation('npm', ['ci'], 'linux')).toEqual({ file: 'npm', args: ['ci'] });
   });
 });
