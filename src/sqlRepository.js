@@ -1,5 +1,8 @@
 import sql from 'mssql';
-import { InteractiveBrowserCredential } from '@azure/identity';
+import { InteractiveBrowserCredential, useIdentityPlugin } from '@azure/identity';
+import { cachePersistencePlugin } from '@azure/identity-cache-persistence';
+
+useIdentityPlugin(cachePersistencePlugin);
 
 const OPTION_LIMIT = 1000;
 const tokenCache = new Map();
@@ -159,7 +162,7 @@ function authenticationSuccessPage(appUrl) {
   return `<!doctype html><html><head><meta http-equiv="refresh" content="1;url=${appUrl}" /></head><body><p>Sign-in complete. Returning to the dashboard...</p><script>window.location.replace(${redirectUrl});</script></body></html>`;
 }
 
-async function getAccessToken(tenantId, appUrl, forceRefresh = false) {
+async function getAccessToken(tenantId, appUrl, tokenCachePersistence, forceRefresh = false) {
   const key = tenantId || 'common';
   const cached = tokenCache.get(key);
   if (!forceRefresh && cached && cached.expiresOnTimestamp > Date.now() + 120000) return cached.token;
@@ -171,7 +174,8 @@ async function getAccessToken(tenantId, appUrl, forceRefresh = false) {
     if (!credential) {
       credential = new InteractiveBrowserCredential({
         tenantId,
-        browserCustomizationOptions: { successMessage: authenticationSuccessPage(appUrl) }
+        browserCustomizationOptions: { successMessage: authenticationSuccessPage(appUrl) },
+        ...(tokenCachePersistence ? { tokenCachePersistenceOptions: { enabled: true, name: `onemes-quantity-dashboard-${key}` } } : {})
       });
       credentialCache.set(key, credential);
     }
@@ -225,7 +229,7 @@ async function getSharedPool(config, forceRefresh = false) {
   const request = (async () => {
     let pool;
     try {
-      const token = await getAccessToken(config.tenantId, config.appUrl, forceRefresh || refreshNeeded);
+      const token = await getAccessToken(config.tenantId, config.appUrl, config.tokenCachePersistence === true, forceRefresh || refreshNeeded);
       pool = new sql.ConnectionPool({
         server: config.server,
         database: config.database,
@@ -279,7 +283,7 @@ export class SqlRepository {
 
   async authenticate() {
     await this.resetConnection();
-    await this.getPool(true);
+    await this.getPool();
   }
 
   async resetConnection() {
@@ -480,6 +484,7 @@ export class SqlRepository {
         GROUP BY CAST(${dateColumn} AS date), CAST(${resolvedSerie} AS nvarchar(4000))
         ORDER BY bucketDate ASC, itemName ASC`;
     })() : `
+    
       SELECT
         CONVERT(varchar(10), CAST(${dateColumn} AS date), 23) AS bucketDate,
         CAST(${groupColumn} AS nvarchar(4000)) AS itemName,

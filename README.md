@@ -10,6 +10,8 @@ Read-only dashboard for daily `quantityMoved` totals from Azure SQL `dbo.LotComp
 
 The supplied server and database values are included in `.env.example`. Local development uses `DB_AUTH=ActiveDirectoryInteractive`; selecting data may open a Microsoft Entra sign-in flow. The signed-in account needs read-only access to both configured views. The server shares one Entra credential and one Azure SQL connection pool between Closed Batch and Lot Complete Log, then attempts silent token renewal before requesting a new interactive login. A browser login can still be required after a server restart, Entra logout, MFA, or Conditional Access challenge.
 
+Set `AZURE_TOKEN_CACHE_PERSISTENCE=true` on a single-user dashboard host to store the Entra token cache in that Windows account's Credential Manager and retain the session across restarts. Keep it `false` on shared hosts, restrict dashboard network access, and use a least-privileged Windows account; anyone using the dashboard server's Windows identity can access its configured SQL views.
+
 `SQL_TRUST_SERVER_CERTIFICATE` defaults to `false`. Set it to `true` only when required by your organization's certificate configuration.
 
 ## Portable Windows deployment
@@ -27,6 +29,25 @@ npm run deploy:portable
 ```
 
 The command installs production dependencies on first run and starts the dashboard on `0.0.0.0:5000`. Allow TCP port `5000` through the Windows Firewall if LAN users cannot connect. The server host must complete Microsoft Entra sign-in when prompted; do not copy a personal `.env` or Entra token to another machine.
+
+## Automatic Windows deployment
+
+For the current interactive Entra authentication, use the included Windows deployment supervisor instead of Docker. It runs the dashboard and polls the configured Git remote for new commits on `main`. When it finds one, it stops the dashboard, updates the clean deployment clone, installs production dependencies, restarts it, and checks `GET /api/health`. If the new revision is unhealthy, it restores and restarts the previous Git revision automatically.
+
+On the dedicated dashboard computer, make a separate clean clone for deployment, then create its `.env` from `.env.example`. Do not use a working folder that contains local edits or Excel files.
+
+```cmd
+git clone https://github.com/akwaa2545-gif/Production-Dashboard.git C:\OneMES\dashboard
+cd /d C:\OneMES\dashboard
+npm ci --omit=dev
+run-deployment-supervisor.cmd
+```
+
+Before the first run, set `AZURE_TOKEN_CACHE_PERSISTENCE=true` in that deployment clone's `.env`. The first run may open the existing Microsoft Entra sign-in flow. Sign in using the dedicated Windows account. Later restarts normally reuse that account's persisted token cache, although Microsoft can still require a new sign-in after MFA, policy, password, or token changes.
+
+To make it automatic, create a Windows Scheduled Task that starts `C:\OneMES\dashboard\run-deployment-supervisor.cmd` **at log on**, runs only when that dedicated user is logged on, and uses `C:\OneMES\dashboard` as its working directory. Keep the task running; it checks GitHub every five minutes by default. Change the interval with `DEPLOY_INTERVAL_MS` (minimum 60000). Git credentials, if the repository is private, must be configured once for that Windows account.
+
+Push a tested commit to `main` to deploy it. The supervisor will never overwrite a deployment clone with local changes, and it rolls back automatically if the replacement fails the revision-specific health check. Stop any old `deploy-portable.cmd` dashboard process before starting the supervisor, then use `Ctrl+C` before doing planned maintenance in that deployment clone.
 
 ## Finding column names
 

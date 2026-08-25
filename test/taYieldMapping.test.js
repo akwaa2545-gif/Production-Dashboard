@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { chdir } from 'node:process';
 import { describe, expect, it } from 'vitest';
-import { loadTaYieldMapping, mapTaWorkbookYieldRows, mapTaYieldLotDetails, mapTaYieldRows } from '../src/taYieldMapping.js';
+import { loadTaYieldMapping, mapTaWorkbookReconciliationRows, mapTaWorkbookYieldRows, mapTaYieldLotDetails, mapTaYieldRows } from '../src/taYieldMapping.js';
 
 const mapping = new Map([
   ['0301_Sample_CV', { main: 'Inprocess Upstream' }],
@@ -96,14 +96,15 @@ describe('mapTaYieldRows', () => {
     expect(row.yield).toBe(90);
   });
 
-  it('excludes NON-STANDARD, invalid lot dates, and yield at or below 30 percent', () => {
+  it('includes ReleasedJob class N and excludes ReleasedJob class E, invalid lot dates, and yield at or below 30 percent', () => {
     const rows = mapTaYieldRows([
+      { line: 'FPS', lotNo: '4H03N03840', closeDate: '2026-07-02', occuredOn: '2026-07-03', jobType: 'N', inputQ: 100, finalGoodQ: 90, dispositionCode: '0301_Sample_CV', quantity: 1 },
       { line: 'FPS', lotNo: '4H03N03842', closeDate: '2026-07-02', occuredOn: '2026-07-03', jobType: 'NON-STANDARD', inputQ: 100, finalGoodQ: 90, dispositionCode: '0301_Sample_CV', quantity: 1 },
       { line: 'FPS', lotNo: '4H04N03842', closeDate: '2026-07-02', occuredOn: '2026-07-03', jobType: 'E', inputQ: 100, finalGoodQ: 90, dispositionCode: '0301_Sample_CV', quantity: 1 },
       { line: 'FPS', lotNo: '4H32N03842', closeDate: '2026-07-02', occuredOn: '2026-07-03', jobType: 'Standard', inputQ: 100, finalGoodQ: 90, dispositionCode: '0301_Sample_CV', quantity: 1 },
       { line: 'FPS', lotNo: '4H03N03843', closeDate: '2026-07-02', occuredOn: '2026-07-03', jobType: 'Standard', inputQ: 100, finalGoodQ: 30, dispositionCode: '0301_Sample_CV', quantity: 1 }
     ], mapping);
-    expect(rows).toEqual([]);
+    expect(rows).toEqual([expect.objectContaining({ line: 'FPS', input: 100, finalGood: 90, yield: 90 })]);
   });
 
   it('uses the MES CloseDate lot period for input, final good, and GPS defect mapping', () => {
@@ -133,12 +134,54 @@ describe('mapTaYieldRows', () => {
     expect(rows).toEqual([expect.objectContaining({ month: '2026-07-05', input: 100, finalGood: 90, defect: 10, yield: 90 })]);
   });
 
+  it('lists source part numbers for the tendency selector', () => {
+    const rows = mapTaWorkbookYieldRows([
+      { line: 'FPS', lotNo: 'L1', itemName: 'PN-A', tapingDate: '2026-07-05', categories: { Input: 100, Good: 90, ESR: 10 } },
+      { line: 'FPS', lotNo: 'L2', itemName: 'PN-B', tapingDate: '2026-07-06', categories: { Input: 100, Good: 95, ESR: 5 } }
+    ], new Map(), 'month');
+
+    expect(rows).toEqual([expect.objectContaining({ partNumbers: ['PN-A', 'PN-B'], input: 200, finalGood: 185 })]);
+  });
+
+  it('uses a normalized lot once when mixed staging data includes the raw source rows', () => {
+    const rows = mapTaWorkbookReconciliationRows([
+      { line: 'FPS', lotNo: 'L1', itemName: 'PN-A', tapingDate: '2026-07-05', categories: { Input: 100, Good: 90, ESR: 10 } },
+      { line: 'FPS', lotNo: 'L1', itemName: 'PN-A', tapingDate: '2026-07-05', dispositionDescription: 'ESR', quantity: 10 }
+    ], new Map([['ESR', 'ESR']]));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual(expect.objectContaining({ categories: { Input: 100, Good: 90, ESR: 10 } }));
+  });
+
+  it('collapses repeated normalized DataTable rows without multiplying adjustment quantities', () => {
+    const source = { line: 'Ta NEO Capacitor FPS series A08 case', lotNo: '6G15N09395', itemName: 'TEFPSA081C226MTHF8R-T', tapingDate: '2026-08-10', categories: { ACC: 99, Good: 9900, Input: 10000 } };
+
+    const rows = mapTaWorkbookReconciliationRows([
+      source,
+      ...Array.from({ length: 4 }, () => ({ ...source, tapingDate: new Date('2026-08-10T00:00:00.000Z'), categories: { ...source.categories } }))
+    ], new Map());
+
+    expect(rows).toEqual([expect.objectContaining({
+      line: source.line,
+      lotNo: source.lotNo,
+      categories: { ACC: 99, Good: 9900, Input: 10000 }
+    })]);
+  });
+
   it('uses the Thailand calendar day and ISO week for UTC CloseDate values after local midnight', () => {
     const source = { line: 'FPS', lotNo: '4H03N03848', closeDate: new Date('2026-07-05T18:30:00.000Z'), occuredOn: '2026-07-06', jobType: 'Standard', inputQ: 100, finalGoodQ: 90, dispositionCode: '1815_ESR_Def', quantity: 10 };
     const mapping = new Map([['1815_ESR_Def', { main: 'ESR' }]]);
 
     expect(mapTaYieldRows([source], mapping, 'day')[0]).toEqual(expect.objectContaining({ month: '2026-07-06' }));
     expect(mapTaYieldRows([source], mapping, 'week')[0]).toEqual(expect.objectContaining({ month: '2026-W28' }));
+  });
+
+  it('uses the Thailand calendar day for UTC timestamp strings from staged workbook data', () => {
+    const rows = mapTaWorkbookYieldRows([
+      { line: 'FPS', lotNo: 'L1', itemName: 'PN-A', tapingDate: '2026-08-15T18:00:00.000Z', categories: { Input: 100, Good: 92, ESR: 8 } }
+    ], new Map(), 'day');
+
+    expect(rows).toEqual([expect.objectContaining({ month: '2026-08-16', input: 100, finalGood: 92, defect: 8 })]);
   });
 
   it('uses the Thailand calendar month and close-date label for UTC values after local midnight', () => {
@@ -193,5 +236,13 @@ describe('mapTaWorkbookYieldRows', () => {
 
     expect(summary).toMatchObject({ input: 900, finalGood: 800, defect: 100, yield: 800 / 900 * 100, defectRate: 100 / 900 * 100 });
     expect(summary.groups).toEqual(expect.arrayContaining([{ group: 'CO', quantity: 50, rate: 50 / 900 * 100 }, { group: 'Other2', quantity: 50, rate: 50 / 900 * 100 }]));
+    expect(summary.partNumbers).toEqual(['TEFPS']);
+  });
+
+  it('keeps normalized staged lots when the requested range also contains raw workbook rows', () => {
+    const rawRows = [['Input', 100], ['Good', 90]].map(([dispositionDescription, quantity]) => ({ line: 'FPS', lotNo: '6H01N00001', itemName: 'TEFPS', tapingDate: '2026-01-10', dispositionDescription, quantity }));
+    const normalizedRow = { line: 'FPS', lotNo: '6H02N00001', itemName: 'TEFPS', tapingDate: '2026-05-10', categories: { Input: 100, Good: 80 } };
+
+    expect(mapTaWorkbookYieldRows([...rawRows, normalizedRow], new Map([['Input', 'Input'], ['Good', 'Good']])).map((row) => row.month)).toEqual(['2026-01', '2026-05']);
   });
 });

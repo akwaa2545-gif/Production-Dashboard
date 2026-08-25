@@ -45,7 +45,7 @@ Exclude a lot when either condition applies:
 Yield_v.LotNo = ReleasedJob.LotID
 ```
 
-Use `ReleasedJob.JobType` for the engineering-lot exclusion. Live TA values are `Standard`, `NON-STANDARD`, and null. Treating `NON-STANDARD` as the workbook's engineering/experiment (`E`) classification is a reasonable provisional mapping, but confirm it with the TA owner before release.
+Use `ReleasedJob.JobClass` for the engineering-lot exclusion. Its values align directly with the workbook classification: exclude `E` (engineering/experiment) and include `N` (normal production).
 
 ## Lot-level quantities
 
@@ -138,4 +138,4 @@ Use adjusted input as the denominator for Yield and defect rates.
 
 ## Remaining confirmation
 
-Confirm that `ReleasedJob.JobType = 'NON-STANDARD'` is the intended equivalent of workbook Job Type `E` (engineering/experiment). `Standard` is expected to be mass production (`N`).
+The implementation uses `ReleasedJob.JobClass`: `E` is engineering/experiment and `N` is normal production.

@@ -47,6 +47,12 @@ export class TaYieldRepository extends SqlRepository {
         WHERE [final].[ProdType] = @taProduct
           AND UPPER(LTRIM(RTRIM(CAST([final].[CatMajor] AS nvarchar(100))))) = N'FG'
           AND LTRIM(RTRIM(CAST([final].[DispositionCode] AS nvarchar(4000)))) = @taFinalGoodDisposition
+          AND NOT EXISTS (
+            SELECT 1
+            FROM ${quoted(config.releasedJobView)} AS [releasedJob]
+            WHERE CAST([releasedJob].[LotID] AS nvarchar(4000)) = CAST([final].[JobName] AS nvarchar(4000))
+              AND UPPER(LTRIM(RTRIM(CAST([releasedJob].[JobClass] AS nvarchar(100))))) = N'E'
+          )
           AND [final].[OccuredOn] >= ${thaiUtcBoundary('@startDate')}
           AND [final].[OccuredOn] < ${thaiUtcBoundary('DATEADD(day, 1, @endDate)')}
         GROUP BY CAST([final].[JobName] AS nvarchar(4000))
@@ -63,6 +69,7 @@ export class TaYieldRepository extends SqlRepository {
           AND EXISTS (
             SELECT 1 FROM ${quoted(config.parameterView || 'PowerBIThailand.ParametersECP_v')} AS [parameters]
             WHERE LTRIM(RTRIM(CAST([parameters].[PartType] AS nvarchar(4000)))) = LTRIM(RTRIM(CAST([action].[From_ItemName] AS nvarchar(4000))))
+              AND LOWER(LTRIM(RTRIM(CAST([parameters].[ParameterName] AS nvarchar(4000))))) = N'acc_volt'
               AND TRY_CONVERT(decimal(19, 4), LTRIM(RTRIM(CAST([parameters].[ParameterValue] AS nvarchar(4000))))) > 0
           ) THEN N'ACC'
           ELSE LTRIM(RTRIM(CAST([action].[DispositionDescription] AS nvarchar(4000)))) END AS dispositionDescription,
@@ -143,10 +150,15 @@ export class TaYieldRepository extends SqlRepository {
       SELECT CAST([closed].[JobName] AS nvarchar(4000)) AS lotNo,
         MIN(CAST([closed].[Series] AS nvarchar(4000))) AS line,
         MAX([closed].[CloseDate]) AS closeDate,
-        MAX(CAST([closed].[JobType] AS nvarchar(100))) AS jobType,
+        COALESCE(
+          MAX(NULLIF(LTRIM(RTRIM(CAST([releasedJob].[JobClass] AS nvarchar(100)))), N'')),
+          MAX(CAST([closed].[JobType] AS nvarchar(100)))
+        ) AS jobType,
         MAX([closed].[GrossQty]) AS inputQ
       FROM ${quoted(config.view)} AS [closed]
       INNER JOIN [selectedLots] AS [lots] ON CAST([closed].[JobName] AS nvarchar(4000)) = [lots].[lotNo]
+      LEFT JOIN ${quoted(config.releasedJobView)} AS [releasedJob]
+        ON CAST([releasedJob].[LotID] AS nvarchar(4000)) = CAST([closed].[JobName] AS nvarchar(4000))
       WHERE [closed].[ProdType] = @taProduct AND [closed].[ProdLine] LIKE @taLinePrefix
         ${seriesFilter.length ? `AND [closed].[Series] IN (${seriesFilter.join(', ')})` : ''}
       GROUP BY CAST([closed].[JobName] AS nvarchar(4000))
@@ -182,5 +194,26 @@ export class TaYieldRepository extends SqlRepository {
       ORDER BY value
     `);
     return { process: [], serie: result.recordset.map((row) => row.value), case: [], pn: [] };
+  }
+
+  async getMachineEvents(filters, { lotNumbers, processPattern, machine } = {}) {
+    if (!Array.isArray(lotNumbers) || !lotNumbers.length) return [];
+    const request = (await this.getPool()).request();
+    request.input('startDate', sql.Date, filters.startDate);
+    request.input('endDate', sql.Date, filters.endDate);
+    request.input('processPattern', sql.NVarChar(4000), processPattern);
+    request.input('lots', sql.NVarChar(sql.MAX), JSON.stringify([...new Set(lotNumbers)]));
+    if (machine) request.input('machine', sql.NVarChar(4000), machine);
+    const result = await request.query(`
+      WITH [selectedLots] AS (SELECT DISTINCT CAST([value] AS nvarchar(4000)) AS [lotNo] FROM OPENJSON(@lots) WHERE [type] = 1)
+      SELECT CAST([log].[JobName] AS nvarchar(4000)) AS lotNo, CAST([log].[MachineName] AS nvarchar(4000)) AS machineName, CAST([log].[From_OperationName] AS nvarchar(4000)) AS operationName, [log].[OccuredOn] AS occuredOn
+      FROM ${quoted(this.config.lotStartLogView)} AS [log]
+      INNER JOIN [selectedLots] AS [lots] ON CAST([log].[JobName] AS nvarchar(4000)) = [lots].[lotNo]
+      WHERE LTRIM(RTRIM(CAST([log].[From_OperationName] AS nvarchar(4000)))) LIKE @processPattern
+        AND [log].[OccuredOn] >= ${thaiUtcBoundary('@startDate')}
+        AND [log].[OccuredOn] < ${thaiUtcBoundary('DATEADD(day, 1, @endDate)')}
+        ${machine ? 'AND LTRIM(RTRIM(CAST([log].[MachineName] AS nvarchar(4000)))) = @machine' : ''}
+    `);
+    return result.recordset;
   }
 }

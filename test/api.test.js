@@ -1,5 +1,6 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
+import ExcelJS from 'exceljs';
 import { createApp } from '../src/app.js';
 
 const configuredEnvironment = {
@@ -15,12 +16,118 @@ const configuredEnvironment = {
 };
 
 describe('dashboard API', () => {
+  it('uses ProductionMES staging settings for TA Yield target storage', async () => {
+    const { readTaYieldTargetConfig } = await import('../src/config.js');
+    expect(readTaYieldTargetConfig({ STAGING_SQL_SERVER: 'server', STAGING_SQL_DATABASE: 'ProductionMES', STAGING_SQL_USER: 'user', STAGING_SQL_PASSWORD: 'password' })).toMatchObject({ database: 'ProductionMES', table: 'dbo.DashboardTaYieldTarget', ready: true });
+  });
+
   it('reports health without exposing database settings', async () => {
     const response = await request(createApp({ environment: configuredEnvironment }))
       .get('/api/health');
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ success: true, data: { status: 'ok' } });
+  });
+
+  it('reports TA workbook, machine, and monthly-summary staging activity separately', async () => {
+    const activity = { rowCount: 3, firstDataDate: '2026-08-01', lastDataDate: '2026-08-15', lastRefreshedAt: '2026-08-15T01:00:00.000Z' };
+    const taYieldStagingRepository = {
+      getActivity: () => Promise.resolve(activity),
+      getMachineActivity: () => Promise.resolve({ ...activity, rowCount: 48 }),
+      getMonthlySummaryActivity: () => Promise.resolve({ ...activity, rowCount: 24 })
+    };
+    const response = await request(createApp({
+      environment: { ...configuredEnvironment, DASHBOARD_TA_YIELD_STAGING_ENABLED: 'true', STAGING_SQL_SERVER: 'staging', STAGING_SQL_DATABASE: 'ProductionMES', STAGING_SQL_USER: 'user', STAGING_SQL_PASSWORD: 'password' },
+      taYieldStagingRepository,
+      yieldDefectSettingRepository: { list: () => Promise.resolve([]) }
+    })).get('/api/staging-status');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.map((row) => row.name)).toEqual(expect.arrayContaining(['TA Yield DataTable', 'TA Yield Machine events', 'TA Yield Monthly summary']));
+    expect(response.body.data.find((row) => row.name === 'TA Yield Monthly summary')).toMatchObject({ rowCount: 24, table: 'dbo.DashboardTaYieldMonthlySummary' });
+    expect(response.body.data.find((row) => row.name === 'TA Yield Machine events')).toMatchObject({ rowCount: 48, table: 'dbo.DashboardTaYieldMachineEventRow' });
+  });
+
+  it('identifies a missing normalized Machine staging table instead of reporting a database outage', async () => {
+    const activity = { rowCount: 3, firstDataDate: '2026-08-01', lastDataDate: '2026-08-15', lastRefreshedAt: '2026-08-15T01:00:00.000Z' };
+    const taYieldStagingRepository = {
+      getActivity: () => Promise.resolve(activity),
+      getMachineActivity: () => Promise.reject(Object.assign(new Error("Invalid object name 'dbo.DashboardTaYieldMachineEventRow'."), { number: 208 })),
+      getMonthlySummaryActivity: () => Promise.resolve(activity)
+    };
+    const response = await request(createApp({
+      environment: { ...configuredEnvironment, DASHBOARD_TA_YIELD_STAGING_ENABLED: 'true', STAGING_SQL_SERVER: 'staging', STAGING_SQL_DATABASE: 'ProductionMES', STAGING_SQL_USER: 'user', STAGING_SQL_PASSWORD: 'password' },
+      taYieldStagingRepository,
+      yieldDefectSettingRepository: { list: () => Promise.resolve([]) }
+    })).get('/api/staging-status');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.find((row) => row.name === 'TA Yield Machine events')).toMatchObject({ activityAvailable: false, activityError: 'Normalized Machine staging tables are not installed. Run npm run migrate:ta-yield-machine-rows.' });
+  });
+
+  it('reports a Machine staging activity timeout as an in-progress refresh', async () => {
+    const activity = { rowCount: 3, firstDataDate: '2026-08-01', lastDataDate: '2026-08-15', lastRefreshedAt: '2026-08-15T01:00:00.000Z' };
+    const taYieldStagingRepository = {
+      getActivity: () => Promise.resolve(activity),
+      getMachineActivity: () => Promise.reject(Object.assign(new Error('Timeout: Request failed to complete in 15000ms'), { code: 'ETIMEOUT' })),
+      getMonthlySummaryActivity: () => Promise.resolve(activity)
+    };
+    const response = await request(createApp({
+      environment: { ...configuredEnvironment, DASHBOARD_TA_YIELD_STAGING_ENABLED: 'true', STAGING_SQL_SERVER: 'staging', STAGING_SQL_DATABASE: 'ProductionMES', STAGING_SQL_USER: 'user', STAGING_SQL_PASSWORD: 'password' },
+      taYieldStagingRepository,
+      yieldDefectSettingRepository: { list: () => Promise.resolve([]) }
+    })).get('/api/staging-status');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.find((row) => row.name === 'TA Yield Machine events')).toMatchObject({ activityAvailable: false, activityError: 'Machine staging refresh is still in progress. Check again shortly.' });
+  });
+
+  it('does not label a non-Machine staging timeout as a Machine refresh', async () => {
+    const activity = { rowCount: 3, firstDataDate: '2026-08-01', lastDataDate: '2026-08-15', lastRefreshedAt: '2026-08-15T01:00:00.000Z' };
+    const taYieldStagingRepository = {
+      getActivity: () => Promise.resolve(activity),
+      getMachineActivity: () => Promise.resolve(activity),
+      getMonthlySummaryActivity: () => Promise.reject(Object.assign(new Error('Timeout: Request failed to complete in 15000ms'), { code: 'ETIMEOUT' }))
+    };
+    const response = await request(createApp({
+      environment: { ...configuredEnvironment, DASHBOARD_TA_YIELD_STAGING_ENABLED: 'true', STAGING_SQL_SERVER: 'staging', STAGING_SQL_DATABASE: 'ProductionMES', STAGING_SQL_USER: 'user', STAGING_SQL_PASSWORD: 'password' },
+      taYieldStagingRepository,
+      yieldDefectSettingRepository: { list: () => Promise.resolve([]) }
+    })).get('/api/staging-status');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.find((row) => row.name === 'TA Yield Monthly summary')).toMatchObject({ activityAvailable: false, activityError: 'Staging database is unreachable.' });
+  });
+
+  it('serves TA Machine defect views without reading staged Machine or workbook data', async () => {
+    const taYieldStagingRepository = {
+      getMachineLots: () => Promise.reject(new Error('Machine rows must not be loaded for the defect-view dropdown')),
+      getMachineEvents: () => Promise.reject(new Error('Machine events must not be loaded for the defect-view dropdown'))
+    };
+    const response = await request(createApp({
+      environment: { ...configuredEnvironment, DASHBOARD_TA_YIELD_STAGING_ENABLED: 'true', STAGING_SQL_SERVER: 'staging', STAGING_SQL_DATABASE: 'ProductionMES', STAGING_SQL_USER: 'user', STAGING_SQL_PASSWORD: 'password' },
+      taYieldStagingRepository,
+      yieldDefectSettingRepository: { list: () => Promise.resolve([]) }
+    })).get('/api/ta-yield-machine-options?dataset=ta-yield&startDate=2026-08-01&endDate=2026-08-15&process=1.1stAnodization');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({ machines: [], categories: expect.arrayContaining(['Inproc Dw']) });
+  });
+
+  it('falls back to existing Machine snapshots while normalized Machine rows are backfilled', async () => {
+    const taYieldStagingRepository = {
+      getMachineLots: () => Promise.reject(new Error('Normalized Machine rows are still backfilling')),
+      getWorkbookRows: () => Promise.resolve([{ line: 'Ta NEO Capacitor FPS series B3 case', lotNo: '6H01N00001', itemName: 'TEFPS', tapingDate: '2026-08-01', categories: { ACC: 0, 'Inproc Dw': 12 } }]),
+      getMachineEventsSnapshot: () => Promise.resolve([{ lotNo: '6H01N00001', machineName: 'AN-01', operationName: '1.1stAnodization', occuredOn: '2026-08-01T00:00:00.000Z' }])
+    };
+    const response = await request(createApp({
+      environment: { ...configuredEnvironment, DASHBOARD_TA_YIELD_STAGING_ENABLED: 'true', STAGING_SQL_SERVER: 'staging', STAGING_SQL_DATABASE: 'ProductionMES', STAGING_SQL_USER: 'user', STAGING_SQL_PASSWORD: 'password' },
+      taYieldStagingRepository,
+      yieldDefectSettingRepository: { list: () => Promise.resolve([]) }
+    })).get('/api/ta-yield-machine?dataset=ta-yield&startDate=2026-08-01&endDate=2026-08-15&process=1.1stAnodization&machine=__ALL__&defectType=code&defect=1304_Welding_Def');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.rows).toEqual([expect.objectContaining({ date: '2026-08-01', machineName: 'AN-01', mode: '1304_Welding_Def', quantity: 12 })]);
   });
 
   it('returns only safe database metadata from config', async () => {
@@ -94,6 +201,23 @@ describe('dashboard API', () => {
     expect((await request(app).get('/api/ta-yield-workbook-reconciliation?dataset=closed&startDate=2026-08-01&endDate=2026-08-13')).status).toBe(400);
   });
 
+  it('uses date-filtered TA workbook rows for partial-month KPI ranges', async () => {
+    const taYieldStagingRepository = {
+      getMonthlySummary: () => Promise.resolve([{ month: '2026-08', line: 'FPS', group: 'ESR', input: 1000, finalGood: 900, defect: 100 }]),
+      getMonthlyPartNumbers: () => Promise.resolve([]),
+      getWorkbookRows: () => Promise.resolve([{ line: 'FPS', lotNo: '6H01N00021', itemName: 'TEFPS', tapingDate: '2026-08-03', categories: { Input: 100, Good: 90, ESR: 10 } }])
+    };
+    const app = createApp({
+      environment: { ...configuredEnvironment, DASHBOARD_TA_YIELD_STAGING_ENABLED: 'true', STAGING_SQL_SERVER: 'staging', STAGING_SQL_DATABASE: 'ProductionMES', STAGING_SQL_USER: 'user', STAGING_SQL_PASSWORD: 'password' },
+      taYieldStagingRepository
+    });
+
+    const response = await request(app).get('/api/ta-yield?dataset=ta-yield&startDate=2026-08-01&endDate=2026-08-16');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual([expect.objectContaining({ month: '2026-08', line: 'FPS', input: 100, finalGood: 90, defect: 10, yield: 90 })]);
+  });
+
   it('rejects invalid quantity date ranges before accessing SQL', async () => {
     const response = await request(createApp({ environment: configuredEnvironment }))
       .get('/api/quantity?startDate=invalid&endDate=2026-01-01');
@@ -136,6 +260,27 @@ describe('dashboard API', () => {
     expect(response.headers['content-disposition']).toContain('901-series-completion-2026-01-01-to-2026-01-01.xlsx');
     expect(response.body.subarray(0, 2).toString()).toBe('PK');
   });
+
+  it('exports the TA Yield DataTable as a formatted Excel workbook', async () => {
+    const stagedRows = [{ line: 'Ta NEO Capacitor FPS series A08 case', lotNo: '6H01N00021', itemName: 'TEFPSA081C226MTHF8R-T', tapingDate: '2026-08-03', categories: { ACC: 38, App: 209, Good: 17443 }, calculation: { defect: 247, other1: 0, inputF: 17690, other2: 0, goodRate: 98.6048615, defectRate: 1.3951385, ttl: 100, check: 0 } }];
+    const taYieldStagingRepository = { getWorkbookRows: () => Promise.resolve(stagedRows) };
+    const response = await request(createApp({ environment: { ...configuredEnvironment, DASHBOARD_TA_YIELD_STAGING_ENABLED: 'true', STAGING_SQL_SERVER: 'svr120a', STAGING_SQL_DATABASE: 'ProductionMES', STAGING_SQL_USER: 'test', STAGING_SQL_PASSWORD: 'test' }, taYieldStagingRepository }))
+      .get('/api/export/ta-yield-datatable?dataset=ta-yield&startDate=2026-08-01&endDate=2026-08-13')
+      .buffer(true)
+      .parse((stream, callback) => { const chunks = []; stream.on('data', (chunk) => chunks.push(chunk)); stream.on('end', () => callback(null, Buffer.concat(chunks))); });
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-disposition']).toContain('ta-yield-datatable-2026-08-01-to-2026-08-13.xlsx');
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(response.body);
+    const worksheet = workbook.getWorksheet('TA Yield DataTable');
+    expect(worksheet.getCell('A1').value).toBe('TA Yield DataTable');
+    expect(worksheet.getCell('A4').value).toBe('ProdLine');
+    expect(worksheet.getCell('A5').value).toBe(stagedRows[0].line);
+    expect(worksheet.getCell('A4').fill.fgColor.argb).toBe('FF28358C');
+    const goodRateColumn = [...worksheet.getRow(4).values].indexOf('%Good');
+    expect(worksheet.getCell(5, goodRateColumn)).toMatchObject({ value: 0.986048615, numFmt: '0.000000%' });
+  }, 15000);
 
   it('uses the MTD-only quantity path for Completion 901', async () => {
     let receivedOptions;
@@ -332,5 +477,25 @@ describe('dashboard API', () => {
     
     const afterDelete = await request(app).get('/api/comments?product=NEO&pn=&process=&startDate=2026-07-01&endDate=2026-07-01');
     expect(afterDelete.body.data).toEqual([]);
+  });
+
+  it('creates, updates, lists, and closes TA Yield action records', async () => {
+    const actions = [];
+    const taYieldActionRepository = {
+      list: () => Promise.resolve(actions.filter((action) => !action.deletedAt)),
+      create: (action) => { const stored = { ...action, id: actions.length + 1, createdAt: '2026-08-14T00:00:00.000Z', updatedAt: null }; actions.push(stored); return Promise.resolve(stored); },
+      update: (id, action) => { const existing = actions.find((item) => item.id === id); Object.assign(existing, action, { updatedAt: '2026-08-15T00:00:00.000Z' }); return Promise.resolve(existing); },
+      remove: (id) => { actions.find((action) => action.id === id).deletedAt = '2026-08-15T00:00:00.000Z'; return Promise.resolve(true); }
+    };
+    const app = createApp({ environment: configuredEnvironment, taYieldActionRepository });
+    const payload = { actionDate: '2026-08-14', serie: 'FPS A08', problem: 'High ESR variation', analysisAction: 'Check dicing and P&P conditions.', pic: 'Ms. Sasitorn', progress: 'Investigation started.', dueDate: '2026-08-18', status: 'IN_PROGRESS' };
+    const created = await request(app).post('/api/ta-yield-actions').send(payload);
+    expect(created.status).toBe(200);
+    expect(created.body.data).toMatchObject({ id: 1, serie: 'FPS A08', status: 'IN_PROGRESS' });
+    const updated = await request(app).patch('/api/ta-yield-actions/1').send({ ...payload, progress: 'Corrective action scheduled.', status: 'CLOSED' });
+    expect(updated.body.data).toMatchObject({ progress: 'Corrective action scheduled.', status: 'CLOSED' });
+    expect((await request(app).get('/api/ta-yield-actions')).body.data).toHaveLength(1);
+    expect((await request(app).delete('/api/ta-yield-actions/1')).body.data).toEqual({ removed: true });
+    expect((await request(app).get('/api/ta-yield-actions')).body.data).toEqual([]);
   });
 });

@@ -4,6 +4,7 @@ export class TtlCache {
     this.now = now;
     this.entries = new Map();
     this.inFlight = new Map();
+    this.invalidatedRequests = new WeakSet();
   }
 
   async getOrSet(key, ttlMs, loader, refreshBeforeMs = 0) {
@@ -14,15 +15,31 @@ export class TtlCache {
     this.inFlight.set(key, request);
     try {
       const value = await request;
-      this.entries.set(key, { value, expiresAt: this.now() + ttlMs });
-      this.trim();
+      if (!this.invalidatedRequests.has(request)) {
+        this.entries.set(key, { value, expiresAt: this.now() + ttlMs });
+        this.trim();
+      }
       return { value, status: 'MISS' };
     } finally {
+      if (this.inFlight.get(key) === request) this.inFlight.delete(key);
+    }
+  }
+
+  invalidate(prefix) {
+    for (const key of new Set([...this.entries.keys(), ...this.inFlight.keys()])) {
+      if (!key.startsWith(prefix)) continue;
+      this.entries.delete(key);
+      const request = this.inFlight.get(key);
+      if (request) this.invalidatedRequests.add(request);
       this.inFlight.delete(key);
     }
   }
 
-  clear() { this.entries.clear(); }
+  clear() {
+    this.entries.clear();
+    for (const request of this.inFlight.values()) this.invalidatedRequests.add(request);
+    this.inFlight.clear();
+  }
 
   trim() {
     const now = this.now();

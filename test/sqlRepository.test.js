@@ -23,6 +23,17 @@ function mockPool(recordsets) {
 }
 
 describe('SqlRepository', () => {
+  it('reconnects after an authentication error without forcing a new interactive token', async () => {
+    const repository = new SqlRepository(config);
+    const calls = [];
+    repository.resetConnection = async () => { calls.push('reset'); };
+    repository.getPool = async (forceRefresh) => { calls.push(forceRefresh); return mockPool([]); };
+
+    await repository.authenticate();
+
+    expect(calls).toEqual(['reset', undefined]);
+  });
+
   it('parameterizes quantity filters while allowlisting configured identifiers', async () => {
     const repository = new SqlRepository(config);
     const pool = mockPool([[{ bucketDate: '2026-01-01', itemName: 'PN-1', quantityMoved: '5.5' }]]);

@@ -22,6 +22,7 @@ function createRepository() {
   return new TaYieldRepository({
     server: 'server', database: 'database', auth: 'ActiveDirectoryInteractive',
     view: 'PowerBIThailand.ClosedBatch_v', defectView: 'PowerBIThailand.CompleteAction_v',
+    releasedJobView: 'KMESV3.ReleasedJob',
     productValue: 'NEO', linePrefix: 'Ta NEO Capacitor%',
     finalGoodDispositionCode: 'To rteTaping_ALL'
   });
@@ -34,9 +35,32 @@ describe('TaYieldRepository action-date population', () => {
     expect(pool.calls[0].statement).toContain('[final].[CatMajor]');
     expect(pool.calls[0].statement).toContain('[action].[From_OperationName]');
     expect(pool.calls[0].statement).toContain('DATEADD(month, -3, @startDate)');
-    expect(pool.calls[0].statement).toContain("N'SH pulse defective'");
-    expect(pool.calls[0].statement).toContain('[parameters].[ParameterValue]');
     expect(pool.calls[0].statement).toContain('OPENJSON(@taDescriptions)');
+  });
+
+  it('excludes E-class lots from workbook reconciliation using ReleasedJob.JobClass, while keeping N and unclassified lots eligible', async () => {
+    const repository = createRepository();
+    const pool = mockPool([]);
+    repository.pool = pool;
+
+    await repository.getWorkbookReconciliationRows({ startDate: '2026-08-18', endDate: '2026-08-18' });
+
+    const statement = pool.calls[0].statement;
+    expect(statement).toContain('NOT EXISTS (');
+    expect(statement).toContain('FROM [KMESV3].[ReleasedJob] AS [releasedJob]');
+    expect(statement).toContain('CAST([releasedJob].[LotID] AS nvarchar(4000)) = CAST([final].[JobName] AS nvarchar(4000))');
+    expect(statement).toContain("UPPER(LTRIM(RTRIM(CAST([releasedJob].[JobClass] AS nvarchar(100))))) = N'E'");
+  });
+
+  it('uses the workbook ACC/SH parameter rule for SH pulse defective', async () => {
+    const repository = createRepository(); const pool = mockPool([{ dispositionDescription: 'SH pulse defective', quantity: '99' }]); repository.pool = pool;
+
+    const rows = await repository.getWorkbookReconciliationRows({ startDate: '2026-08-01', endDate: '2026-08-17' });
+
+    expect(pool.calls[0].statement).toContain("LOWER(LTRIM(RTRIM(CAST([parameters].[ParameterName] AS nvarchar(4000))))) = N'acc_volt'");
+    expect(pool.calls[0].statement).toContain('TRY_CONVERT(decimal(19, 4), LTRIM(RTRIM(CAST([parameters].[ParameterValue] AS nvarchar(4000))))) > 0');
+    expect(pool.calls[0].statement).toContain("THEN N'ACC'");
+    expect(rows).toEqual([{ dispositionDescription: 'SH pulse defective', quantity: 99 }]);
   });
   it('uses the SH fallback when the optional TA parameter view is unavailable', async () => {
     const repository = createRepository();
@@ -91,6 +115,24 @@ describe('TaYieldRepository action-date population', () => {
     expect(pool.calls[1].statement).toContain('OPENJSON(@taLots)');
     expect(pool.calls[1].inputs).toContainEqual(['taLots', JSON.stringify(['6G15N08661'])]);
     expect(pool.calls[1].statement).not.toMatch(/\[closed\]\.\[CloseDate\]\s*(?:>=|<)/);
+  });
+
+  it('uses ReleasedJob.JobClass matched by LotID for the N/E TA Yield classification', async () => {
+    const repository = createRepository();
+    const pool = mockPool(
+      [{ lotNo: '6H31N09428', occuredOn: '2026-08-03T04:00:00.000Z', finalGoodQ: '90', dispositionCode: 'To rteTaping_ALL', quantity: '90', dispositionType: 'GOOD' }],
+      [{ lotNo: '6H31N09428', line: 'FPS', closeDate: '2026-07-30', jobType: 'N', inputQ: '100' }]
+    );
+    repository.pool = pool;
+
+    await expect(repository.getYieldRows({ startDate: '2026-08-03', endDate: '2026-08-03' })).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ lotNo: '6H31N09428', jobType: 'N' })
+    ]));
+
+    expect(pool.calls[1].statement).toContain('FROM [PowerBIThailand].[ClosedBatch_v] AS [closed]');
+    expect(pool.calls[1].statement).toMatch(/LEFT JOIN \[KMESV3\]\.\[ReleasedJob\] AS \[\w+\]\s+ON CAST\(\[\w+\]\.\[LotID\] AS nvarchar\(4000\)\) = CAST\(\[closed\]\.\[JobName\] AS nvarchar\(4000\)\)/);
+    expect(pool.calls[1].statement).toContain('MAX(NULLIF(LTRIM(RTRIM(CAST([releasedJob].[JobClass] AS nvarchar(100)))), N\'\'))');
+    expect(pool.calls[1].statement).toContain('MAX(CAST([closed].[JobType] AS nvarchar(100)))');
   });
 
   it('returns both Closed Batch input and in-range Complete Action final-good rows for the action-selected lot', async () => {
