@@ -50,7 +50,7 @@ async function waitForHealth(expectedRevision) {
 let dashboard;
 const processManager = {
   async start(revision) {
-    if (dashboard && dashboard.exitCode === null) throw new Error('Dashboard is already running.');
+    if (this.isRunning()) throw new Error('Dashboard is already running.');
     dashboard = spawn(process.execPath, ['src/server.js'], {
       cwd: projectDirectory,
       env: { ...process.env, HOST: process.env.HOST || '0.0.0.0', PORT: process.env.PORT || '5000', DEPLOY_REVISION: revision },
