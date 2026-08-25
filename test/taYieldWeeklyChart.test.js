@@ -2,6 +2,12 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+const taYieldTargetResolver = (targets) => {
+  const app = read('public/app.js');
+  const start = app.indexOf('const taChartGroup');
+  const end = app.indexOf('let currentConfig');
+  return new Function('taYieldTargets', `${app.slice(start, end)}\nreturn taYieldTargetFor;`)(targets);
+};
 
 describe('TA yield tendency', () => {
 
@@ -124,6 +130,14 @@ describe('TA yield tendency', () => {
 
     expect(targetLookup).toContain('taYieldTargets[shortTaSeries(serie)]?.[period]');
     expect(tendencyTargetBlock).toContain('taYieldTargetFor(taYieldTrendSeries, row.month)');
+  });
+
+  it('falls back to a product-group target for raw Standard Production lines', () => {
+    const targetFor = taYieldTargetResolver({
+      'Standard Production': { '2026-08': 94.5 }
+    });
+
+    expect(targetFor('Ta NEO Capacitor PSG series A3 case', '2026-08-24')).toBe(94.5);
   });
 
   it('keeps Total Yield and Total Target visible above ordinary Line-view series', () => {

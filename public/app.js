@@ -47,8 +47,11 @@ function taYieldTargetPeriod(bucket) {
 }
 function taYieldTargetFor(serie, bucket) {
   const period = taYieldTargetPeriod(bucket);
-  const target = Number(taYieldTargets[shortTaSeries(serie)]?.[period]);
-  return Number.isFinite(target) ? target : undefined;
+  const directTarget = Number(taYieldTargets[shortTaSeries(serie)]?.[period]);
+  if (Number.isFinite(directTarget)) return directTarget;
+  const targetSerie = taChartGroup(serie);
+  const groupTarget = Number(taYieldTargets[targetSerie]?.[period]);
+  return Number.isFinite(groupTarget) ? groupTarget : undefined;
 }
 let currentConfig = { chartAxis: 'date' };
 let chartMode = 'stacked';
