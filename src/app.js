@@ -419,9 +419,11 @@ export function createApp({ environment = process.env, repository, scYieldReposi
       const requestTimeout = Math.min(Math.max(Number(timeoutMs) || 600000, 120000), 900000);
       const scope = `${resumeFilters.startDate} to ${resumeFilters.endDate}`;
       updateTaYieldPipeline('RUNNING', `Resume range resolved: ${scope}.`, { startedAt: new Date().toISOString(), completedAt: undefined });
-      if (!repositories.has('ta-yield')) repositories.set('ta-yield', taYieldRepository || new TaYieldRepository(taYieldConfig));
       taWorkbookReconciliationMapping ||= loadTaWorkbookReconciliationMapping('TA/Yield_Data_Aug2026.xlsx');
-      const mapping = await taWorkbookReconciliationMapping; const source = repositories.get('ta-yield');
+      const mapping = await taWorkbookReconciliationMapping;
+      const source = taYieldRepository instanceof TaYieldRepository
+        ? new TaYieldRepository({ ...taYieldRepository.config, requestTimeout })
+        : taYieldRepository || new TaYieldRepository({ ...taYieldConfig, requestTimeout });
       updateTaYieldPipeline('RUNNING', `Loading workbook rows for ${scope}.`);
       const freshRows = await source.getWorkbookReconciliationRows(resumeFilters, { descriptions: workbookDescriptions(mapping), timeoutMs: requestTimeout });
       const freshLots = mapTaWorkbookReconciliationRows(freshRows, mapping);
