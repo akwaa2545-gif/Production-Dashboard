@@ -38,6 +38,17 @@ describe('TA yield tendency', () => {
     expect(app).toContain('/api/ta-yield-targets');
     expect(app).toContain('id="taYieldTargetPeriod"');
     expect(app).toContain('id="taYieldTargetForm"');
+    expect(app).toContain('class="parameter-form ta-yield-target-form"');
+    expect(read('public/styles.css')).toContain('.ta-yield-target-form{grid-template-columns:minmax(220px,2fr) repeat(2,minmax(160px,1fr)) 130px}');
+    expect(app).toContain('data-ta-yield-target-tab="current"');
+    expect(app).toContain('data-ta-yield-target-tab="upcoming"');
+    expect(app).toContain('data-ta-yield-target-tab="history"');
+    expect(app).toContain('id="taYieldTargetSearch"');
+    expect(app).toContain('class="ta-yield-target-group"');
+    expect(read('public/styles.css')).toContain('.ta-yield-target-tabs');
+    expect(app).toContain("const currentPeriod = bangkokToday().slice(0, 7);");
+    expect(app).toContain("taYieldTargetTab === 'history' ? right.period.localeCompare(left.period)");
+    expect(app).toContain("['ArrowLeft', 'ArrowRight', 'Home', 'End']");
     expect(app).toContain('const yieldColumns = buckets.map(');
     expect(app).toContain("' below-target'");
     expect(app).toContain('function taYieldTargetPeriod(');

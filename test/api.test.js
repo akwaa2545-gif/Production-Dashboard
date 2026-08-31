@@ -218,6 +218,40 @@ describe('dashboard API', () => {
     expect(response.body.data).toEqual([expect.objectContaining({ month: '2026-08', line: 'FPS', input: 100, finalGood: 90, defect: 10, yield: 90 })]);
   });
 
+  it('falls back to direct TA Yield data when staging is unreachable, including complete-month summaries', async () => {
+    let directRowsRequested = false;
+    const taYieldRepository = { getWorkbookReconciliationRows: () => { directRowsRequested = true; return Promise.resolve([]); } };
+    const taYieldStagingRepository = { hasWorkbookCoverage: () => Promise.reject(new Error('Staging database is unreachable.')), getMonthlySummary: () => Promise.resolve([{ month: '2026-08', line: 'Stale', input: 1, finalGood: 1, defect: 0 }]), getMonthlyPartNumbers: () => Promise.resolve([]) };
+    const app = createApp({
+      environment: { ...configuredEnvironment, DASHBOARD_TA_YIELD_STAGING_ENABLED: 'true', STAGING_SQL_SERVER: 'staging', STAGING_SQL_DATABASE: 'ProductionMES', STAGING_SQL_USER: 'user', STAGING_SQL_PASSWORD: 'password' },
+      taYieldRepository,
+      taYieldStagingRepository
+    });
+
+    const response = await request(app).get('/api/ta-yield?dataset=ta-yield&startDate=2026-08-01&endDate=2026-08-31&product=NEO');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual([]);
+    expect(directRowsRequested).toBe(true);
+  });
+
+  it('falls back to direct TA Yield data when a staged workbook read fails after coverage succeeds', async () => {
+    let directRowsRequested = false;
+    const taYieldRepository = { getWorkbookReconciliationRows: () => { directRowsRequested = true; return Promise.resolve([]); } };
+    const taYieldStagingRepository = { hasWorkbookCoverage: () => Promise.resolve(true), getWorkbookRows: () => Promise.reject(new Error('Staging database connection dropped.')) };
+    const app = createApp({
+      environment: { ...configuredEnvironment, DASHBOARD_TA_YIELD_STAGING_ENABLED: 'true', STAGING_SQL_SERVER: 'staging', STAGING_SQL_DATABASE: 'ProductionMES', STAGING_SQL_USER: 'user', STAGING_SQL_PASSWORD: 'password' },
+      taYieldRepository,
+      taYieldStagingRepository
+    });
+
+    const response = await request(app).get('/api/ta-yield?dataset=ta-yield&startDate=2026-08-01&endDate=2026-08-29&product=NEO');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual([]);
+    expect(directRowsRequested).toBe(true);
+  });
+
   it('rejects invalid quantity date ranges before accessing SQL', async () => {
     const response = await request(createApp({ environment: configuredEnvironment }))
       .get('/api/quantity?startDate=invalid&endDate=2026-01-01');

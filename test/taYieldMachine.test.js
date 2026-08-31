@@ -112,4 +112,47 @@ describe('TA Yield Machine tab', () => {
     expect(app).toContain('taYieldMachineSelectedMachines');
     expect(app).toContain('taYieldMachineRows.filter');
   });
+
+  it('warns when Machine analysis filters change before another analysis is requested', () => {
+    const app = read('public/app.js');
+
+    expect(app).toContain('function taYieldMachineControlSnapshot()');
+    expect(app).toContain('function updateTaYieldMachinePendingNotice()');
+    expect(app).toContain('id="taMachinePendingNotice"');
+    expect(app).toContain('Filters changed. Click Analyze all machines to update the analysis.');
+    expect(app).toContain("requestAnimationFrame(updateTaYieldMachinePendingNotice)");
+    expect(app).toContain('markTaYieldMachineControlsApplied()');
+  });
+
+  it('tracks Machine filter changes against the last analyzed selection', () => {
+    const app = read('public/app.js');
+    const stateStart = app.indexOf("let appliedTaYieldMachineControlSnapshot =");
+    const stateEnd = app.indexOf('let selectedScYieldWeeks', stateStart);
+    const helpersStart = app.indexOf('function taYieldMachineControlSnapshot()');
+    const helpersEnd = app.indexOf('function machineChart', helpersStart);
+    const createPendingState = new Function('byId', `${app.slice(stateStart, stateEnd)}\n${app.slice(helpersStart, helpersEnd)}\nreturn { markTaYieldMachineControlsApplied, updateTaYieldMachinePendingNotice };`);
+    const activeClasses = new Set();
+    const elements = {
+      taMachineApply: { classList: { toggle: (name, active) => active ? activeClasses.add(name) : activeClasses.delete(name) } },
+      taMachinePendingNotice: { hidden: true },
+      taMachineStartDate: { value: '2026-08-01' },
+      taMachineEndDate: { value: '2026-08-28' },
+      taMachineSerie: { value: '' },
+      taMachineProcess: { value: '2.Welding' },
+      taMachinePartNumber: { value: '' },
+      taMachineDefect: { value: 'code|0901_Re_Anod' },
+    };
+    const pendingState = createPendingState((id) => elements[id]);
+
+    pendingState.markTaYieldMachineControlsApplied();
+    elements.taMachineSerie.value = 'Series A';
+    pendingState.updateTaYieldMachinePendingNotice();
+    expect(elements.taMachinePendingNotice.hidden).toBe(false);
+    expect(activeClasses.has('has-pending-changes')).toBe(true);
+
+    pendingState.markTaYieldMachineControlsApplied();
+    expect(elements.taMachinePendingNotice.hidden).toBe(true);
+    expect(activeClasses.has('has-pending-changes')).toBe(false);
+    expect(app.indexOf('markTaYieldMachineControlsApplied();', app.indexOf('const data = await request(`/api/ta-yield-machine?${params}`)'))).toBeGreaterThan(0);
+  });
 });

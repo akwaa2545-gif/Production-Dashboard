@@ -3,6 +3,7 @@ import { SqlRepository } from './sqlRepository.js';
 
 const quoted = (identifier) => identifier.split('.').map((part) => `[${part}]`).join('.');
 const thaiUtcBoundary = (dateExpression) => `CAST((CAST(${dateExpression} AS datetime2) AT TIME ZONE 'SE Asia Standard Time' AT TIME ZONE 'UTC') AS datetime2)`;
+const taYieldRequestTimeout = (config) => Math.max(Number(config.requestTimeout) || 120000, 30000);
 const optionalParameterViewUnavailable = (error, parameterView) => {
   const message = String(error?.message || '');
   const viewName = parameterView.split('.').at(-1);
@@ -35,6 +36,7 @@ export class TaYieldRepository extends SqlRepository {
     const pool = await this.getPool();
     const request = pool.request();
     const config = this.config;
+    request.timeout = taYieldRequestTimeout(config);
     request.input('taProduct', sql.NVarChar(100), config.productValue);
     request.input('taFinalGoodDisposition', sql.NVarChar(4000), config.finalGoodDispositionCode);
     request.input('startDate', sql.Date, filters.startDate);
@@ -199,6 +201,7 @@ export class TaYieldRepository extends SqlRepository {
   async getMachineEvents(filters, { lotNumbers, processPattern, machine } = {}) {
     if (!Array.isArray(lotNumbers) || !lotNumbers.length) return [];
     const request = (await this.getPool()).request();
+    request.timeout = taYieldRequestTimeout(this.config);
     request.input('startDate', sql.Date, filters.startDate);
     request.input('endDate', sql.Date, filters.endDate);
     request.input('processPattern', sql.NVarChar(4000), processPattern);

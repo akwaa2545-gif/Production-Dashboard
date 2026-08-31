@@ -377,15 +377,21 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     try {
     if (!repositories.has('ta-yield')) repositories.set('ta-yield', taYieldRepository || new TaYieldRepository(taYieldConfig));
     const filters = requestedFilters;
+    const scope = `${filters.startDate} to ${filters.endDate}`;
+    console.log(`TA Yield staging: loading workbook rows for ${scope}.`);
     taWorkbookReconciliationMapping ||= loadTaWorkbookReconciliationMapping('TA/Yield_Data_Aug2026.xlsx');
     const source = repositories.get('ta-yield');
     const mapping = await taWorkbookReconciliationMapping;
     const workbookRows = await source.getWorkbookReconciliationRows(filters, { descriptions: workbookDescriptions(mapping) });
     const workbookLots = mapTaWorkbookReconciliationRows(workbookRows, mapping);
+    console.log(`TA Yield staging: writing ${workbookLots.length} workbook rows for ${scope}.`);
     await taYieldStaging.replaceWorkbookRows(workbookLots, filters);
     const partNumbers = [...new Set(workbookLots.map((row) => row.itemName).filter(Boolean))]; const monthlySummary = [{ partNumber: 'All', rows: workbookLots }, ...partNumbers.map((partNumber) => ({ partNumber, rows: workbookLots.filter((row) => row.itemName === partNumber) }))].flatMap((scope) => mapTaWorkbookYieldRows(scope.rows, mapping).flatMap((row) => row.groups.map((group) => ({ month: row.month, line: row.line, partNumber: scope.partNumber, group: group.group, input: row.input, finalGood: row.finalGood, defect: group.quantity }))));
+    console.log(`TA Yield staging: writing ${monthlySummary.length} monthly summary rows for ${scope}.`);
     await taYieldStaging.replaceMonthlySummary(monthlySummary, filters);
+    console.log(`TA Yield staging: loading machine events for ${scope}.`);
     const machineEvents = (await Promise.all(['%Anodization%', '%Welding%', '%EI%'].map((processPattern) => source.getMachineEvents(filters, { lotNumbers: workbookLots.map((lot) => lot.lotNo), processPattern })))).flat();
+    console.log(`TA Yield staging: writing ${machineEvents.length} machine events for ${scope}.`);
     await taYieldStaging.replaceMachineRows(machineEvents, workbookLots, filters);
     responseCache.clear();
     return { status: 'REFRESHED', workbookRows: workbookRows.length, workbookLots: workbookLots.length, ...filters };
@@ -548,8 +554,10 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const loadRows = async () => {
       if (!taYieldStaging) return context.database.getWorkbookReconciliationRows(filters, { descriptions: workbookDescriptions(await taWorkbookReconciliationMapping) });
       const ready = typeof taYieldStaging.hasWorkbookCoverage !== 'function' || await taYieldStaging.hasWorkbookCoverage(filters).catch(() => false);
-      if (!ready) throw new Error('TA Yield staging is still syncing this date range. Check Staging status and try again when the range is Active.');
-      return taYieldStaging.getWorkbookRows(filters);
+      if (ready) {
+        try { return await taYieldStaging.getWorkbookRows(filters); } catch { /* Fall through to direct TA SQL. */ }
+      }
+      return context.database.getWorkbookReconciliationRows(filters, { descriptions: workbookDescriptions(await taWorkbookReconciliationMapping) });
     };
     const cached = await responseCache.getOrSet(`ta-yield:workbook-dashboard:${JSON.stringify(filters)}`, 300000, loadRows);
     const selectedSeries = filters.serie ? (Array.isArray(filters.serie) ? filters.serie : [filters.serie]) : [];
@@ -580,7 +588,8 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   const taYieldDashboardCacheKey = (filters, period) => `ta-yield:dashboard:${period}:${JSON.stringify(filters)}`;
   async function sharedTaYieldDashboardResult(context, filters, period = 'month') {
     const cached = await responseCache.getOrSet(taYieldDashboardCacheKey(filters, period), 300000, async () => {
-      if (taYieldStaging && period === 'month' && typeof taYieldStaging.getMonthlySummary === 'function' && isCompleteCalendarMonthRange(filters) && !filters.pn && !filters.serie) {
+      const stagingReady = taYieldStaging && (typeof taYieldStaging.hasWorkbookCoverage !== 'function' || await taYieldStaging.hasWorkbookCoverage(filters).catch(() => false));
+      if (stagingReady && period === 'month' && typeof taYieldStaging.getMonthlySummary === 'function' && isCompleteCalendarMonthRange(filters) && !filters.pn && !filters.serie) {
         const [summary, partNumbers] = await Promise.all([taYieldStaging.getMonthlySummary(filters).catch(() => []), taYieldStaging.getMonthlyPartNumbers(filters).catch(() => [])]);
         if (summary.length) { const grouped = new Map(); summary.forEach((row) => { const key = `${row.month}|${row.line}`; const current = grouped.get(key) || { month: row.month, line: row.line, input: row.input, finalGood: row.finalGood, groups: [], partNumbers }; current.groups.push({ group: row.group, quantity: row.defect }); grouped.set(key, current); }); return [...grouped.values()].map((row) => ({ ...row, defect: row.groups.reduce((sum, group) => sum + group.quantity, 0), yield: row.input ? row.finalGood / row.input * 100 : undefined })); }
       }
