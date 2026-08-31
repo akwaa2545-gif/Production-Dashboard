@@ -32,7 +32,30 @@ export class TaYieldStagingRepository {
   replace(rows, filters) { return this.replaceSnapshot(this.config.table, rows, filters); }
   getYieldRows(filters) { return this.getSnapshot(this.config.table, filters, 'TA Yield'); }
   replaceWorkbookRows(rows, filters) { return this.replaceSnapshot(this.config.workbookTable, rows, filters); }
+  async getLatestWorkbookSnapshotForMonth(filters) {
+    const request = (await this.getPool()).request();
+    request.input('monthStart', sql.Date, `${filters.startDate.slice(0, 7)}-01`);
+    const result = await request.query(`SELECT TOP (1) ScopeStart, ScopeEnd, RefreshedAt, Payload FROM ${q(this.config.workbookTable)} WHERE ScopeStart=@monthStart ORDER BY ScopeEnd DESC, RefreshedAt DESC`);
+    if (!result.recordset[0]) return undefined;
+    const row = result.recordset[0];
+    return { scopeStart: utcDate(row.ScopeStart), scopeEnd: utcDate(row.ScopeEnd), refreshedAt: row.RefreshedAt, rows: JSON.parse(row.Payload) };
+  }
   replaceMachineEvents(rows, filters) { return this.replaceSnapshot(this.config.machineTable, rows, filters); }
+  async replaceMachineRowsForLots(events, lots, filters) {
+    if (!lots.length) return;
+    const lotNumbers = [...new Set(lots.map((lot) => lot.lotNo).filter(Boolean))];
+    if (!lotNumbers.length) return;
+    const pool = await this.getPool(); const transaction = new sql.Transaction(pool); const scopeMonth = `${filters.startDate.slice(0, 7)}-01`;
+    await transaction.begin();
+    try {
+      const remove = new sql.Request(transaction); remove.input('scopeMonth', sql.Date, scopeMonth); remove.input('lots', sql.NVarChar(sql.MAX), JSON.stringify(lotNumbers));
+      await remove.query(`DELETE FROM ${q(this.config.machineRowTable)} WHERE ScopeMonth=@scopeMonth AND LotNo IN (SELECT CAST([value] AS nvarchar(4000)) FROM OPENJSON(@lots)); DELETE FROM ${q(this.config.machineLotTable)} WHERE ScopeMonth=@scopeMonth AND LotNo IN (SELECT CAST([value] AS nvarchar(4000)) FROM OPENJSON(@lots));`);
+      const distinctEvents = new Map(events.map((event) => { const eventDate = thailandDate(event.occuredOn); const machineName = String(event.machineName || '').trim(); return [`${eventDate}|${event.lotNo}|${event.operationName || ''}|${machineName}`, { ...event, eventDate, machineName }]; }));
+      for (const event of distinctEvents.values()) { const request = new sql.Request(transaction); request.input('scopeMonth', sql.Date, scopeMonth); request.input('eventDate', sql.Date, event.eventDate); request.input('lotNo', sql.NVarChar(4000), event.lotNo); request.input('operationName', sql.NVarChar(4000), event.operationName || ''); request.input('machineName', sql.NVarChar(4000), event.machineName); await request.query(`INSERT INTO ${q(this.config.machineRowTable)} (ScopeMonth,EventDate,LotNo,OperationName,MachineName) VALUES (@scopeMonth,@eventDate,@lotNo,@operationName,@machineName)`); }
+      for (const lot of lots) for (const [category, quantity] of Object.entries(lot.categories || {})) { if (!['Input', 'Input-', 'Good'].includes(category) && Number(quantity)) { const request = new sql.Request(transaction); request.input('scopeMonth', sql.Date, scopeMonth); request.input('lotNo', sql.NVarChar(4000), lot.lotNo); request.input('serie', sql.NVarChar(4000), lot.line || ''); request.input('partNumber', sql.NVarChar(4000), lot.itemName || ''); request.input('tapingDate', sql.Date, thailandDate(lot.tapingDate)); request.input('yieldCategory', sql.NVarChar(200), category); request.input('defectMode', sql.NVarChar(4000), category); request.input('quantity', sql.Decimal(18, 4), Number(quantity)); await request.query(`INSERT INTO ${q(this.config.machineLotTable)} (ScopeMonth,LotNo,Serie,PartNumber,TapingDate,YieldCategory,DefectMode,Quantity) VALUES (@scopeMonth,@lotNo,@serie,@partNumber,@tapingDate,@yieldCategory,@defectMode,@quantity)`); } }
+      await transaction.commit();
+    } catch (error) { await transaction.rollback(); throw error; }
+  }
   async replaceMachineRows(events, lots, filters) {
     const pool = await this.getPool(); const transaction = new sql.Transaction(pool); const scopeMonth = `${filters.startDate.slice(0, 7)}-01`;
     await transaction.begin();

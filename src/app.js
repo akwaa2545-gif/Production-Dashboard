@@ -404,6 +404,41 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     return { status: 'REFRESHED', workbookRows: workbookRows.length, workbookLots: workbookLots.length, ...filters };
     } catch (error) { console.error('TA Yield staging refresh failed:', error.message); updateTaYieldPipeline('FAILED', 'Refresh failed. Check the server log for details.', { completedAt: new Date().toISOString() }); throw error; } finally { taYieldStagingRefreshInProgress = false; }
   };
+  app.refreshTaYieldStagingResume = async ({ timeoutMs } = {}) => {
+    if (!taYieldStaging) return { status: 'SKIPPED' };
+    if (taYieldStagingRefreshInProgress) return { status: 'SKIPPED' };
+    taYieldStagingRefreshInProgress = true;
+    try {
+      const fullFilters = currentThailandMonthFilters();
+      const snapshot = await taYieldStaging.getLatestWorkbookSnapshotForMonth(fullFilters);
+      if (!snapshot || snapshot.scopeStart !== fullFilters.startDate) throw new Error('TA Yield resume requires a current-month workbook snapshot that starts on the first day of the month.');
+      if (snapshot.scopeEnd >= fullFilters.endDate) return { status: 'ALREADY_CURRENT', ...fullFilters };
+      const cursor = new Date(`${snapshot.scopeEnd}T00:00:00Z`); cursor.setUTCDate(cursor.getUTCDate() + 1);
+      const resumeFilters = { ...fullFilters, startDate: cursor.toISOString().slice(0, 10) };
+      if (resumeFilters.startDate > fullFilters.endDate) return { status: 'ALREADY_CURRENT', ...fullFilters };
+      const requestTimeout = Math.min(Math.max(Number(timeoutMs) || 600000, 120000), 900000);
+      const scope = `${resumeFilters.startDate} to ${resumeFilters.endDate}`;
+      updateTaYieldPipeline('RUNNING', `Resume range resolved: ${scope}.`, { startedAt: new Date().toISOString(), completedAt: undefined });
+      if (!repositories.has('ta-yield')) repositories.set('ta-yield', taYieldRepository || new TaYieldRepository(taYieldConfig));
+      taWorkbookReconciliationMapping ||= loadTaWorkbookReconciliationMapping('TA/Yield_Data_Aug2026.xlsx');
+      const mapping = await taWorkbookReconciliationMapping; const source = repositories.get('ta-yield');
+      updateTaYieldPipeline('RUNNING', `Loading workbook rows for ${scope}.`);
+      const freshRows = await source.getWorkbookReconciliationRows(resumeFilters, { descriptions: workbookDescriptions(mapping), timeoutMs: requestTimeout });
+      const freshLots = mapTaWorkbookReconciliationRows(freshRows, mapping);
+      const resumeLotKey = (lot) => `${lot.line}|${lot.lotNo}|${lot.itemName}|${new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(lot.tapingDate))}`;
+      const mergedLots = [...new Map([...snapshot.rows, ...freshLots].map((lot) => [resumeLotKey(lot), lot])).values()];
+      const partNumbers = [...new Set(mergedLots.map((row) => row.itemName).filter(Boolean))]; const monthlySummary = [{ partNumber: 'All', rows: mergedLots }, ...partNumbers.map((partNumber) => ({ partNumber, rows: mergedLots.filter((row) => row.itemName === partNumber) }))].flatMap((scope) => mapTaWorkbookYieldRows(scope.rows, mapping).flatMap((row) => row.groups.map((group) => ({ month: row.month, line: row.line, partNumber: scope.partNumber, group: group.group, input: row.input, finalGood: row.finalGood, defect: group.quantity }))));
+      updateTaYieldPipeline('RUNNING', `Writing ${monthlySummary.length} merged monthly summary rows.`);
+      await taYieldStaging.replaceMonthlySummary(monthlySummary, fullFilters);
+      updateTaYieldPipeline('RUNNING', `Loading machine events for ${freshLots.length} resumed lots.`);
+      const machineEvents = (await Promise.all(['%Anodization%', '%Welding%', '%EI%'].map((processPattern) => source.getMachineEvents(fullFilters, { lotNumbers: freshLots.map((lot) => lot.lotNo), processPattern, timeoutMs: requestTimeout })))).flat();
+      await taYieldStaging.replaceMachineRowsForLots(machineEvents, freshLots, fullFilters);
+      updateTaYieldPipeline('RUNNING', `Publishing ${mergedLots.length} merged workbook rows for ${fullFilters.startDate} to ${fullFilters.endDate}.`);
+      await taYieldStaging.replaceWorkbookRows(mergedLots, fullFilters);
+      responseCache.clear(); updateTaYieldPipeline('SUCCEEDED', `Resume completed for ${scope}.`, { completedAt: new Date().toISOString() });
+      return { status: 'RESUMED', workbookRows: freshRows.length, workbookLots: freshLots.length, ...resumeFilters };
+    } catch (error) { console.error('TA Yield staging resume failed:', error.message); updateTaYieldPipeline('FAILED', 'Resume failed. Check the server log for details.', { completedAt: new Date().toISOString() }); throw error; } finally { taYieldStagingRefreshInProgress = false; }
+  };
   app.refreshTaYieldStagingHistory = async () => {
     const today = currentThailandMonthFilters(); const historyStart = environment.DASHBOARD_TA_YIELD_STAGING_HISTORY_START || `${today.startDate.slice(0, 4)}-01-01`;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(historyStart) || historyStart > today.endDate) throw new Error('TA Yield staging history start date is invalid.');

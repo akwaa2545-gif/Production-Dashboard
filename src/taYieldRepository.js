@@ -3,7 +3,7 @@ import { SqlRepository } from './sqlRepository.js';
 
 const quoted = (identifier) => identifier.split('.').map((part) => `[${part}]`).join('.');
 const thaiUtcBoundary = (dateExpression) => `CAST((CAST(${dateExpression} AS datetime2) AT TIME ZONE 'SE Asia Standard Time' AT TIME ZONE 'UTC') AS datetime2)`;
-const taYieldRequestTimeout = (config) => { const requested = Number(config.requestTimeout); return Number.isFinite(requested) && requested > 0 ? Math.max(requested, 30000) : 120000; };
+const taYieldRequestTimeout = (config, override) => { const requested = Number(override ?? config.requestTimeout); return Number.isFinite(requested) && requested > 0 ? Math.min(Math.max(requested, 30000), 900000) : 120000; };
 const optionalParameterViewUnavailable = (error, parameterView) => {
   const message = String(error?.message || '');
   const viewName = parameterView.split('.').at(-1);
@@ -36,11 +36,11 @@ export class TaYieldRepository extends SqlRepository {
     return result.recordset.map((row) => ({ mode: row.mode, description: row.description || '' }));
   }
 
-  async getWorkbookReconciliationRows(filters, { descriptions = [] } = {}) {
+  async getWorkbookReconciliationRows(filters, { descriptions = [], timeoutMs } = {}) {
     const pool = await this.getPool();
     const request = pool.request();
     const config = this.config;
-    request.timeout = taYieldRequestTimeout(config);
+    request.timeout = taYieldRequestTimeout(config, timeoutMs);
     request.input('taProduct', sql.NVarChar(100), config.productValue);
     request.input('taFinalGoodDisposition', sql.NVarChar(4000), config.finalGoodDispositionCode);
     request.input('startDate', sql.Date, filters.startDate);
@@ -202,10 +202,10 @@ export class TaYieldRepository extends SqlRepository {
     return { process: [], serie: result.recordset.map((row) => row.value), case: [], pn: [] };
   }
 
-  async getMachineEvents(filters, { lotNumbers, processPattern, machine } = {}) {
+  async getMachineEvents(filters, { lotNumbers, processPattern, machine, timeoutMs } = {}) {
     if (!Array.isArray(lotNumbers) || !lotNumbers.length) return [];
     const request = (await this.getPool()).request();
-    request.timeout = taYieldRequestTimeout(this.config);
+    request.timeout = taYieldRequestTimeout(this.config, timeoutMs);
     request.input('startDate', sql.Date, filters.startDate);
     request.input('endDate', sql.Date, filters.endDate);
     request.input('processPattern', sql.NVarChar(4000), processPattern);

@@ -3,7 +3,9 @@ import { createApp } from './app.js';
 
 const app = createApp();
 
-const refresh = process.argv.includes('--history') ? app.refreshTaYieldStagingHistory() : app.refreshTaYieldStaging();
+const timeoutArgument = process.argv.find((argument) => argument.startsWith('--timeout-ms='));
+const timeoutMs = timeoutArgument ? Number(timeoutArgument.slice('--timeout-ms='.length)) : undefined;
+const refresh = process.argv.includes('--history') ? app.refreshTaYieldStagingHistory() : process.argv.includes('--resume') ? app.refreshTaYieldStagingResume({ timeoutMs }) : app.refreshTaYieldStaging();
 const keepAlive = setInterval(() => {}, 1000);
 
 try {
