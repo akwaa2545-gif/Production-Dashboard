@@ -255,6 +255,12 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   const taYieldStaging = taYieldStagingRepository || (taYieldStagingConfig.enabled && taYieldStagingConfig.ready ? new TaYieldStagingRepository(taYieldStagingConfig) : undefined);
   const taYieldActions = taYieldActionRepository || (taYieldActionConfig.ready ? new TaYieldActionRepository(taYieldActionConfig) : undefined);
   let taYieldQa = { status: 'NOT_RUN' };
+  let taYieldPipeline = { status: 'IDLE', stage: 'Waiting for the next scheduled refresh.', updatedAt: new Date().toISOString(), startedAt: undefined, completedAt: undefined, logs: [] };
+  const updateTaYieldPipeline = (status, stage, extra = {}) => {
+    const entry = { at: new Date().toISOString(), status, stage };
+    taYieldPipeline = { ...taYieldPipeline, ...extra, status, stage, updatedAt: entry.at, logs: [entry, ...taYieldPipeline.logs].slice(0, 20) };
+    console.log(`TA Yield staging: ${stage}`);
+  };
   const responseCache = cache || new TtlCache({ maxEntries: Math.min(Math.max(Number(environment.DASHBOARD_CACHE_MAX_ENTRIES) || 500, 10), 2000) });
   async function configuredScYieldMapping() { scYieldMapping ||= loadScYieldMapping(scYieldConfig.mappingFile); const [base, overrides] = await Promise.all([scYieldMapping, yieldDefectSettings ? yieldDefectSettings.list() : []]); const byMode = new Map(overrides.filter((item) => item.dataset === 'SC').map((item) => [item.mode.toUpperCase(), item])); return new Map([...base.entries()].map(([key, value]) => { const override = byMode.get(value.mode.toUpperCase()); return [key, override ? { ...value, group: override.group, included: override.included } : value]; })); }
   async function configuredTaYieldMapping() { taYieldMapping ||= loadTaYieldMapping(taYieldConfig.mappingFile); const [base, overrides] = await Promise.all([taYieldMapping, yieldDefectSettings ? yieldDefectSettings.list() : []]); const byMode = new Map(overrides.filter((item) => item.dataset === 'TA').map((item) => [item.mode.toUpperCase(), item])); const configure = (entries) => new Map([...entries].map(([code, value]) => { const override = byMode.get(code.toUpperCase()); return [code, override ? { ...value, main: override.group, included: override.included } : value]; })); return { neo: configure(base.neo), gps: configure(base.gps) }; }
@@ -304,7 +310,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const row = (name, table, source, activity, enabled, interval, extra = {}) => ({ name, table, source, enabled, intervalMs: interval, activityAvailable: Boolean(activity && !activity.unavailable), activityError: activity?.error, rowCount: Number(activity?.rowCount || 0), firstDataDate: activity?.firstDataDate, lastDataDate: activity?.lastDataDate, lastRefreshedAt: activity?.lastRefreshedAt, ...extra });
     const wipProcessActivity = wip?.unavailable ? wip : wip ? { rowCount: wip.processRowCount, lastRefreshedAt: wip.processLastRefreshedAt, firstDataDate: wip.firstDataDate, lastDataDate: wip.lastDataDate } : undefined;
     const status = [row('Completion 901', staging901Config.table, 'MES Closed Batch → staging', completion, Boolean(staging901), intervalMs), row('WIP daily quantity', stagingWipConfig.table, 'MES Lot Complete Log → staging', wip, Boolean(stagingWip), wipIntervalMs), row('WIP process chart', stagingWipConfig.processTable, 'MES Lot Complete Log → staging', wipProcessActivity, Boolean(stagingWip), wipIntervalMs), row('SC Yield', scYieldStagingConfig.table, 'MES normalized SC Yield input/defect rows → staging', scYield, Boolean(scYieldStaging), Math.max(Number(environment.DASHBOARD_SC_YIELD_STAGING_INTERVAL_MS) || 300000, 60000), { plan: 'Monthly input and defect snapshots preserve the direct MES row shape before mapping.' }), row('TA Yield DataTable', taYieldStagingConfig.workbookTable, 'MES workbook reconciliation → staging', taWorkbook, Boolean(taYieldStaging), wipIntervalMs, { plan: 'Workbook rows retain the Excel reference conditions before mapping.' }), row('TA Yield Machine events', taYieldStagingConfig.machineRowTable, 'MES normalized machine events → staging', taMachine, Boolean(taYieldStaging), wipIntervalMs, { plan: 'Anodization, Welding, and EI events joined to normalized TA lot defects.' }), row('TA Yield Monthly summary', taYieldStagingConfig.monthlySummaryTable, 'TA workbook yield aggregates → staging', taMonthlySummary, Boolean(taYieldStaging), wipIntervalMs, { plan: 'Monthly yield and defect aggregates for all parts and individual part numbers.' })];
-    response.json({ success: true, data: status, checkedAt: new Date().toISOString() });
+    response.json({ success: true, data: status, checkedAt: new Date().toISOString(), pipelines: { taYield: taYieldPipeline } });
   });
 
   function contextFor(request, response) {
@@ -371,31 +377,32 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   };
   let taYieldStagingRefreshInProgress = false;
   app.refreshTaYieldStaging = async (requestedFilters = currentThailandMonthFilters()) => {
-    if (!taYieldStaging) return { status: 'SKIPPED' };
+    if (!taYieldStaging) { updateTaYieldPipeline('DISABLED', 'TA Yield staging is not configured.'); return { status: 'SKIPPED' }; }
     if (taYieldStagingRefreshInProgress) return { status: 'SKIPPED' };
     taYieldStagingRefreshInProgress = true;
     try {
     if (!repositories.has('ta-yield')) repositories.set('ta-yield', taYieldRepository || new TaYieldRepository(taYieldConfig));
     const filters = requestedFilters;
     const scope = `${filters.startDate} to ${filters.endDate}`;
-    console.log(`TA Yield staging: loading workbook rows for ${scope}.`);
+    updateTaYieldPipeline('RUNNING', `Loading workbook rows for ${scope}.`, { startedAt: new Date().toISOString(), completedAt: undefined });
     taWorkbookReconciliationMapping ||= loadTaWorkbookReconciliationMapping('TA/Yield_Data_Aug2026.xlsx');
     const source = repositories.get('ta-yield');
     const mapping = await taWorkbookReconciliationMapping;
     const workbookRows = await source.getWorkbookReconciliationRows(filters, { descriptions: workbookDescriptions(mapping) });
     const workbookLots = mapTaWorkbookReconciliationRows(workbookRows, mapping);
-    console.log(`TA Yield staging: writing ${workbookLots.length} workbook rows for ${scope}.`);
+    updateTaYieldPipeline('RUNNING', `Writing ${workbookLots.length} workbook rows for ${scope}.`);
     await taYieldStaging.replaceWorkbookRows(workbookLots, filters);
     const partNumbers = [...new Set(workbookLots.map((row) => row.itemName).filter(Boolean))]; const monthlySummary = [{ partNumber: 'All', rows: workbookLots }, ...partNumbers.map((partNumber) => ({ partNumber, rows: workbookLots.filter((row) => row.itemName === partNumber) }))].flatMap((scope) => mapTaWorkbookYieldRows(scope.rows, mapping).flatMap((row) => row.groups.map((group) => ({ month: row.month, line: row.line, partNumber: scope.partNumber, group: group.group, input: row.input, finalGood: row.finalGood, defect: group.quantity }))));
-    console.log(`TA Yield staging: writing ${monthlySummary.length} monthly summary rows for ${scope}.`);
+    updateTaYieldPipeline('RUNNING', `Writing ${monthlySummary.length} monthly summary rows for ${scope}.`);
     await taYieldStaging.replaceMonthlySummary(monthlySummary, filters);
-    console.log(`TA Yield staging: loading machine events for ${scope}.`);
+    updateTaYieldPipeline('RUNNING', `Loading machine events for ${scope}.`);
     const machineEvents = (await Promise.all(['%Anodization%', '%Welding%', '%EI%'].map((processPattern) => source.getMachineEvents(filters, { lotNumbers: workbookLots.map((lot) => lot.lotNo), processPattern })))).flat();
-    console.log(`TA Yield staging: writing ${machineEvents.length} machine events for ${scope}.`);
+    updateTaYieldPipeline('RUNNING', `Writing ${machineEvents.length} machine events for ${scope}.`);
     await taYieldStaging.replaceMachineRows(machineEvents, workbookLots, filters);
     responseCache.clear();
+    updateTaYieldPipeline('SUCCEEDED', `Refresh completed for ${scope}.`, { completedAt: new Date().toISOString() });
     return { status: 'REFRESHED', workbookRows: workbookRows.length, workbookLots: workbookLots.length, ...filters };
-    } finally { taYieldStagingRefreshInProgress = false; }
+    } catch (error) { console.error('TA Yield staging refresh failed:', error.message); updateTaYieldPipeline('FAILED', 'Refresh failed. Check the server log for details.', { completedAt: new Date().toISOString() }); throw error; } finally { taYieldStagingRefreshInProgress = false; }
   };
   app.refreshTaYieldStagingHistory = async () => {
     const today = currentThailandMonthFilters(); const historyStart = environment.DASHBOARD_TA_YIELD_STAGING_HISTORY_START || `${today.startDate.slice(0, 4)}-01-01`;

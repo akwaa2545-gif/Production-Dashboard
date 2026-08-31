@@ -46,6 +46,7 @@ describe('dashboard API', () => {
     expect(response.body.data.map((row) => row.name)).toEqual(expect.arrayContaining(['TA Yield DataTable', 'TA Yield Machine events', 'TA Yield Monthly summary']));
     expect(response.body.data.find((row) => row.name === 'TA Yield Monthly summary')).toMatchObject({ rowCount: 24, table: 'dbo.DashboardTaYieldMonthlySummary' });
     expect(response.body.data.find((row) => row.name === 'TA Yield Machine events')).toMatchObject({ rowCount: 48, table: 'dbo.DashboardTaYieldMachineEventRow' });
+    expect(response.body.pipelines.taYield).toMatchObject({ status: 'IDLE', logs: [] });
   });
 
   it('identifies a missing normalized Machine staging table instead of reporting a database outage', async () => {

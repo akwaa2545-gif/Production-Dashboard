@@ -3,7 +3,7 @@ import { SqlRepository } from './sqlRepository.js';
 
 const quoted = (identifier) => identifier.split('.').map((part) => `[${part}]`).join('.');
 const thaiUtcBoundary = (dateExpression) => `CAST((CAST(${dateExpression} AS datetime2) AT TIME ZONE 'SE Asia Standard Time' AT TIME ZONE 'UTC') AS datetime2)`;
-const taYieldRequestTimeout = (config) => Math.max(Number(config.requestTimeout) || 120000, 30000);
+const taYieldRequestTimeout = (config) => { const requested = Number(config.requestTimeout); return Number.isFinite(requested) && requested > 0 ? Math.max(requested, 30000) : 120000; };
 const optionalParameterViewUnavailable = (error, parameterView) => {
   const message = String(error?.message || '');
   const viewName = parameterView.split('.').at(-1);
@@ -13,6 +13,10 @@ const optionalParameterViewUnavailable = (error, parameterView) => {
 };
 
 export class TaYieldRepository extends SqlRepository {
+  constructor(config) {
+    super({ ...config, requestTimeout: taYieldRequestTimeout(config) });
+  }
+
   async getDefectModes() {
     const pool = await this.getPool();
     const request = pool.request();
