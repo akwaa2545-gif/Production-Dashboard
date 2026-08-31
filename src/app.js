@@ -425,7 +425,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
         ? new TaYieldRepository({ ...taYieldRepository.config, requestTimeout })
         : taYieldRepository || new TaYieldRepository({ ...taYieldConfig, requestTimeout });
       updateTaYieldPipeline('RUNNING', `Loading workbook rows for ${scope}.`);
-      const freshRows = await source.getWorkbookReconciliationRows(resumeFilters, { descriptions: workbookDescriptions(mapping), timeoutMs: requestTimeout });
+      const freshRows = await source.getWorkbookReconciliationRows(resumeFilters, { descriptions: workbookDescriptions(mapping), timeoutMs: requestTimeout, actionLookbackMonths: 0 });
       const freshLots = mapTaWorkbookReconciliationRows(freshRows, mapping);
       const resumeLotKey = (lot) => `${lot.line}|${lot.lotNo}|${lot.itemName}|${new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(lot.tapingDate))}`;
       const mergedLots = [...new Map([...snapshot.rows, ...freshLots].map((lot) => [resumeLotKey(lot), lot])).values()];

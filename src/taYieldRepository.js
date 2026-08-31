@@ -36,7 +36,7 @@ export class TaYieldRepository extends SqlRepository {
     return result.recordset.map((row) => ({ mode: row.mode, description: row.description || '' }));
   }
 
-  async getWorkbookReconciliationRows(filters, { descriptions = [], timeoutMs } = {}) {
+  async getWorkbookReconciliationRows(filters, { descriptions = [], timeoutMs, actionLookbackMonths = 3 } = {}) {
     const pool = await this.getPool();
     const request = pool.request();
     const config = this.config;
@@ -46,6 +46,7 @@ export class TaYieldRepository extends SqlRepository {
     request.input('startDate', sql.Date, filters.startDate);
     request.input('endDate', sql.Date, filters.endDate);
     request.input('taDescriptions', sql.NVarChar(sql.MAX), JSON.stringify([...new Set(descriptions.map((value) => String(value).trim()).filter(Boolean))]));
+    const actionStart = Number(actionLookbackMonths) > 0 ? `DATEADD(month, -${Math.min(Math.floor(Number(actionLookbackMonths)), 12)}, @startDate)` : '@startDate';
     return (await request.query(`
       WITH [finalLots] AS (
         SELECT CAST([final].[JobName] AS nvarchar(4000)) AS [lotNo], MAX([final].[OccuredOn]) AS [tapingDate]
@@ -85,7 +86,7 @@ export class TaYieldRepository extends SqlRepository {
       INNER JOIN [selectedDescriptions] AS [selected] ON LTRIM(RTRIM(CAST([action].[DispositionDescription] AS nvarchar(4000)))) = [selected].[description]
       WHERE [action].[ProdType] = @taProduct
         AND UPPER(LTRIM(RTRIM(CAST([action].[CatMajor] AS nvarchar(100))))) = N'FG'
-        AND [action].[OccuredOn] >= ${thaiUtcBoundary('DATEADD(month, -3, @startDate)')}
+        AND [action].[OccuredOn] >= ${thaiUtcBoundary(actionStart)}
         AND [action].[OccuredOn] < ${thaiUtcBoundary('DATEADD(day, 1, @endDate)')}
         AND LTRIM(RTRIM(CAST([action].[From_OperationName] AS nvarchar(4000)))) <> N'Taping'
     `)).recordset.map((row) => ({ ...row, quantity: Number(row.quantity || 0) }));

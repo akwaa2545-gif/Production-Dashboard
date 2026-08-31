@@ -38,6 +38,15 @@ describe('TaYieldRepository action-date population', () => {
     expect(pool.calls[0].statement).toContain('OPENJSON(@taDescriptions)');
   });
 
+  it('can limit workbook reconciliation actions to the requested resume dates', async () => {
+    const repository = createRepository(); const pool = mockPool([]); repository.pool = pool;
+
+    await repository.getWorkbookReconciliationRows({ startDate: '2026-08-29', endDate: '2026-08-31' }, { actionLookbackMonths: 0 });
+
+    expect(pool.calls[0].statement).toContain("[action].[OccuredOn] >= CAST((CAST(@startDate AS datetime2)");
+    expect(pool.calls[0].statement).not.toContain("DATEADD(month, -3, @startDate)");
+  });
+
   it('excludes E-class lots from workbook reconciliation using ReleasedJob.JobClass, while keeping N and unclassified lots eligible', async () => {
     const repository = createRepository();
     const pool = mockPool([]);

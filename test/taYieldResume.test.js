@@ -20,6 +20,7 @@ describe('TA Yield staging resume', () => {
     expect(resume).toContain('const resumeLotKey');
     expect(resume).toContain('taYieldRepository instanceof TaYieldRepository');
     expect(resume).toContain('new TaYieldRepository({ ...taYieldConfig, requestTimeout })');
+    expect(resume).toContain('actionLookbackMonths: 0');
     expect(resume.indexOf('replaceMachineRowsForLots(machineEvents, freshLots, fullFilters)')).toBeLessThan(resume.indexOf('replaceWorkbookRows(mergedLots, fullFilters)'));
     expect(repository).toContain('getLatestWorkbookSnapshotForMonth(filters)');
     expect(repository).toContain('replaceMachineRowsForLots(events, lots, filters)');
