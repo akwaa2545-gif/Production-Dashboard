@@ -35,4 +35,14 @@ describe('Staging monitoring dashboard', () => {
     expect(server).toContain("updateTaYieldPipeline('FAILED', 'Refresh failed. Check the server log for details.'");
     expect(server).not.toContain("updateTaYieldPipeline('FAILED', error.message");
   });
+
+  it('keeps staging refresh schedules enabled when cache warming is disabled', () => {
+    const server = read('src/server.js');
+    const cacheWarmerGate = server.indexOf('if (warmEnabled) {');
+    const firstStagingRefresh = server.indexOf('const refresh901Staging');
+
+    expect(cacheWarmerGate).toBeGreaterThan(-1);
+    expect(firstStagingRefresh).toBeGreaterThan(cacheWarmerGate);
+    expect(server).not.toContain('if (!warmEnabled) return;');
+  });
 });

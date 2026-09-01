@@ -1,5 +1,11 @@
 const identifierPart = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const qualifiedIdentifier = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$/;
+const defaultSqlRequestTimeout = 120000;
+
+function sqlRequestTimeout(environment) {
+  const timeout = Number(environment.SQL_REQUEST_TIMEOUT);
+  return Number.isFinite(timeout) && timeout > 0 ? timeout : defaultSqlRequestTimeout;
+}
 
 const requiredSettings = ['SQL_SERVER', 'SQL_DATABASE', 'DATE_COLUMN'];
 
@@ -54,7 +60,7 @@ export function readConfig(environment = process.env) {
     serieLookupView: environment.SERIE_LOOKUP_VIEW,
     serieSourceJoinColumn: environment.SERIE_SOURCE_JOIN_COLUMN,
     serieLookupJoinColumn: environment.SERIE_LOOKUP_JOIN_COLUMN,
-    requestTimeout: Number(environment.SQL_REQUEST_TIMEOUT || 0),
+    requestTimeout: sqlRequestTimeout(environment),
     trustServerCertificate: environment.SQL_TRUST_SERVER_CERTIFICATE === 'true'
   };
 
@@ -114,7 +120,7 @@ export function read901StagingConfig(environment = process.env) {
     password: environment.STAGING_SQL_PASSWORD,
     table: environment.STAGING_901_SQL_TABLE || 'dbo.Dashboard901Daily',
     trustServerCertificate: environment.STAGING_SQL_TRUST_SERVER_CERTIFICATE === 'true',
-    requestTimeout: Number(environment.SQL_REQUEST_TIMEOUT || 0)
+    requestTimeout: sqlRequestTimeout(environment)
   };
   return { ...config, ready: Boolean(config.server && config.database && config.user && config.password && isSafeView(config.table)) };
 }
@@ -239,7 +245,7 @@ export function readScYieldConfig(environment = process.env) {
     appUrl: environment.APP_URL || 'http://localhost:3000/',
     tenantId: environment.AZURE_TENANT_ID,
     tokenCachePersistence: environment.AZURE_TOKEN_CACHE_PERSISTENCE === 'true',
-    requestTimeout: Number(environment.SQL_REQUEST_TIMEOUT || 0),
+    requestTimeout: sqlRequestTimeout(environment),
     trustServerCertificate: environment.SQL_TRUST_SERVER_CERTIFICATE === 'true',
     view: environment.SC_YIELD_DB_VIEW || 'PowerBIThailand.CompleteAction_v',
     dateColumn: environment.SC_YIELD_DATE_COLUMN || 'OccuredOn',
@@ -282,7 +288,7 @@ export function readScYieldConfig(environment = process.env) {
 export function readTaYieldConfig(environment = process.env) {
   const configuredView = environment.TA_YIELD_DB_VIEW;
   const view = configuredView === 'PowerBIThailand.Yield_v' ? 'PowerBIThailand.ClosedBatch_v' : configuredView || 'PowerBIThailand.ClosedBatch_v';
-  const config = { server: environment.SQL_SERVER, database: environment.SQL_DATABASE, auth: environment.DB_AUTH || 'ActiveDirectoryInteractive', appUrl: environment.APP_URL || 'http://localhost:3000/', tenantId: environment.AZURE_TENANT_ID, tokenCachePersistence: environment.AZURE_TOKEN_CACHE_PERSISTENCE === 'true', requestTimeout: Number(environment.SQL_REQUEST_TIMEOUT || 0), trustServerCertificate: environment.SQL_TRUST_SERVER_CERTIFICATE === 'true', view, releasedJobView: environment.TA_YIELD_RELEASED_JOB_DB_VIEW || 'KMESV3.ReleasedJob', defectView: environment.TA_YIELD_DEFECT_DB_VIEW || 'PowerBIThailand.CompleteAction_v', lotStartLogView: environment.TA_YIELD_LOT_START_LOG_DB_VIEW || 'PowerBIThailand.LotStartLog', parameterView: environment.TA_YIELD_PARAMETER_VIEW || 'PowerBIThailand.ParametersECP_v', finalGoodDispositionCode: environment.TA_YIELD_FINAL_GOOD_DISPOSITION_CODE || 'To rteTaping_ALL', palletAssemblyDispositionDescription: environment.TA_YIELD_PALLET_ASSEMBLY_DISPOSITION_DESCRIPTION || 'To rtePalletAssembly', productValue: environment.TA_YIELD_PRODUCT_VALUE || 'NEO', linePrefix: environment.TA_YIELD_LINE_PREFIX || 'Ta NEO Capacitor%', mappingFile: environment.TA_YIELD_MAPPING_FILE || 'TA/Direction and guidance for TA Yield report.xlsx', excludedJobType: environment.TA_YIELD_EXCLUDED_JOB_TYPE || 'NON-STANDARD' };
+  const config = { server: environment.SQL_SERVER, database: environment.SQL_DATABASE, auth: environment.DB_AUTH || 'ActiveDirectoryInteractive', appUrl: environment.APP_URL || 'http://localhost:3000/', tenantId: environment.AZURE_TENANT_ID, tokenCachePersistence: environment.AZURE_TOKEN_CACHE_PERSISTENCE === 'true', requestTimeout: sqlRequestTimeout(environment), trustServerCertificate: environment.SQL_TRUST_SERVER_CERTIFICATE === 'true', view, releasedJobView: environment.TA_YIELD_RELEASED_JOB_DB_VIEW || 'KMESV3.ReleasedJob', defectView: environment.TA_YIELD_DEFECT_DB_VIEW || 'PowerBIThailand.CompleteAction_v', lotStartLogView: environment.TA_YIELD_LOT_START_LOG_DB_VIEW || 'PowerBIThailand.LotStartLog', parameterView: environment.TA_YIELD_PARAMETER_VIEW || 'PowerBIThailand.ParametersECP_v', finalGoodDispositionCode: environment.TA_YIELD_FINAL_GOOD_DISPOSITION_CODE || 'To rteTaping_ALL', palletAssemblyDispositionDescription: environment.TA_YIELD_PALLET_ASSEMBLY_DISPOSITION_DESCRIPTION || 'To rtePalletAssembly', productValue: environment.TA_YIELD_PRODUCT_VALUE || 'NEO', linePrefix: environment.TA_YIELD_LINE_PREFIX || 'Ta NEO Capacitor%', mappingFile: environment.TA_YIELD_MAPPING_FILE || 'TA/Direction and guidance for TA Yield report.xlsx', excludedJobType: environment.TA_YIELD_EXCLUDED_JOB_TYPE || 'NON-STANDARD' };
   const invalid = [['TA_YIELD_DB_VIEW', config.view, isSafeView], ['TA_YIELD_RELEASED_JOB_DB_VIEW', config.releasedJobView, isSafeView], ['TA_YIELD_DEFECT_DB_VIEW', config.defectView, isSafeView], ['TA_YIELD_LOT_START_LOG_DB_VIEW', config.lotStartLogView, isSafeView], ['TA_YIELD_PARAMETER_VIEW', config.parameterView, isSafeView]].filter(([, value, check]) => !check(value)).map(([name]) => name);
   const missing = ['SQL_SERVER', 'SQL_DATABASE'].filter((setting) => !environment[setting]);
   return { ...config, invalid, missing, ready: !missing.length && !invalid.length, metadataReady: Boolean(config.server && config.database) && !invalid.length };

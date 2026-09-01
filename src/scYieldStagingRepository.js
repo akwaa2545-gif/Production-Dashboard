@@ -10,7 +10,7 @@ const monthStarts = (filters) => {
 export class ScYieldStagingRepository {
   constructor(config) { this.config = config; this.pool = undefined; this.tableReady = undefined; }
   async getPool() {
-    if (!this.pool) this.pool = await new sql.ConnectionPool({ server: this.config.server, database: this.config.database, user: this.config.user, password: this.config.password, options: { encrypt: true, trustServerCertificate: this.config.trustServerCertificate } }).connect();
+    if (!this.pool) this.pool = await new sql.ConnectionPool({ server: this.config.server, database: this.config.database, user: this.config.user, password: this.config.password, requestTimeout: this.config.requestTimeout, options: { encrypt: true, trustServerCertificate: this.config.trustServerCertificate } }).connect();
     return this.pool;
   }
   ensureTable() {

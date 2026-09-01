@@ -11,10 +11,11 @@ const wipStagingIntervalMs = Math.max(Number(process.env.DASHBOARD_WIP_STAGING_I
 const scYieldStagingIntervalMs = Math.max(Number(process.env.DASHBOARD_SC_YIELD_STAGING_INTERVAL_MS) || 300000, 60000);
 app.listen(port, host, () => {
   console.log(`OneMES dashboard listening on http://${host}:${port}`);
-  if (!warmEnabled) return;
   const warm = () => app.warmCurrentMonthCaches().catch((error) => console.warn(`Dashboard cache warmer skipped: ${error.message}`));
-  setTimeout(warm, 120000).unref();
-  setInterval(warm, warmIntervalMs).unref();
+  if (warmEnabled) {
+    setTimeout(warm, 120000).unref();
+    setInterval(warm, warmIntervalMs).unref();
+  }
   const refresh901Staging = () => app.refresh901Staging().catch((error) => console.warn(`901 staging refresh skipped: ${error.message}`));
   setTimeout(refresh901Staging, 15000).unref();
   setInterval(refresh901Staging, stagingIntervalMs).unref();

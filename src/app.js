@@ -18,6 +18,7 @@ import { TaYieldTargetRepository } from './taYieldTargetRepository.js';
 import { TaYieldActionRepository } from './taYieldActionRepository.js';
 import { YieldDefectSettingRepository } from './yieldDefectSettingRepository.js';
 import { TaYieldStagingRepository } from './taYieldStagingRepository.js';
+import { taYieldRefreshPlan } from './taYieldRefreshPlan.js';
 import { loadScYieldMapping, loadScYieldSourceModes, mapScYieldRows } from './scYieldMapping.js';
 import { loadTaWorkbookReconciliationMapping, loadTaYieldMapping, mapTaWorkbookReconciliationRows, mapTaWorkbookYieldRows, mapTaYieldLotDetails, mapTaYieldMachineEvents, mapTaYieldRows } from './taYieldMapping.js';
 import { TtlCache } from './ttlCache.js';
@@ -376,13 +377,26 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     return { status: 'REFRESHED', months: results.length, inputRows: results.reduce((sum, result) => sum + Number(result.inputRows || 0), 0), defectRows: results.reduce((sum, result) => sum + Number(result.defectRows || 0), 0), startDate: historyStart, endDate: today.endDate };
   };
   let taYieldStagingRefreshInProgress = false;
-  app.refreshTaYieldStaging = async (requestedFilters = currentThailandMonthFilters()) => {
+  app.refreshTaYieldStaging = async (requestedFilters) => {
     if (!taYieldStaging) { updateTaYieldPipeline('DISABLED', 'TA Yield staging is not configured.'); return { status: 'SKIPPED' }; }
     if (taYieldStagingRefreshInProgress) return { status: 'SKIPPED' };
+    const fullFilters = currentThailandMonthFilters();
+    if (!requestedFilters) {
+      let snapshot;
+      try {
+        snapshot = await taYieldStaging.getLatestWorkbookSnapshotForMonth(fullFilters);
+      } catch (error) {
+        const missingTable = error?.number === 208 || /invalid object name/i.test(String(error?.message || ''));
+        if (!missingTable) throw error;
+      }
+      const plan = taYieldRefreshPlan(fullFilters, snapshot);
+      if (plan.mode === 'CURRENT') return plan.result;
+      if (plan.mode === 'RESUME') return app.refreshTaYieldStagingResume();
+    }
     taYieldStagingRefreshInProgress = true;
     try {
     if (!repositories.has('ta-yield')) repositories.set('ta-yield', taYieldRepository || new TaYieldRepository(taYieldConfig));
-    const filters = requestedFilters;
+    const filters = requestedFilters || fullFilters;
     const scope = `${filters.startDate} to ${filters.endDate}`;
     updateTaYieldPipeline('RUNNING', `Loading workbook rows for ${scope}.`, { startedAt: new Date().toISOString(), completedAt: undefined });
     taWorkbookReconciliationMapping ||= loadTaWorkbookReconciliationMapping('TA/Yield_Data_Aug2026.xlsx');
@@ -390,8 +404,6 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const mapping = await taWorkbookReconciliationMapping;
     const workbookRows = await source.getWorkbookReconciliationRows(filters, { descriptions: workbookDescriptions(mapping) });
     const workbookLots = mapTaWorkbookReconciliationRows(workbookRows, mapping);
-    updateTaYieldPipeline('RUNNING', `Writing ${workbookLots.length} workbook rows for ${scope}.`);
-    await taYieldStaging.replaceWorkbookRows(workbookLots, filters);
     const partNumbers = [...new Set(workbookLots.map((row) => row.itemName).filter(Boolean))]; const monthlySummary = [{ partNumber: 'All', rows: workbookLots }, ...partNumbers.map((partNumber) => ({ partNumber, rows: workbookLots.filter((row) => row.itemName === partNumber) }))].flatMap((scope) => mapTaWorkbookYieldRows(scope.rows, mapping).flatMap((row) => row.groups.map((group) => ({ month: row.month, line: row.line, partNumber: scope.partNumber, group: group.group, input: row.input, finalGood: row.finalGood, defect: group.quantity }))));
     updateTaYieldPipeline('RUNNING', `Writing ${monthlySummary.length} monthly summary rows for ${scope}.`);
     await taYieldStaging.replaceMonthlySummary(monthlySummary, filters);
@@ -399,6 +411,8 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const machineEvents = (await Promise.all(['%Anodization%', '%Welding%', '%EI%'].map((processPattern) => source.getMachineEvents(filters, { lotNumbers: workbookLots.map((lot) => lot.lotNo), processPattern })))).flat();
     updateTaYieldPipeline('RUNNING', `Writing ${machineEvents.length} machine events for ${scope}.`);
     await taYieldStaging.replaceMachineRows(machineEvents, workbookLots, filters);
+    updateTaYieldPipeline('RUNNING', `Publishing ${workbookLots.length} workbook rows for ${scope}.`);
+    await taYieldStaging.replaceWorkbookRows(workbookLots, filters);
     responseCache.clear();
     updateTaYieldPipeline('SUCCEEDED', `Refresh completed for ${scope}.`, { completedAt: new Date().toISOString() });
     return { status: 'REFRESHED', workbookRows: workbookRows.length, workbookLots: workbookLots.length, ...filters };
