@@ -41,14 +41,14 @@ export class TaYieldStagingRepository {
     return { scopeStart: utcDate(row.ScopeStart), scopeEnd: utcDate(row.ScopeEnd), refreshedAt: row.RefreshedAt, rows: JSON.parse(row.Payload) };
   }
   replaceMachineEvents(rows, filters) { return this.replaceSnapshot(this.config.machineTable, rows, filters); }
-  async replaceMachineRowsForLots(events, lots, filters) {
-    if (!lots.length) return;
+  async replaceMachineRowsForLots(events, lots, filters, { lotNumbersToRemove = [] } = {}) {
     const lotNumbers = [...new Set(lots.map((lot) => lot.lotNo).filter(Boolean))];
-    if (!lotNumbers.length) return;
+    const removedLotNumbers = [...new Set([...lotNumbersToRemove, ...lotNumbers].filter(Boolean))];
+    if (!removedLotNumbers.length) return;
     const pool = await this.getPool(); const transaction = new sql.Transaction(pool); const scopeMonth = `${filters.startDate.slice(0, 7)}-01`;
     await transaction.begin();
     try {
-      const remove = new sql.Request(transaction); remove.input('scopeMonth', sql.Date, scopeMonth); remove.input('lots', sql.NVarChar(sql.MAX), JSON.stringify(lotNumbers));
+      const remove = new sql.Request(transaction); remove.input('scopeMonth', sql.Date, scopeMonth); remove.input('lots', sql.NVarChar(sql.MAX), JSON.stringify(removedLotNumbers));
       await remove.query(`DELETE FROM ${q(this.config.machineRowTable)} WHERE ScopeMonth=@scopeMonth AND LotNo IN (SELECT CAST([value] AS nvarchar(4000)) FROM OPENJSON(@lots)); DELETE FROM ${q(this.config.machineLotTable)} WHERE ScopeMonth=@scopeMonth AND LotNo IN (SELECT CAST([value] AS nvarchar(4000)) FROM OPENJSON(@lots));`);
       const distinctEvents = new Map(events.map((event) => { const eventDate = thailandDate(event.occuredOn); const machineName = String(event.machineName || '').trim(); return [`${eventDate}|${event.lotNo}|${event.operationName || ''}|${machineName}`, { ...event, eventDate, machineName }]; }));
       for (const event of distinctEvents.values()) { const request = new sql.Request(transaction); request.input('scopeMonth', sql.Date, scopeMonth); request.input('eventDate', sql.Date, event.eventDate); request.input('lotNo', sql.NVarChar(4000), event.lotNo); request.input('operationName', sql.NVarChar(4000), event.operationName || ''); request.input('machineName', sql.NVarChar(4000), event.machineName); await request.query(`INSERT INTO ${q(this.config.machineRowTable)} (ScopeMonth,EventDate,LotNo,OperationName,MachineName) VALUES (@scopeMonth,@eventDate,@lotNo,@operationName,@machineName)`); }

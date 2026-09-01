@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { taYieldRefreshPlan } from '../src/taYieldRefreshPlan.js';
+import { mergeTaWorkbookLots, taYieldRefreshPlan } from '../src/taYieldRefreshPlan.js';
 
 describe('TA Yield scheduled staging refresh', () => {
   it('resumes from the day after the current-month snapshot instead of reloading prior days', async () => {
@@ -9,10 +9,20 @@ describe('TA Yield scheduled staging refresh', () => {
     expect(plan).toEqual({ mode: 'RESUME' });
   });
 
-  it('does not reload a day when the current-month snapshot is already current', async () => {
+  it('refreshes the current day when the current-month snapshot is already current', async () => {
     const plan = taYieldRefreshPlan({ startDate: '2026-09-01', endDate: '2026-09-03' }, { scopeStart: '2026-09-01', scopeEnd: '2026-09-03' });
 
-    expect(plan).toMatchObject({ mode: 'CURRENT', result: { status: 'ALREADY_CURRENT', startDate: '2026-09-01', endDate: '2026-09-03' } });
+    expect(plan).toEqual({ mode: 'REFRESH_CURRENT' });
+  });
+
+  it('replaces current-day lots that MES has removed instead of retaining them', () => {
+    const lots = mergeTaWorkbookLots(
+      [{ lotNo: 'OLD', tapingDate: '2026-09-03T01:00:00.000Z' }, { lotNo: 'PRIOR', tapingDate: '2026-09-02T01:00:00.000Z' }],
+      [{ lotNo: 'NEW', tapingDate: '2026-09-03T02:00:00.000Z' }],
+      { replaceDate: '2026-09-03', dateForLot: (lot) => lot.tapingDate.slice(0, 10), keyForLot: (lot) => lot.lotNo }
+    );
+
+    expect(lots.map((lot) => lot.lotNo)).toEqual(['PRIOR', 'NEW']);
   });
 
   it('publishes the workbook snapshot only after the summary and machine stages succeed', () => {
