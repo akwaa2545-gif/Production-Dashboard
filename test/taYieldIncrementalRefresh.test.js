@@ -42,4 +42,18 @@ describe('TA Yield scheduled staging refresh', () => {
     expect(readRows).toContain('try { return await taYieldStaging.getWorkbookRows(filters); }');
     expect(readRows).not.toContain('hasWorkbookCoverage(filters)');
   });
+
+  it('repairs one historical day without deleting the other days in its monthly snapshot', () => {
+    const app = readFileSync('src/app.js', 'utf8');
+    const repairStart = app.indexOf('app.refreshTaYieldStagingDay =');
+    const repair = app.slice(repairStart, app.indexOf('app.refreshTaYieldStagingHistory ='));
+
+    expect(repairStart).toBeGreaterThan(-1);
+    expect(repair).toContain('mergeTaWorkbookLots(snapshot.rows, freshLots, { replaceDate: repairFilters.startDate');
+    expect(repair).toContain('replaceMonthlySummary(monthlySummary, monthFilters)');
+    expect(repair).toContain('replaceMachineRowsForLots(machineEvents, freshLots, monthFilters, { lotNumbersToRemove: previousDayLots.map((lot) => lot.lotNo) })');
+    expect(repair).toContain('replaceWorkbookRows(mergedLots, publishFilters)');
+    expect(repair).toContain('source.getMachineEvents(monthFilters');
+    expect(repair).not.toContain('actionLookbackMonths: 0');
+  });
 });

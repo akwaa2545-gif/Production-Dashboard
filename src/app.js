@@ -458,6 +458,46 @@ export function createApp({ environment = process.env, repository, scYieldReposi
       return { status: 'RESUMED', workbookRows: freshRows.length, workbookLots: freshLots.length, ...resumeFilters };
     } catch (error) { console.error('TA Yield staging resume failed:', error.message); updateTaYieldPipeline('FAILED', 'Resume failed. Check the server log for details.', { completedAt: new Date().toISOString() }); throw error; } finally { taYieldStagingRefreshInProgress = false; }
   };
+  app.refreshTaYieldStagingDay = async ({ date, timeoutMs } = {}) => {
+    if (!taYieldStaging) return { status: 'SKIPPED' };
+    if (!validDate(date)) throw new Error('TA Yield historical repair requires a valid date.');
+    if (taYieldStagingRefreshInProgress) return { status: 'SKIPPED' };
+    taYieldStagingRefreshInProgress = true;
+    try {
+      const monthStart = `${date.slice(0, 7)}-01`;
+      const monthEnd = new Date(`${monthStart}T00:00:00Z`); monthEnd.setUTCMonth(monthEnd.getUTCMonth() + 1, 0);
+      const monthFilters = { startDate: monthStart, endDate: monthEnd.toISOString().slice(0, 10) };
+      const repairFilters = { startDate: date, endDate: date };
+      const snapshot = await taYieldStaging.getLatestWorkbookSnapshotForMonth(monthFilters);
+      const previousDate = new Date(`${repairFilters.startDate}T00:00:00Z`); previousDate.setUTCDate(previousDate.getUTCDate() - 1);
+      if (!snapshot || snapshot.scopeStart !== monthFilters.startDate || snapshot.scopeEnd < previousDate.toISOString().slice(0, 10)) throw new Error('TA Yield historical repair requires staging coverage through the preceding day.');
+      const publishFilters = { startDate: monthFilters.startDate, endDate: snapshot.scopeEnd > repairFilters.endDate ? snapshot.scopeEnd : repairFilters.endDate };
+      const requestTimeout = Math.min(Math.max(Number(timeoutMs) || 600000, 120000), 900000);
+      const scope = `${repairFilters.startDate} to ${repairFilters.endDate}`;
+      updateTaYieldPipeline('RUNNING', `Repairing workbook rows for ${scope}.`, { startedAt: new Date().toISOString(), completedAt: undefined });
+      taWorkbookReconciliationMapping ||= loadTaWorkbookReconciliationMapping('TA/Yield_Data_Aug2026.xlsx');
+      const mapping = await taWorkbookReconciliationMapping;
+      const source = taYieldRepository instanceof TaYieldRepository
+        ? new TaYieldRepository({ ...taYieldRepository.config, requestTimeout })
+        : taYieldRepository || new TaYieldRepository({ ...taYieldConfig, requestTimeout });
+      const freshRows = await source.getWorkbookReconciliationRows(repairFilters, { descriptions: workbookDescriptions(mapping), timeoutMs: requestTimeout });
+      const freshLots = mapTaWorkbookReconciliationRows(freshRows, mapping);
+      const lotDate = (lot) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(lot.tapingDate));
+      const repairLotKey = (lot) => `${lot.line}|${lot.lotNo}|${lot.itemName}|${lotDate(lot)}`;
+      const previousDayLots = snapshot.rows.filter((lot) => lotDate(lot) === repairFilters.startDate);
+      const mergedLots = mergeTaWorkbookLots(snapshot.rows, freshLots, { replaceDate: repairFilters.startDate, dateForLot: lotDate, keyForLot: repairLotKey });
+      const partNumbers = [...new Set(mergedLots.map((row) => row.itemName).filter(Boolean))]; const monthlySummary = [{ partNumber: 'All', rows: mergedLots }, ...partNumbers.map((partNumber) => ({ partNumber, rows: mergedLots.filter((row) => row.itemName === partNumber) }))].flatMap((scope) => mapTaWorkbookYieldRows(scope.rows, mapping).flatMap((row) => row.groups.map((group) => ({ month: row.month, line: row.line, partNumber: scope.partNumber, group: group.group, input: row.input, finalGood: row.finalGood, defect: group.quantity }))));
+      updateTaYieldPipeline('RUNNING', `Writing ${monthlySummary.length} merged monthly summary rows.`);
+      await taYieldStaging.replaceMonthlySummary(monthlySummary, monthFilters);
+      updateTaYieldPipeline('RUNNING', `Loading machine events for ${freshLots.length} repaired lots.`);
+      const machineEvents = (await Promise.all(['%Anodization%', '%Welding%', '%EI%'].map((processPattern) => source.getMachineEvents(monthFilters, { lotNumbers: freshLots.map((lot) => lot.lotNo), processPattern, timeoutMs: requestTimeout })))).flat();
+      await taYieldStaging.replaceMachineRowsForLots(machineEvents, freshLots, monthFilters, { lotNumbersToRemove: previousDayLots.map((lot) => lot.lotNo) });
+      updateTaYieldPipeline('RUNNING', `Publishing ${mergedLots.length} merged workbook rows for ${publishFilters.startDate} to ${publishFilters.endDate}.`);
+      await taYieldStaging.replaceWorkbookRows(mergedLots, publishFilters);
+      responseCache.clear(); updateTaYieldPipeline('SUCCEEDED', `Historical repair completed for ${scope}.`, { completedAt: new Date().toISOString() });
+      return { status: 'REPAIRED', workbookRows: freshRows.length, workbookLots: freshLots.length, ...repairFilters };
+    } catch (error) { console.error('TA Yield staging historical repair failed:', error.message); updateTaYieldPipeline('FAILED', 'Historical repair failed. Check the server log for details.', { completedAt: new Date().toISOString() }); throw error; } finally { taYieldStagingRefreshInProgress = false; }
+  };
   app.refreshTaYieldStagingHistory = async () => {
     const today = currentThailandMonthFilters(); const historyStart = environment.DASHBOARD_TA_YIELD_STAGING_HISTORY_START || `${today.startDate.slice(0, 4)}-01-01`;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(historyStart) || historyStart > today.endDate) throw new Error('TA Yield staging history start date is invalid.');
