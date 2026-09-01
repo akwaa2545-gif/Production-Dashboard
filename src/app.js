@@ -19,6 +19,7 @@ import { TaYieldActionRepository } from './taYieldActionRepository.js';
 import { YieldDefectSettingRepository } from './yieldDefectSettingRepository.js';
 import { TaYieldStagingRepository } from './taYieldStagingRepository.js';
 import { mergeTaWorkbookLots, taYieldRefreshPlan } from './taYieldRefreshPlan.js';
+import { stagingIncrementalRefreshFilters } from './stagingRefreshPlan.js';
 import { loadScYieldMapping, loadScYieldSourceModes, mapScYieldRows } from './scYieldMapping.js';
 import { loadTaWorkbookReconciliationMapping, loadTaYieldMapping, mapTaWorkbookReconciliationRows, mapTaWorkbookYieldRows, mapTaYieldLotDetails, mapTaYieldMachineEvents, mapTaYieldRows } from './taYieldMapping.js';
 import { TtlCache } from './ttlCache.js';
@@ -337,7 +338,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     stagingRefreshInProgress = true;
     try {
       if (!repositories.has('closed')) repositories.set('closed', repository || new SqlRepository(configs.closed));
-      const filters = currentThailandMonthFilters();
+      const filters = await stagingIncrementalRefreshFilters(staging901, currentThailandMonthFilters());
       const result = await refresh901Staging({ source: repositories.get('closed'), sourceConfig: configs.closed, target: staging901, targetConfig: staging901Config, ...filters });
       responseCache.invalidate('closed:');
       return { status: 'REFRESHED', ...result };
@@ -350,7 +351,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     wipStagingRefreshInProgress = true;
     try {
       if (!repositories.has('lot')) repositories.set('lot', repository || new SqlRepository(configs.lot));
-      const filters = currentThailandMonthFilters();
+      const filters = await stagingIncrementalRefreshFilters(stagingWip, currentThailandMonthFilters());
       const result = await refreshWipStaging({ source: repositories.get('lot'), target: stagingWip, targetConfig: stagingWipConfig, ...filters });
       responseCache.invalidate('lot:');
       return { status: 'REFRESHED', ...result };
