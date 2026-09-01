@@ -614,10 +614,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     taWorkbookReconciliationMapping ||= loadTaWorkbookReconciliationMapping('TA/Yield_Data_Aug2026.xlsx');
     const loadRows = async () => {
       if (!taYieldStaging) return context.database.getWorkbookReconciliationRows(filters, { descriptions: workbookDescriptions(await taWorkbookReconciliationMapping) });
-      const ready = typeof taYieldStaging.hasWorkbookCoverage !== 'function' || await taYieldStaging.hasWorkbookCoverage(filters).catch(() => false);
-      if (ready) {
-        try { return await taYieldStaging.getWorkbookRows(filters); } catch { /* Fall through to direct TA SQL. */ }
-      }
+      try { return await taYieldStaging.getWorkbookRows(filters); } catch { /* Fall through to direct TA SQL only when no staged snapshot is available. */ }
       return context.database.getWorkbookReconciliationRows(filters, { descriptions: workbookDescriptions(await taWorkbookReconciliationMapping) });
     };
     const cached = await responseCache.getOrSet(`ta-yield:workbook-dashboard:${JSON.stringify(filters)}`, 300000, loadRows);

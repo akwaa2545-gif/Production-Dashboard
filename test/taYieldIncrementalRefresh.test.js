@@ -34,4 +34,12 @@ describe('TA Yield scheduled staging refresh', () => {
     expect(refresh.indexOf('replaceMonthlySummary(monthlySummary, filters)')).toBeLessThan(refresh.indexOf('replaceWorkbookRows(workbookLots, filters)'));
     expect(refresh.indexOf('replaceMachineRows(machineEvents, workbookLots, filters)')).toBeLessThan(refresh.indexOf('replaceWorkbookRows(workbookLots, filters)'));
   });
+
+  it('reads an available staged workbook snapshot before falling back to direct MES', () => {
+    const app = readFileSync('src/app.js', 'utf8');
+    const readRows = app.slice(app.indexOf('async function sharedTaWorkbookYieldRows'), app.indexOf('async function sharedTaMachineSnapshotLots'));
+
+    expect(readRows).toContain('try { return await taYieldStaging.getWorkbookRows(filters); }');
+    expect(readRows).not.toContain('hasWorkbookCoverage(filters)');
+  });
 });
