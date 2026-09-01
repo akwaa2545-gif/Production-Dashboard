@@ -8,6 +8,13 @@ const latestSnapshotsByMonth = (records) => [...records.reduce((snapshots, recor
   if (!current || utcDate(record.ScopeEnd) > utcDate(current.ScopeEnd) || (utcDate(record.ScopeEnd) === utcDate(current.ScopeEnd) && new Date(record.RefreshedAt || 0) > new Date(current.RefreshedAt || 0))) snapshots.set(month, record);
   return snapshots;
 }, new Map()).values()];
+export async function deleteMachineLotsForScope(transaction, scopeMonth, lotNumbers, { machineRowTable, machineLotTable }, Request = sql.Request) {
+  for (let offset = 0; offset < lotNumbers.length; offset += 500) {
+    const remove = new Request(transaction); remove.input('scopeMonth', sql.Date, scopeMonth);
+    const parameters = lotNumbers.slice(offset, offset + 500).map((lotNo, index) => { const name = `lot${index}`; remove.input(name, sql.NVarChar(4000), lotNo); return `@${name}`; });
+    await remove.query(`DELETE FROM ${q(machineRowTable)} WHERE ScopeMonth=@scopeMonth AND LotNo IN (${parameters.join(', ')}); DELETE FROM ${q(machineLotTable)} WHERE ScopeMonth=@scopeMonth AND LotNo IN (${parameters.join(', ')});`);
+  }
+}
 export class TaYieldStagingRepository {
   constructor(config) { this.config = config; this.pool = undefined; }
   async getPool() {
@@ -48,8 +55,7 @@ export class TaYieldStagingRepository {
     const pool = await this.getPool(); const transaction = new sql.Transaction(pool); const scopeMonth = `${filters.startDate.slice(0, 7)}-01`;
     await transaction.begin();
     try {
-      const remove = new sql.Request(transaction); remove.input('scopeMonth', sql.Date, scopeMonth); remove.input('lots', sql.NVarChar(sql.MAX), JSON.stringify(removedLotNumbers));
-      await remove.query(`DELETE FROM ${q(this.config.machineRowTable)} WHERE ScopeMonth=@scopeMonth AND LotNo IN (SELECT CAST([value] AS nvarchar(4000)) FROM OPENJSON(@lots)); DELETE FROM ${q(this.config.machineLotTable)} WHERE ScopeMonth=@scopeMonth AND LotNo IN (SELECT CAST([value] AS nvarchar(4000)) FROM OPENJSON(@lots));`);
+      await deleteMachineLotsForScope(transaction, scopeMonth, removedLotNumbers, this.config);
       const distinctEvents = new Map(events.map((event) => { const eventDate = thailandDate(event.occuredOn); const machineName = String(event.machineName || '').trim(); return [`${eventDate}|${event.lotNo}|${event.operationName || ''}|${machineName}`, { ...event, eventDate, machineName }]; }));
       for (const event of distinctEvents.values()) { const request = new sql.Request(transaction); request.input('scopeMonth', sql.Date, scopeMonth); request.input('eventDate', sql.Date, event.eventDate); request.input('lotNo', sql.NVarChar(4000), event.lotNo); request.input('operationName', sql.NVarChar(4000), event.operationName || ''); request.input('machineName', sql.NVarChar(4000), event.machineName); await request.query(`INSERT INTO ${q(this.config.machineRowTable)} (ScopeMonth,EventDate,LotNo,OperationName,MachineName) VALUES (@scopeMonth,@eventDate,@lotNo,@operationName,@machineName)`); }
       for (const lot of lots) for (const [category, quantity] of Object.entries(lot.categories || {})) { if (!['Input', 'Input-', 'Good'].includes(category) && Number(quantity)) { const request = new sql.Request(transaction); request.input('scopeMonth', sql.Date, scopeMonth); request.input('lotNo', sql.NVarChar(4000), lot.lotNo); request.input('serie', sql.NVarChar(4000), lot.line || ''); request.input('partNumber', sql.NVarChar(4000), lot.itemName || ''); request.input('tapingDate', sql.Date, thailandDate(lot.tapingDate)); request.input('yieldCategory', sql.NVarChar(200), category); request.input('defectMode', sql.NVarChar(4000), category); request.input('quantity', sql.Decimal(18, 4), Number(quantity)); await request.query(`INSERT INTO ${q(this.config.machineLotTable)} (ScopeMonth,LotNo,Serie,PartNumber,TapingDate,YieldCategory,DefectMode,Quantity) VALUES (@scopeMonth,@lotNo,@serie,@partNumber,@tapingDate,@yieldCategory,@defectMode,@quantity)`); } }
