@@ -45,4 +45,13 @@ describe('Staging monitoring dashboard', () => {
     expect(firstStagingRefresh).toBeGreaterThan(cacheWarmerGate);
     expect(server).not.toContain('if (!warmEnabled) return;');
   });
+
+  it('keeps current-day TA staging healthy and records a no-op scheduled check', () => {
+    const app = read('public/app.js');
+    const server = read('src/app.js');
+
+    expect(app).toContain('isCurrentTaStagingCoverage');
+    expect(server).toContain("updateTaYieldPipeline('SUCCEEDED', `Staging is current through ${fullFilters.endDate}.`");
+    expect(server).toContain('{ startedAt: checkedAt, completedAt: checkedAt }');
+  });
 });

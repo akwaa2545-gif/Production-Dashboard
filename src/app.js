@@ -390,7 +390,11 @@ export function createApp({ environment = process.env, repository, scYieldReposi
         if (!missingTable) throw error;
       }
       const plan = taYieldRefreshPlan(fullFilters, snapshot);
-      if (plan.mode === 'CURRENT') return plan.result;
+      if (plan.mode === 'CURRENT') {
+        const checkedAt = new Date().toISOString();
+        updateTaYieldPipeline('SUCCEEDED', `Staging is current through ${fullFilters.endDate}.`, { startedAt: checkedAt, completedAt: checkedAt });
+        return plan.result;
+      }
       if (plan.mode === 'RESUME') return app.refreshTaYieldStagingResume();
     }
     taYieldStagingRefreshInProgress = true;
