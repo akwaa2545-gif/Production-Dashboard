@@ -2,10 +2,17 @@ import sql from 'mssql';
 
 const q = (name) => name.split('.').map((part) => `[${part}]`).join('.');
 
+export async function loadWipStagingRows(source, { startDate, endDate }) {
+  const rows = []; const processRows = [];
+  for (const product of ['NEO', 'SC']) {
+    rows.push(...(await source.getQuantity({ startDate, endDate, product })).map((row) => ({ ...row, product })));
+    processRows.push(...(await source.getChartData({ startDate, endDate, product }, true)).map((row) => ({ ...row, product })));
+  }
+  return { rows, processRows };
+}
+
 export async function refreshWipStaging({ source, target, targetConfig, startDate, endDate }) {
-  const [neo, neoProcess, sc, scProcess] = await Promise.all(['NEO', 'SC'].flatMap((product) => [source.getQuantity({ startDate, endDate, product }).then((rows) => rows.map((row) => ({ ...row, product }))), source.getChartData({ startDate, endDate, product }, true).then((rows) => rows.map((row) => ({ ...row, product })))]));
-  const rows = [...neo, ...sc]; const pool = await target.getPool();
-  const processRows = [...neoProcess, ...scProcess];
+  const { rows, processRows } = await loadWipStagingRows(source, { startDate, endDate }); const pool = await target.getPool();
   await pool.request().query(`IF OBJECT_ID(N'${targetConfig.table}', N'U') IS NULL CREATE TABLE ${q(targetConfig.table)} (ReportingDate date NOT NULL, Product nvarchar(30) NOT NULL, Serie nvarchar(4000) NOT NULL, QuantityMoved decimal(18,4) NOT NULL, RefreshedAt datetime2 NOT NULL CONSTRAINT DF_DashboardWipDaily_RefreshedAt DEFAULT SYSUTCDATETIME()); IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_DashboardWipDaily_Filter') CREATE INDEX IX_DashboardWipDaily_Filter ON ${q(targetConfig.table)} (ReportingDate, Product, Serie) INCLUDE (QuantityMoved); IF OBJECT_ID(N'${targetConfig.processTable}', N'U') IS NULL CREATE TABLE ${q(targetConfig.processTable)} (ReportingDate date NOT NULL, Product nvarchar(30) NOT NULL, OperationName nvarchar(4000) NOT NULL, Serie nvarchar(4000) NOT NULL, QuantityMoved decimal(18,4) NOT NULL, RefreshedAt datetime2 NOT NULL CONSTRAINT DF_DashboardWipProcessDaily_RefreshedAt DEFAULT SYSUTCDATETIME()); IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_DashboardWipProcessDaily_Filter') CREATE INDEX IX_DashboardWipProcessDaily_Filter ON ${q(targetConfig.processTable)} (ReportingDate, Product, Serie) INCLUDE (OperationName, QuantityMoved);`);
   const transaction = new sql.Transaction(pool); await transaction.begin();
   try {
