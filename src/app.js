@@ -64,7 +64,7 @@ function validFilterValue(name, value) {
 }
 
 function validTarget(target) {
-  if (!target || !['NEO', 'SC'].includes(target.product) || typeof target.serie !== 'string' || !target.serie.trim() || target.serie.length > 200) return undefined;
+  if (!target || !['NEO', 'SC', 'TA'].includes(target.product) || typeof target.serie !== 'string' || !target.serie.trim() || target.serie.length > 200) return undefined;
   if (typeof target.period !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])$/.test(target.period)) return undefined;
   if (!Number.isFinite(target.monthlyPlan) || target.monthlyPlan < 0 || !Number.isFinite(target.workingDay) || target.workingDay <= 0) return undefined;
   return { product: target.product, serie: target.serie.trim(), period: target.period, monthlyPlan: target.monthlyPlan, workingDay: target.workingDay };
