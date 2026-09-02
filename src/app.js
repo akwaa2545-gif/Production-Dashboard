@@ -18,7 +18,7 @@ import { TaYieldTargetRepository } from './taYieldTargetRepository.js';
 import { TaYieldActionRepository } from './taYieldActionRepository.js';
 import { YieldDefectSettingRepository } from './yieldDefectSettingRepository.js';
 import { TaYieldStagingRepository } from './taYieldStagingRepository.js';
-import { mergeTaWorkbookLots, taYieldRefreshPlan } from './taYieldRefreshPlan.js';
+import { mergeTaWorkbookLots, taWorkbookBusinessKey, taYieldRefreshPlan, thailandTapingDate } from './taYieldRefreshPlan.js';
 import { stagingIncrementalRefreshFilters } from './stagingRefreshPlan.js';
 import { loadScYieldMapping, loadScYieldSourceModes, mapScYieldRows } from './scYieldMapping.js';
 import { loadTaWorkbookReconciliationMapping, loadTaYieldMapping, mapTaWorkbookReconciliationRows, mapTaWorkbookYieldRows, mapTaYieldLotDetails, mapTaYieldMachineEvents, mapTaYieldRows } from './taYieldMapping.js';
@@ -451,8 +451,8 @@ export function createApp({ environment = process.env, repository, scYieldReposi
       updateTaYieldPipeline('RUNNING', `Loading workbook rows for ${scope}.`);
       const freshRows = await source.getWorkbookReconciliationRows(resumeFilters, { descriptions: workbookDescriptions(mapping), timeoutMs: requestTimeout, actionLookbackMonths: 0 });
       const freshLots = mapTaWorkbookReconciliationRows(freshRows, mapping);
-      const lotDate = (lot) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(lot.tapingDate));
-      const resumeLotKey = (lot) => `${lot.line}|${lot.lotNo}|${lot.itemName}|${lotDate(lot)}`;
+      const lotDate = (lot) => thailandTapingDate(lot.tapingDate);
+      const resumeLotKey = taWorkbookBusinessKey;
       const previousCurrentLots = refreshCurrent ? snapshot.rows.filter((lot) => lotDate(lot) === fullFilters.endDate) : [];
       const mergedLots = mergeTaWorkbookLots(snapshot.rows, freshLots, { replaceDate: refreshCurrent ? fullFilters.endDate : undefined, dateForLot: lotDate, keyForLot: resumeLotKey });
       const partNumbers = [...new Set(mergedLots.map((row) => row.itemName).filter(Boolean))]; const monthlySummary = [{ partNumber: 'All', rows: mergedLots }, ...partNumbers.map((partNumber) => ({ partNumber, rows: mergedLots.filter((row) => row.itemName === partNumber) }))].flatMap((scope) => mapTaWorkbookYieldRows(scope.rows, mapping).flatMap((row) => row.groups.map((group) => ({ month: row.month, line: row.line, partNumber: scope.partNumber, group: group.group, input: row.input, finalGood: row.finalGood, defect: group.quantity }))));
@@ -467,7 +467,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
       return { status: 'RESUMED', workbookRows: freshRows.length, workbookLots: freshLots.length, ...resumeFilters };
     } catch (error) { console.error('TA Yield staging resume failed:', error.message); updateTaYieldPipeline('FAILED', 'Resume failed. Check the server log for details.', { completedAt: new Date().toISOString() }); throw error; } finally { taYieldStagingRefreshInProgress = false; }
   };
-  app.refreshTaYieldStagingDay = async ({ date, timeoutMs } = {}) => {
+  app.refreshTaYieldStagingDay = async ({ date, timeoutMs, includeMachineEvents = true } = {}) => {
     if (!taYieldStaging) return { status: 'SKIPPED' };
     if (!validDate(date)) throw new Error('TA Yield historical repair requires a valid date.');
     if (taYieldStagingRefreshInProgress) return { status: 'SKIPPED' };
@@ -491,16 +491,19 @@ export function createApp({ environment = process.env, repository, scYieldReposi
         : taYieldRepository || new TaYieldRepository({ ...taYieldConfig, requestTimeout });
       const freshRows = await source.getWorkbookReconciliationRows(repairFilters, { descriptions: workbookDescriptions(mapping), timeoutMs: requestTimeout });
       const freshLots = mapTaWorkbookReconciliationRows(freshRows, mapping);
-      const lotDate = (lot) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(lot.tapingDate));
-      const repairLotKey = (lot) => `${lot.line}|${lot.lotNo}|${lot.itemName}|${lotDate(lot)}`;
+      const lotDate = (lot) => thailandTapingDate(lot.tapingDate);
+      const repairLotKey = taWorkbookBusinessKey;
       const previousDayLots = snapshot.rows.filter((lot) => lotDate(lot) === repairFilters.startDate);
       const mergedLots = mergeTaWorkbookLots(snapshot.rows, freshLots, { replaceDate: repairFilters.startDate, dateForLot: lotDate, keyForLot: repairLotKey });
       const partNumbers = [...new Set(mergedLots.map((row) => row.itemName).filter(Boolean))]; const monthlySummary = [{ partNumber: 'All', rows: mergedLots }, ...partNumbers.map((partNumber) => ({ partNumber, rows: mergedLots.filter((row) => row.itemName === partNumber) }))].flatMap((scope) => mapTaWorkbookYieldRows(scope.rows, mapping).flatMap((row) => row.groups.map((group) => ({ month: row.month, line: row.line, partNumber: scope.partNumber, group: group.group, input: row.input, finalGood: row.finalGood, defect: group.quantity }))));
       updateTaYieldPipeline('RUNNING', `Writing ${monthlySummary.length} merged monthly summary rows.`);
       await taYieldStaging.replaceMonthlySummary(monthlySummary, monthFilters);
-      updateTaYieldPipeline('RUNNING', `Loading machine events for ${freshLots.length} repaired lots.`);
-      const machineEvents = (await Promise.all(['%Anodization%', '%Welding%', '%EI%'].map((processPattern) => source.getMachineEvents(monthFilters, { lotNumbers: freshLots.map((lot) => lot.lotNo), processPattern, timeoutMs: requestTimeout })))).flat();
-      await taYieldStaging.replaceMachineRowsForLots(machineEvents, freshLots, monthFilters, { lotNumbersToRemove: previousDayLots.map((lot) => lot.lotNo) });
+      if (includeMachineEvents) {
+        updateTaYieldPipeline('RUNNING', `Loading machine events for ${freshLots.length} repaired lots.`);
+        const machineEvents = [];
+        for (const processPattern of ['%Anodization%', '%Welding%', '%EI%']) machineEvents.push(...await source.getMachineEvents(monthFilters, { lotNumbers: freshLots.map((lot) => lot.lotNo), processPattern, timeoutMs: requestTimeout }));
+        await taYieldStaging.replaceMachineRowsForLots(machineEvents, freshLots, monthFilters, { lotNumbersToRemove: previousDayLots.map((lot) => lot.lotNo) });
+      }
       updateTaYieldPipeline('RUNNING', `Publishing ${mergedLots.length} merged workbook rows for ${publishFilters.startDate} to ${publishFilters.endDate}.`);
       await taYieldStaging.replaceWorkbookRows(mergedLots, publishFilters);
       responseCache.clear(); updateTaYieldPipeline('SUCCEEDED', `Historical repair completed for ${scope}.`, { completedAt: new Date().toISOString() });

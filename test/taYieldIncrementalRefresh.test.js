@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { mergeTaWorkbookLots, taYieldRefreshPlan } from '../src/taYieldRefreshPlan.js';
+import { mergeTaWorkbookLots, taWorkbookBusinessKey, taYieldRefreshPlan, thailandTapingDate } from '../src/taYieldRefreshPlan.js';
 
 describe('TA Yield scheduled staging refresh', () => {
   it('resumes from the day after the current-month snapshot instead of reloading prior days', async () => {
@@ -23,6 +23,17 @@ describe('TA Yield scheduled staging refresh', () => {
     );
 
     expect(lots.map((lot) => lot.lotNo)).toEqual(['PRIOR', 'NEW']);
+  });
+
+  it('uses the Thailand date and the documented lot key for historical repairs', () => {
+    const stale = { line: 'FPS A08', lotNo: '6H16N08980', itemName: 'TEFPSA081C226MTN8RFL', tapingDate: '2026-08-25T18:21:35.920Z' };
+    const repaired = { ...stale, itemName: 'TEFPSA081C226MTHF8R' };
+
+    expect(thailandTapingDate(stale.tapingDate)).toBe('2026-08-26');
+    expect(taWorkbookBusinessKey(stale)).toBe(taWorkbookBusinessKey(repaired));
+    expect(mergeTaWorkbookLots([stale], [repaired], {
+      replaceDate: '2026-08-26', dateForLot: (lot) => thailandTapingDate(lot.tapingDate), keyForLot: taWorkbookBusinessKey
+    })).toEqual([repaired]);
   });
 
   it('publishes the workbook snapshot only after the summary and machine stages succeed', () => {

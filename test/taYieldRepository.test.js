@@ -70,14 +70,37 @@ describe('TaYieldRepository action-date population', () => {
 
     const actionStatement = pool.calls[1].statement;
     expect(actionStatement).toContain("[action].[From_OperationName] AS nvarchar(4000)))) <> N'Taping'");
-    expect(actionStatement).toContain("LTRIM(RTRIM(CAST([action].[DispositionCode] AS nvarchar(4000)))) = @taFinalGoodDisposition");
-    expect(actionStatement).toContain('[action].[OccuredOn] = [lots].[tapingDate]');
+    expect(actionStatement).toContain("LTRIM(RTRIM(CAST([action].[DispositionCode] AS nvarchar(4000)))) <> @taFinalGoodDisposition");
+    expect(pool.calls[0].statement).toContain('ROW_NUMBER() OVER (PARTITION BY [final].[JobName] ORDER BY [final].[OccuredOn] DESC)');
     expect(pool.calls[0].statement).toContain('ROW_NUMBER() OVER');
     expect(actionStatement).toContain('[lots].[itemName] AS itemName');
     expect(actionStatement).toContain("[itemName] nvarchar(4000) '$.itemName'");
     expect(pool.calls[1].inputs).toContainEqual(['taLots', JSON.stringify([{
       lotNo: '6H16N08980', itemName: 'TEFPSA081C226MTHF8R', tapingDate: '2026-08-25T18:21:35.920Z'
     }])]);
+  });
+
+  it('carries final Good from the selected final-lot query without timestamp round-tripping', async () => {
+    const repository = createRepository();
+    const pool = mockPool([{
+      lotNo: '6H23N12187',
+      line: 'Ta NEO Capacitor FPS series A08 case',
+      itemName: 'TEFPSA081C226MTN8RFL',
+      tapingDate: '2026-08-26T14:07:33.183Z',
+      finalGoodQ: '16000'
+    }], []);
+    repository.pool = pool;
+
+    const rows = await repository.getWorkbookReconciliationRows(
+      { startDate: '2026-08-26', endDate: '2026-08-26' },
+      { descriptions: ['To rteTaping_ALL'] }
+    );
+
+    expect(rows).toContainEqual(expect.objectContaining({
+      lotNo: '6H23N12187',
+      dispositionDescription: 'To rteTaping_ALL',
+      quantity: 16000
+    }));
   });
 
   it('can limit workbook reconciliation actions to the requested resume dates', async () => {
@@ -99,7 +122,7 @@ describe('TaYieldRepository action-date population', () => {
     const statement = pool.calls[0].statement;
     expect(statement).toContain('NOT EXISTS (');
     expect(statement).toContain('FROM [KMESV3].[ReleasedJob] AS [releasedJob]');
-    expect(statement).toContain('CAST([releasedJob].[LotID] AS nvarchar(4000)) = CAST([final].[JobName] AS nvarchar(4000))');
+    expect(statement).toContain('[releasedJob].[LotID] = [final].[JobName]');
     expect(statement).toContain("UPPER(LTRIM(RTRIM(CAST([releasedJob].[JobClass] AS nvarchar(100))))) = N'E'");
   });
 
