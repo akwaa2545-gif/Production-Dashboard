@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { TaYieldRepository } from '../src/taYieldRepository.js';
+import { mapTaWorkbookReconciliationRows } from '../src/taYieldMapping.js';
 
 function mockPool(...recordsets) {
   const calls = [];
@@ -30,12 +31,53 @@ function createRepository() {
 
 describe('TaYieldRepository action-date population', () => {
   it('uses the workbook reconciliation CompleteAction conditions', async () => {
-    const repository = createRepository(); const pool = mockPool([]); repository.pool = pool;
+    const repository = createRepository(); const pool = mockPool([{ lotNo: '6H01N00001', tapingDate: '2026-08-01T00:00:00.000Z' }], []); repository.pool = pool;
     await repository.getWorkbookReconciliationRows({ startDate: '2026-08-01', endDate: '2026-08-07' });
     expect(pool.calls[0].statement).toContain('[final].[CatMajor]');
-    expect(pool.calls[0].statement).toContain('[action].[From_OperationName]');
-    expect(pool.calls[0].statement).toContain('DATEADD(month, -3, @startDate)');
-    expect(pool.calls[0].statement).toContain('OPENJSON(@taDescriptions)');
+    expect(pool.calls[1].statement).toContain('[action].[From_OperationName]');
+    expect(pool.calls[1].statement).toContain('DATEADD(month, -3, @startDate)');
+    expect(pool.calls[1].statement).toContain('OPENJSON(@taDescriptions)');
+  });
+
+  it('retains the final Taping route as Good while continuing to exclude other Taping actions', async () => {
+    const repository = createRepository();
+    const pool = mockPool(
+      [{ lotNo: '6H16N08980', itemName: 'TEFPSA081C226MTHF8R', tapingDate: '2026-08-25T18:21:35.920Z' }],
+      [{
+        line: 'Ta NEO Capacitor FPS series A08 case',
+        lotNo: '6H16N08980',
+        itemName: 'TEFPSA081C226MTHF8R',
+        tapingDate: '2026-08-25T18:21:35.920Z',
+        dispositionDescription: 'To rteTaping_ALL',
+        quantity: '17556'
+      }]
+    );
+    repository.pool = pool;
+
+    const actions = await repository.getWorkbookReconciliationRows(
+      { startDate: '2026-08-26', endDate: '2026-08-26' },
+      { descriptions: ['To rteTaping_ALL'] }
+    );
+
+    expect(actions).toEqual([expect.objectContaining({
+      lotNo: '6H16N08980',
+      dispositionDescription: 'To rteTaping_ALL',
+      quantity: 17556
+    })]);
+    expect(mapTaWorkbookReconciliationRows(actions, new Map([['To rteTaping_ALL', 'Good']]))).toEqual([
+      expect.objectContaining({ lotNo: '6H16N08980', categories: { ACC: 0, Good: 17556 } })
+    ]);
+
+    const actionStatement = pool.calls[1].statement;
+    expect(actionStatement).toContain("[action].[From_OperationName] AS nvarchar(4000)))) <> N'Taping'");
+    expect(actionStatement).toContain("LTRIM(RTRIM(CAST([action].[DispositionCode] AS nvarchar(4000)))) = @taFinalGoodDisposition");
+    expect(actionStatement).toContain('[action].[OccuredOn] = [lots].[tapingDate]');
+    expect(pool.calls[0].statement).toContain('ROW_NUMBER() OVER');
+    expect(actionStatement).toContain('[lots].[itemName] AS itemName');
+    expect(actionStatement).toContain("[itemName] nvarchar(4000) '$.itemName'");
+    expect(pool.calls[1].inputs).toContainEqual(['taLots', JSON.stringify([{
+      lotNo: '6H16N08980', itemName: 'TEFPSA081C226MTHF8R', tapingDate: '2026-08-25T18:21:35.920Z'
+    }])]);
   });
 
   it('can limit workbook reconciliation actions to the requested resume dates', async () => {
@@ -43,8 +85,8 @@ describe('TaYieldRepository action-date population', () => {
 
     await repository.getWorkbookReconciliationRows({ startDate: '2026-08-29', endDate: '2026-08-31' }, { actionLookbackMonths: 0 });
 
-    expect(pool.calls[0].statement).toContain("[action].[OccuredOn] >= CAST((CAST(@startDate AS datetime2)");
-    expect(pool.calls[0].statement).not.toContain("DATEADD(month, -3, @startDate)");
+    expect(pool.calls[0].statement).toContain("[final].[OccuredOn] >= CAST((CAST(@startDate AS datetime2) AT TIME ZONE 'SE Asia Standard Time' AT TIME ZONE 'UTC') AS datetime2)");
+    expect(pool.calls[0].statement).toContain("[final].[OccuredOn] < CAST((CAST(DATEADD(day, 1, @endDate) AS datetime2) AT TIME ZONE 'SE Asia Standard Time' AT TIME ZONE 'UTC') AS datetime2)");
   });
 
   it('excludes E-class lots from workbook reconciliation using ReleasedJob.JobClass, while keeping N and unclassified lots eligible', async () => {
@@ -62,13 +104,13 @@ describe('TaYieldRepository action-date population', () => {
   });
 
   it('uses the workbook ACC/SH parameter rule for SH pulse defective', async () => {
-    const repository = createRepository(); const pool = mockPool([{ dispositionDescription: 'SH pulse defective', quantity: '99' }]); repository.pool = pool;
+    const repository = createRepository(); const pool = mockPool([{ lotNo: '6H01N00001', tapingDate: '2026-08-01T00:00:00.000Z' }], [{ dispositionDescription: 'SH pulse defective', quantity: '99' }]); repository.pool = pool;
 
     const rows = await repository.getWorkbookReconciliationRows({ startDate: '2026-08-01', endDate: '2026-08-17' });
 
-    expect(pool.calls[0].statement).toContain("LOWER(LTRIM(RTRIM(CAST([parameters].[ParameterName] AS nvarchar(4000))))) = N'acc_volt'");
-    expect(pool.calls[0].statement).toContain('TRY_CONVERT(decimal(19, 4), LTRIM(RTRIM(CAST([parameters].[ParameterValue] AS nvarchar(4000))))) > 0');
-    expect(pool.calls[0].statement).toContain("THEN N'ACC'");
+    expect(pool.calls[1].statement).toContain("LOWER(LTRIM(RTRIM(CAST([parameters].[ParameterName] AS nvarchar(4000))))) = N'acc_volt'");
+    expect(pool.calls[1].statement).toContain('TRY_CONVERT(decimal(19, 4), LTRIM(RTRIM(CAST([parameters].[ParameterValue] AS nvarchar(4000))))) > 0');
+    expect(pool.calls[1].statement).toContain("THEN N'ACC'");
     expect(rows).toEqual([{ dispositionDescription: 'SH pulse defective', quantity: 99 }]);
   });
   it('uses the SH fallback when the optional TA parameter view is unavailable', async () => {

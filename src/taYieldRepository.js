@@ -38,31 +38,60 @@ export class TaYieldRepository extends SqlRepository {
 
   async getWorkbookReconciliationRows(filters, { descriptions = [], timeoutMs, actionLookbackMonths = 3 } = {}) {
     const pool = await this.getPool();
-    const request = pool.request();
     const config = this.config;
-    request.timeout = taYieldRequestTimeout(config, timeoutMs);
-    request.input('taProduct', sql.NVarChar(100), config.productValue);
-    request.input('taFinalGoodDisposition', sql.NVarChar(4000), config.finalGoodDispositionCode);
-    request.input('startDate', sql.Date, filters.startDate);
-    request.input('endDate', sql.Date, filters.endDate);
-    request.input('taDescriptions', sql.NVarChar(sql.MAX), JSON.stringify([...new Set(descriptions.map((value) => String(value).trim()).filter(Boolean))]));
-    const actionStart = Number(actionLookbackMonths) > 0 ? `DATEADD(month, -${Math.min(Math.floor(Number(actionLookbackMonths)), 12)}, @startDate)` : '@startDate';
-    return (await request.query(`
+    const requestTimeout = taYieldRequestTimeout(config, timeoutMs);
+    const finalRequest = pool.request();
+    finalRequest.timeout = requestTimeout;
+    finalRequest.input('taProduct', sql.NVarChar(100), config.productValue);
+    finalRequest.input('taFinalGoodDisposition', sql.NVarChar(4000), config.finalGoodDispositionCode);
+    finalRequest.input('taInputDispositionDescription', sql.NVarChar(4000), config.palletAssemblyDispositionDescription);
+    finalRequest.input('startDate', sql.Date, filters.startDate);
+    finalRequest.input('endDate', sql.Date, filters.endDate);
+    const finalLots = (await finalRequest.query(`
       WITH [finalLots] AS (
-        SELECT CAST([final].[JobName] AS nvarchar(4000)) AS [lotNo], MAX([final].[OccuredOn]) AS [tapingDate]
+        SELECT CAST([final].[JobName] AS nvarchar(4000)) AS [lotNo],
+          MAX(CAST([final].[From_ItemName] AS nvarchar(4000))) AS [fallbackItemName],
+          MAX([final].[OccuredOn]) AS [tapingDate]
         FROM ${quoted(config.defectView)} AS [final]
         WHERE [final].[ProdType] = @taProduct
           AND UPPER(LTRIM(RTRIM(CAST([final].[CatMajor] AS nvarchar(100))))) = N'FG'
           AND LTRIM(RTRIM(CAST([final].[DispositionCode] AS nvarchar(4000)))) = @taFinalGoodDisposition
           AND NOT EXISTS (
-            SELECT 1
-            FROM ${quoted(config.releasedJobView)} AS [releasedJob]
+            SELECT 1 FROM ${quoted(config.releasedJobView)} AS [releasedJob]
             WHERE CAST([releasedJob].[LotID] AS nvarchar(4000)) = CAST([final].[JobName] AS nvarchar(4000))
               AND UPPER(LTRIM(RTRIM(CAST([releasedJob].[JobClass] AS nvarchar(100))))) = N'E'
           )
           AND [final].[OccuredOn] >= ${thaiUtcBoundary('@startDate')}
           AND [final].[OccuredOn] < ${thaiUtcBoundary('DATEADD(day, 1, @endDate)')}
         GROUP BY CAST([final].[JobName] AS nvarchar(4000))
+      ), [inputParts] AS (
+        SELECT CAST([inputAction].[JobName] AS nvarchar(4000)) AS [lotNo],
+          CAST([inputAction].[From_ItemName] AS nvarchar(4000)) AS [itemName],
+          ROW_NUMBER() OVER (PARTITION BY CAST([inputAction].[JobName] AS nvarchar(4000)) ORDER BY [inputAction].[OccuredOn]) AS [sequence]
+        FROM ${quoted(config.defectView)} AS [inputAction]
+        INNER JOIN [finalLots] AS [lots] ON CAST([inputAction].[JobName] AS nvarchar(4000)) = [lots].[lotNo]
+        WHERE [inputAction].[ProdType] = @taProduct
+          AND UPPER(LTRIM(RTRIM(CAST([inputAction].[CatMajor] AS nvarchar(100))))) = N'FG'
+          AND LTRIM(RTRIM(CAST([inputAction].[DispositionDescription] AS nvarchar(4000)))) IN (N'To rtePelletAssembly', @taInputDispositionDescription)
+      )
+      SELECT [lots].[lotNo], COALESCE([input].[itemName], [lots].[fallbackItemName]) AS [itemName], [lots].[tapingDate]
+      FROM [finalLots] AS [lots]
+      LEFT JOIN [inputParts] AS [input] ON [input].[lotNo] = [lots].[lotNo] AND [input].[sequence] = 1
+    `)).recordset;
+    if (!finalLots.length) return [];
+    const request = pool.request();
+    request.timeout = requestTimeout;
+    request.input('taProduct', sql.NVarChar(100), config.productValue);
+    request.input('taFinalGoodDisposition', sql.NVarChar(4000), config.finalGoodDispositionCode);
+    request.input('endDate', sql.Date, filters.endDate);
+    request.input('taLots', sql.NVarChar(sql.MAX), JSON.stringify(finalLots));
+    request.input('taDescriptions', sql.NVarChar(sql.MAX), JSON.stringify([...new Set(descriptions.map((value) => String(value).trim()).filter(Boolean))]));
+    const actionStart = Number(actionLookbackMonths) > 0 ? `DATEADD(month, -${Math.min(Math.floor(Number(actionLookbackMonths)), 12)}, @startDate)` : '@startDate';
+    request.input('startDate', sql.Date, filters.startDate);
+    return (await request.query(`
+      WITH [finalLots] AS (
+        SELECT [json].[lotNo], [json].[itemName], [json].[tapingDate]
+        FROM OPENJSON(@taLots) WITH ([lotNo] nvarchar(4000) '$.lotNo', [itemName] nvarchar(4000) '$.itemName', [tapingDate] datetime2 '$.tapingDate') AS [json]
       ), [selectedDescriptions] AS (
         SELECT LTRIM(RTRIM(CAST([value] AS nvarchar(4000)))) AS [description]
         FROM OPENJSON(@taDescriptions)
@@ -70,9 +99,11 @@ export class TaYieldRepository extends SqlRepository {
       )
       SELECT CAST([action].[ProdLine] AS nvarchar(4000)) AS line,
         CAST([action].[JobName] AS nvarchar(4000)) AS lotNo,
-        CAST([action].[From_ItemName] AS nvarchar(4000)) AS itemName,
+        [lots].[itemName] AS itemName,
         [lots].[tapingDate] AS tapingDate,
-        CASE WHEN LTRIM(RTRIM(CAST([action].[DispositionDescription] AS nvarchar(4000)))) = N'SH pulse defective'
+        CASE WHEN LTRIM(RTRIM(CAST([action].[DispositionCode] AS nvarchar(4000)))) = @taFinalGoodDisposition
+          THEN @taFinalGoodDisposition
+          WHEN LTRIM(RTRIM(CAST([action].[DispositionDescription] AS nvarchar(4000)))) = N'SH pulse defective'
           AND EXISTS (
             SELECT 1 FROM ${quoted(config.parameterView || 'PowerBIThailand.ParametersECP_v')} AS [parameters]
             WHERE LTRIM(RTRIM(CAST([parameters].[PartType] AS nvarchar(4000)))) = LTRIM(RTRIM(CAST([action].[From_ItemName] AS nvarchar(4000))))
@@ -83,12 +114,25 @@ export class TaYieldRepository extends SqlRepository {
         COALESCE(TRY_CONVERT(decimal(19, 4), [action].[QuantityMoved]), 0) AS quantity
       FROM ${quoted(config.defectView)} AS [action]
       INNER JOIN [finalLots] AS [lots] ON CAST([action].[JobName] AS nvarchar(4000)) = [lots].[lotNo]
-      INNER JOIN [selectedDescriptions] AS [selected] ON LTRIM(RTRIM(CAST([action].[DispositionDescription] AS nvarchar(4000)))) = [selected].[description]
+      INNER JOIN [selectedDescriptions] AS [selected] ON
+        CASE WHEN LTRIM(RTRIM(CAST([action].[DispositionCode] AS nvarchar(4000)))) = @taFinalGoodDisposition
+          THEN @taFinalGoodDisposition
+          ELSE LTRIM(RTRIM(CAST([action].[DispositionDescription] AS nvarchar(4000)))) END = [selected].[description]
       WHERE [action].[ProdType] = @taProduct
         AND UPPER(LTRIM(RTRIM(CAST([action].[CatMajor] AS nvarchar(100))))) = N'FG'
         AND [action].[OccuredOn] >= ${thaiUtcBoundary(actionStart)}
         AND [action].[OccuredOn] < ${thaiUtcBoundary('DATEADD(day, 1, @endDate)')}
-        AND LTRIM(RTRIM(CAST([action].[From_OperationName] AS nvarchar(4000)))) <> N'Taping'
+        AND (
+          LTRIM(RTRIM(CAST([action].[DispositionCode] AS nvarchar(4000)))) <> @taFinalGoodDisposition
+          OR [action].[OccuredOn] = [lots].[tapingDate]
+        )
+        AND (
+          LTRIM(RTRIM(CAST([action].[From_OperationName] AS nvarchar(4000)))) <> N'Taping'
+          OR (
+            LTRIM(RTRIM(CAST([action].[DispositionCode] AS nvarchar(4000)))) = @taFinalGoodDisposition
+            AND [action].[OccuredOn] = [lots].[tapingDate]
+          )
+        )
     `)).recordset.map((row) => ({ ...row, quantity: Number(row.quantity || 0) }));
   }
 
