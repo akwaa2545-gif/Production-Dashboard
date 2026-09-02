@@ -297,7 +297,7 @@ describe('dashboard API', () => {
   });
 
   it('exports the TA Yield DataTable as a formatted Excel workbook', async () => {
-    const stagedRows = [{ line: 'Ta NEO Capacitor FPS series A08 case', lotNo: '6H01N00021', itemName: 'TEFPSA081C226MTHF8R-T', tapingDate: '2026-08-03', categories: { ACC: 38, App: 209, Good: 17443 }, calculation: { defect: 247, other1: 0, inputF: 17690, other2: 0, goodRate: 98.6048615, defectRate: 1.3951385, ttl: 100, check: 0 } }];
+    const stagedRows = [{ line: 'Ta NEO Capacitor FPS series A08 case', lotNo: '6H01N00021', itemName: 'TEFPSA081C226MTHF8R-T', tapingDate: '2026-08-02T17:00:00.000Z', categories: { ACC: 38, App: 209, Good: 17443 }, calculation: { defect: 247, other1: 0, inputF: 17690, other2: 0, goodRate: 98.6048615, defectRate: 1.3951385, ttl: 100, check: 0 } }];
     const taYieldStagingRepository = { getWorkbookRows: () => Promise.resolve(stagedRows) };
     const response = await request(createApp({ environment: { ...configuredEnvironment, DASHBOARD_TA_YIELD_STAGING_ENABLED: 'true', STAGING_SQL_SERVER: 'svr120a', STAGING_SQL_DATABASE: 'ProductionMES', STAGING_SQL_USER: 'test', STAGING_SQL_PASSWORD: 'test' }, taYieldStagingRepository }))
       .get('/api/export/ta-yield-datatable?dataset=ta-yield&startDate=2026-08-01&endDate=2026-08-13')
@@ -314,6 +314,7 @@ describe('dashboard API', () => {
     expect(worksheet.getCell('A5').value).toBe(stagedRows[0].line);
     expect(worksheet.getCell('A4').fill.fgColor.argb).toBe('FF28358C');
     const goodRateColumn = [...worksheet.getRow(4).values].indexOf('%Good');
+    expect(worksheet.getCell('D5').value.toISOString().slice(0, 10)).toBe('2026-08-03');
     expect(worksheet.getCell(5, goodRateColumn)).toMatchObject({ value: 0.986048615, numFmt: '0.000000%' });
   }, 15000);
 

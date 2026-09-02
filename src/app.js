@@ -49,6 +49,15 @@ function validDate(value) {
   return typeof value === 'string' && datePattern.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
 }
 
+function thailandCalendarDate(value) {
+  const raw = String(value || '').trim();
+  if (datePattern.test(raw)) return raw;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw.slice(0, 10);
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date).reduce((values, part) => ({ ...values, [part.type]: part.value }), {});
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
 function validFilterValue(name, value) {
   if (['serie', 'pn'].includes(name) && Array.isArray(value)) return value.length <= 12 && value.every((item) => typeof item === 'string' && item.length <= 200);
   return typeof value === 'string' && value.length <= 200;
@@ -206,7 +215,7 @@ async function taYieldDataTableWorkbook(rows, filters) {
   });
   rows.forEach((row, index) => {
     const calculation = row.calculation || {};
-    const tapingDate = String(row.tapingDate || '').slice(0, 10);
+    const tapingDate = thailandCalendarDate(row.tapingDate);
     const values = [row.line || '', row.lotNo || '', row.itemName || '', validDate(tapingDate) ? new Date(`${tapingDate}T00:00:00Z`) : tapingDate, ...categories.map((category) => Number(row.categories?.[category] || 0)), calculation.defect, calculation.other1, calculation.inputF, calculation.other2, Number.isFinite(calculation.goodRate) ? calculation.goodRate / 100 : undefined, Number.isFinite(calculation.defectRate) ? calculation.defectRate / 100 : undefined, calculation.ttl, calculation.check];
     const worksheetRow = worksheet.addRow(values);
     const stripe = index % 2 === 0 ? 'FFFFFFFF' : 'FFF6F8FC';
