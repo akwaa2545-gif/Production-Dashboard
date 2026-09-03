@@ -755,6 +755,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const validation = validatedOptionFilters(request.query);
     if (validation.error) return response.status(400).json({ success: false, error: validation.error });
     const context = contextFor(request, response); if (!context) return undefined;
+    if (context.dataset === 'ta-yield' && validation.filters.product === 'TA') return useDatabase(() => context.database.getMtdSeriesOptions(), response, context.config, false, { key: 'ta-yield:mtd-series-options', ttlMs: 300000 });
     if (context.dataset === 'ta-yield' && taYieldStaging) return useDatabase(() => taYieldStaging.getWorkbookOptions(), response, context.config, false, { key: 'ta-yield:staging-options', ttlMs: 300000 });
     const cacheEntry = context.dataset === 'ta-yield' ? { key: 'ta-yield:options', ttlMs: 300000 } : undefined;
     if (!cacheEntry) response.set('Cache-Control', 'no-store');

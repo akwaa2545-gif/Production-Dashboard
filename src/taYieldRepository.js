@@ -255,6 +255,19 @@ export class TaYieldRepository extends SqlRepository {
     return { process: [], serie: result.recordset.map((row) => row.value), case: [], pn: [] };
   }
 
+  async getMtdSeriesOptions() {
+    const request = (await this.getPool()).request();
+    request.input('taProduct', sql.NVarChar(100), this.config.productValue);
+    const result = await request.query(`
+      SELECT DISTINCT LTRIM(RTRIM(CAST([source].[Series] AS nvarchar(4000)))) AS value
+      FROM ${quoted(this.config.view)} AS [source]
+      WHERE [source].[ProdType] = @taProduct
+        AND NULLIF(LTRIM(RTRIM(CAST([source].[Series] AS nvarchar(4000)))), N'') IS NOT NULL
+      ORDER BY value
+    `);
+    return { process: [], serie: result.recordset.map((row) => row.value), case: [], pn: [] };
+  }
+
   async getMachineEvents(filters, { lotNumbers, processPattern, machine, timeoutMs } = {}) {
     if (!Array.isArray(lotNumbers) || !lotNumbers.length) return [];
     const request = (await this.getPool()).request();

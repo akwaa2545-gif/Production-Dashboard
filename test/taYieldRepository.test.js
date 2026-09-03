@@ -30,6 +30,25 @@ function createRepository() {
 }
 
 describe('TaYieldRepository action-date population', () => {
+  it('loads every nonblank MES series for MTD target parameters without the TA ProdLine prefix filter', async () => {
+    const repository = createRepository();
+    const pool = mockPool([
+      { value: 'FPS B2' },
+      { value: 'FPU A2' },
+      { value: 'PSH B2' },
+      { value: 'PSU B2' }
+    ]);
+    repository.pool = pool;
+
+    const options = await repository.getMtdSeriesOptions();
+
+    expect(options).toEqual({ process: [], serie: ['FPS B2', 'FPU A2', 'PSH B2', 'PSU B2'], case: [], pn: [] });
+    expect(pool.calls[0].statement).toContain('[source].[ProdType] = @taProduct');
+    expect(pool.calls[0].inputs).toContainEqual(['taProduct', 'NEO']);
+    expect(pool.calls[0].statement).not.toContain('[source].[ProdLine] LIKE @taLinePrefix');
+    expect(pool.calls[0].statement).toContain("NULLIF(LTRIM(RTRIM(CAST([source].[Series] AS nvarchar(4000)))), N'') IS NOT NULL");
+  });
+
   it('uses the workbook reconciliation CompleteAction conditions', async () => {
     const repository = createRepository(); const pool = mockPool([{ lotNo: '6H01N00001', tapingDate: '2026-08-01T00:00:00.000Z' }], []); repository.pool = pool;
     await repository.getWorkbookReconciliationRows({ startDate: '2026-08-01', endDate: '2026-08-07' });

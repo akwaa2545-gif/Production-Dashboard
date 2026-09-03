@@ -16,6 +16,23 @@ const configuredEnvironment = {
 };
 
 describe('dashboard API', () => {
+  it('loads TA MTD parameter series from complete MES history instead of the latest staging snapshot', async () => {
+    const taYieldRepository = {
+      getMtdSeriesOptions: () => Promise.resolve({ process: [], serie: ['FPS B2', 'FPU A2', 'PSH B2', 'PSU B2'], case: [], pn: [] })
+    };
+    const taYieldStagingRepository = {
+      getWorkbookOptions: () => Promise.reject(new Error('MTD series must not be limited to the latest staging snapshot'))
+    };
+    const response = await request(createApp({
+      environment: { ...configuredEnvironment, DASHBOARD_TA_YIELD_STAGING_ENABLED: 'true', STAGING_SQL_SERVER: 'staging', STAGING_SQL_DATABASE: 'ProductionMES', STAGING_SQL_USER: 'user', STAGING_SQL_PASSWORD: 'password' },
+      taYieldRepository,
+      taYieldStagingRepository
+    })).get('/api/options?dataset=ta-yield&product=TA');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.serie).toEqual(['FPS B2', 'FPU A2', 'PSH B2', 'PSU B2']);
+  });
+
   it('uses ProductionMES staging settings for TA Yield target storage', async () => {
     const { readTaYieldTargetConfig } = await import('../src/config.js');
     expect(readTaYieldTargetConfig({ STAGING_SQL_SERVER: 'server', STAGING_SQL_DATABASE: 'ProductionMES', STAGING_SQL_USER: 'user', STAGING_SQL_PASSWORD: 'password' })).toMatchObject({ database: 'ProductionMES', table: 'dbo.DashboardTaYieldTarget', ready: true });
