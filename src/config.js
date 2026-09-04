@@ -27,6 +27,7 @@ export function readConfig(environment = process.env) {
     tokenCachePersistence: environment.AZURE_TOKEN_CACHE_PERSISTENCE === 'true',
     view: environment.DB_VIEW || 'dbo.LotCompleteLog',
     dateColumn: environment.DATE_COLUMN,
+    reportingTimeZone: environment.REPORTING_TIME_ZONE,
     processColumn: environment.PROCESS_COLUMN,
     serieColumn: environment.SERIE_COLUMN,
     caseColumn: environment.CASE_COLUMN,
@@ -188,6 +189,13 @@ export function readTaYieldActionConfig(environment = process.env) {
   return { ...config, ready: Boolean(base.ready && isSafeView(config.table) && typeof config.displayName === 'string' && /^[^<>]{1,255}$/.test(config.displayName)) };
 }
 
+export function readScYieldActionConfig(environment = process.env) {
+  const base = readTaYieldActionConfig(environment);
+  const config = { ...base, table: environment.SC_YIELD_ACTIONS_SQL_TABLE || 'dbo.DashboardScYieldActions' };
+  const separateTable = config.table.trim().toLowerCase() !== base.table.trim().toLowerCase();
+  return { ...config, ready: Boolean(base.ready && separateTable && isSafeView(config.table)) };
+}
+
 export function readCellCommentConfig(environment = process.env) {
   const base = readMtdTargetConfig(environment);
   const config = { ...base, table: environment.COMMENTS_SQL_TABLE || 'dbo.DashboardCellComments', displayName: environment.COMMENT_DISPLAY_NAME };
@@ -200,6 +208,7 @@ export function readDatasetConfig(environment = process.env, dataset = 'closed')
     ...environment,
     DB_VIEW: environment[`${prefix}_DB_VIEW`] || environment.DB_VIEW,
     DATE_COLUMN: environment[`${prefix}_DATE_COLUMN`] || environment.DATE_COLUMN,
+    REPORTING_TIME_ZONE: environment[`${prefix}_REPORTING_TIME_ZONE`] || environment.REPORTING_TIME_ZONE || (dataset === 'lot' ? 'SE Asia Standard Time' : undefined),
     PROCESS_COLUMN: environment[`${prefix}_PROCESS_COLUMN`] || environment.PROCESS_COLUMN,
     SERIE_COLUMN: environment[`${prefix}_SERIE_COLUMN`] || environment.SERIE_COLUMN,
     CASE_COLUMN: environment[`${prefix}_CASE_COLUMN`] || environment.CASE_COLUMN,

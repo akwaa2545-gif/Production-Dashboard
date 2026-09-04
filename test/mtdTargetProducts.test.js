@@ -16,4 +16,11 @@ describe('MTD target product selector', () => {
     expect(loader).toContain("if (product === 'TA') values = taMtdSeries");
     expect(loader).not.toContain("dataset: 'ta-yield'");
   });
+
+  it('uses TA targets for the 901 NEO reporting context', () => {
+    const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+
+    expect(source).toContain("function mtdTargetProduct(product) { return product === 'NEO' ? 'TA' : product; }");
+    expect(source).toContain('readTargetSettings()[mtdTargetProduct(product)]?.[serie]');
+  });
 });

@@ -23,6 +23,19 @@ function sourceColumn(column) {
   return quoted(`source.${column}`);
 }
 
+function addDateRangeClauses(request, config, dateColumn) {
+  if (!config.reportingTimeZone) return [`${dateColumn} >= @startDate`, `${dateColumn} < DATEADD(day, 1, @endDate)`];
+  request.input('reportingTimeZone', sql.NVarChar(128), config.reportingTimeZone);
+  const toUtc = (dateExpression) => `CAST((CAST(${dateExpression} AS datetime2) AT TIME ZONE @reportingTimeZone AT TIME ZONE 'UTC') AS datetime2)`;
+  return [`${dateColumn} >= ${toUtc('@startDate')}`, `${dateColumn} < ${toUtc('DATEADD(day, 1, @endDate)')}`];
+}
+
+function reportingDateExpression(config, dateColumn) {
+  return config.reportingTimeZone
+    ? `CAST((CAST(${dateColumn} AS datetimeoffset) AT TIME ZONE @reportingTimeZone) AS date)`
+    : `CAST(${dateColumn} AS date)`;
+}
+
 function addSerieBlankFallbackParameters(request, config) {
   if (serieFallbackRequests.has(request)) return;
   if (config.serieBlankProduct && config.serieBlankValue) {
@@ -438,7 +451,7 @@ export class SqlRepository {
     request.input('startDate', sql.Date, filters.startDate);
     request.input('endDate', sql.Date, filters.endDate);
     const dateColumn = sourceColumn(this.config.dateColumn);
-    const clauses = [`${dateColumn} >= @startDate`, `${dateColumn} < DATEADD(day, 1, @endDate)`];
+    const clauses = addDateRangeClauses(request, this.config, dateColumn);
     addConfiguredFilters(request, this.config, clauses);
     addCompletionProdLineExclusion(request, this.config, clauses);
     addFilterForKey(request, this.config, 'product', filters.product, clauses);
@@ -450,6 +463,7 @@ export class SqlRepository {
     const group = quantityGroupDefinition(this.config);
     const groupColumn = group.column;
     const quantityColumn = sourceColumn(this.config.quantityColumn);
+    const reportingDate = reportingDateExpression(this.config, dateColumn);
     const query = usesActionSerieFallback ? (() => {
       const rawSerie = `CAST(${sourceColumn(this.config.serieColumn)} AS nvarchar(4000))`;
       const missing = `${sourceColumn(this.config.processColumn)} = @serieBlankSourceProduct AND (NULLIF(LTRIM(RTRIM(${rawSerie})), N'') IS NULL OR UPPER(LTRIM(RTRIM(${rawSerie}))) = N'UNSPECIFIED')`;
@@ -476,23 +490,23 @@ export class SqlRepository {
           GROUP BY ${actionJob}
         )
         SELECT
-          CONVERT(varchar(10), CAST(${dateColumn} AS date), 23) AS bucketDate,
+          CONVERT(varchar(10), ${reportingDate}, 23) AS bucketDate,
           CAST(${resolvedSerie} AS nvarchar(4000)) AS itemName,
           SUM(TRY_CONVERT(decimal(18, 4), ${quantityColumn})) AS quantityMoved
         FROM [filtered] AS [source]
         LEFT JOIN [actionSeries] AS [actionSerie] ON ${sourceJob} = [actionSerie].[jobName]
-        GROUP BY CAST(${dateColumn} AS date), CAST(${resolvedSerie} AS nvarchar(4000))
+        GROUP BY ${reportingDate}, CAST(${resolvedSerie} AS nvarchar(4000))
         ORDER BY bucketDate ASC, itemName ASC`;
     })() : `
     
       SELECT
-        CONVERT(varchar(10), CAST(${dateColumn} AS date), 23) AS bucketDate,
+        CONVERT(varchar(10), ${reportingDate}, 23) AS bucketDate,
         CAST(${groupColumn} AS nvarchar(4000)) AS itemName,
         SUM(TRY_CONVERT(decimal(18, 4), ${quantityColumn})) AS quantityMoved
       FROM ${quoted(this.config.view)} AS [source]
       ${group.join}
       WHERE ${clauses.join(' AND ')} 
-      GROUP BY CAST(${dateColumn} AS date), CAST(${groupColumn} AS nvarchar(4000))
+      GROUP BY ${reportingDate}, CAST(${groupColumn} AS nvarchar(4000))
       ORDER BY bucketDate ASC, itemName ASC`;
     const result = await request.query(query);
     return result.recordset.map((row) => ({
@@ -509,18 +523,18 @@ export class SqlRepository {
     const dateColumn = sourceColumn(this.config.dateColumn);
     const sourceJob = sourceColumn(this.config.serieSourceJoinColumn);
     const quantityColumn = sourceColumn(this.config.quantityColumn);
-    const clauses = [`${dateColumn} >= @startDate`, `${dateColumn} < DATEADD(day, 1, @endDate)`, `${sourceJob} IS NOT NULL`];
+    const clauses = [...addDateRangeClauses(sourceRequest, this.config, dateColumn), `${sourceJob} IS NOT NULL`];
     addConfiguredFilters(sourceRequest, this.config, clauses);
     addFilterForKey(sourceRequest, this.config, 'process', filters.process, clauses);
     addFilterForKey(sourceRequest, this.config, 'case', filters.case, clauses);
     addFilterForKey(sourceRequest, this.config, 'pn', filters.pn, clauses);
     const sourceRows = (await sourceRequest.query(`
-      SELECT CONVERT(varchar(10), CAST(${dateColumn} AS date), 23) AS bucketDate,
+      SELECT CONVERT(varchar(10), ${reportingDateExpression(this.config, dateColumn)}, 23) AS bucketDate,
         CAST(${sourceJob} AS nvarchar(4000)) AS jobName,
         SUM(TRY_CONVERT(decimal(18, 4), ${quantityColumn})) AS quantityMoved
       FROM ${quoted(this.config.view)} AS [source]
       WHERE ${clauses.join(' AND ')}
-      GROUP BY CAST(${dateColumn} AS date), CAST(${sourceJob} AS nvarchar(4000))
+      GROUP BY ${reportingDateExpression(this.config, dateColumn)}, CAST(${sourceJob} AS nvarchar(4000))
     `)).recordset.map((row) => ({ ...row, quantityMoved: Number(row.quantityMoved || 0) }));
     const jobs = [...new Set(sourceRows.map((row) => row.jobName).filter(Boolean))];
     if (!jobs.length) return [];
@@ -575,7 +589,7 @@ export class SqlRepository {
     const series = seriesLookupDefinition(this.config);
     const seriesColumn = series?.column || (this.config.serieColumn ? sourceSerieExpression(this.config) : sourceColumn(this.config.pnColumn));
     const quantityColumn = sourceColumn(this.config.quantityColumn);
-    const clauses = [`${dateColumn} >= @startDate`, `${dateColumn} < DATEADD(day, 1, @endDate)`];
+    const clauses = addDateRangeClauses(request, this.config, dateColumn);
     addConfiguredFilters(request, this.config, clauses);
     addFilterForKey(request, this.config, 'product', filters.product, clauses);
     addFilterForKey(request, this.config, 'process', filters.process, clauses);
@@ -589,7 +603,7 @@ export class SqlRepository {
     });
     const result = await request.query(`
       SELECT
-        ${daily ? `CONVERT(varchar(10), CAST(${dateColumn} AS date), 23) AS bucketDate,` : ''}
+        ${daily ? `CONVERT(varchar(10), ${reportingDateExpression(this.config, dateColumn)}, 23) AS bucketDate,` : ''}
         CAST(${chartColumn} AS nvarchar(4000)) AS chartName,
         CAST(${seriesColumn} AS nvarchar(4000)) AS seriesName,
         ${fromRouteStepColumn ? `MIN(CAST(${fromRouteStepColumn} AS nvarchar(4000))) AS fromRouteStepName,` : ''}
@@ -602,7 +616,7 @@ export class SqlRepository {
       FROM ${quoted(this.config.view)} AS [source]
       ${series?.join || ''}
       WHERE ${clauses.join(' AND ')} 
-      ${daily ? `GROUP BY CAST(${dateColumn} AS date), ` : 'GROUP BY '}CAST(${chartColumn} AS nvarchar(4000)), CAST(${seriesColumn} AS nvarchar(4000))
+      ${daily ? `GROUP BY ${reportingDateExpression(this.config, dateColumn)}, ` : 'GROUP BY '}CAST(${chartColumn} AS nvarchar(4000)), CAST(${seriesColumn} AS nvarchar(4000))
       ORDER BY chartName ASC, seriesName ASC`);
     return result.recordset.map((row) => ({
       ...row,
@@ -628,7 +642,7 @@ export class SqlRepository {
     const dateColumn = sourceColumn(this.config.dateColumn);
     const dispositionColumn = sourceColumn(this.config.dispositionColumn);
     const quantityColumn = sourceColumn(this.config.quantityColumn);
-    const clauses = [`${dateColumn} >= @startDate`, `${dateColumn} < DATEADD(day, 1, @endDate)`];
+    const clauses = addDateRangeClauses(request, this.config, dateColumn);
     addFilterForKey(request, this.config, 'product', filters.product, clauses);
     addFilterForKey(request, this.config, 'process', filters.process, clauses);
     addFilterForKey(request, this.config, 'serie', filters.serie, clauses);
@@ -657,7 +671,7 @@ export class SqlRepository {
     const fromOperation = sourceColumn(this.config.chartColumn);
     const toOperation = sourceColumn(this.config.processColumn);
     const quantityColumn = sourceColumn(this.config.quantityColumn);
-    const clauses = [`${dateColumn} >= @startDate`, `${dateColumn} < DATEADD(day, 1, @endDate)`];
+    const clauses = addDateRangeClauses(request, this.config, dateColumn);
     addConfiguredFilters(request, this.config, clauses);
     addFilterForKey(request, this.config, 'product', filters.product, clauses);
     addFilterForKey(request, this.config, 'process', filters.process, clauses);
@@ -689,7 +703,7 @@ export class SqlRepository {
     const fromOperation = sourceColumn(this.config.chartColumn);
     const toOperation = sourceColumn(this.config.processColumn);
     const quantityColumn = sourceColumn(this.config.quantityColumn);
-    const clauses = [`${dateColumn} >= @startDate`, `${dateColumn} < DATEADD(day, 1, @endDate)`];
+    const clauses = addDateRangeClauses(request, this.config, dateColumn);
     addConfiguredFilters(request, this.config, clauses);
     addFilterForKey(request, this.config, 'product', filters.product, clauses);
     addFilterForKey(request, this.config, 'process', filters.process, clauses);
@@ -745,7 +759,7 @@ export class SqlRepository {
     const operationColumn = sourceColumn(this.config.chartColumn);
     const dispositionColumn = sourceColumn(this.config.dispositionColumn);
     const quantityColumn = sourceColumn(this.config.quantityColumn);
-    const clauses = [`${dateColumn} >= @startDate`, `${dateColumn} < DATEADD(day, 1, @endDate)`];
+    const clauses = addDateRangeClauses(request, this.config, dateColumn);
     addFilterForKey(request, this.config, 'product', filters.product, clauses);
     addFilterForKey(request, this.config, 'process', filters.process, clauses);
     addFilterForKey(request, this.config, 'serie', filters.serie, clauses);

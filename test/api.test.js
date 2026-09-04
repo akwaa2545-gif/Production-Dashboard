@@ -208,6 +208,26 @@ describe('dashboard API', () => {
     expect(response.body.data[0]).toMatchObject({ input: 100, defect: 0, yield: 100 });
   });
 
+  it('returns SC tendency rows for the requested day, week, or month interval', async () => {
+    const buckets = [];
+    const scYieldRepository = {
+      getYieldRows: (_filters, bucket) => {
+        buckets.push(bucket);
+        const bucketMonth = bucket === 'day' ? '2026-07-15' : bucket === 'week' ? '2026-W29' : '2026-07';
+        return Promise.resolve({ inputs: [{ bucketMonth, line: 'CAN', quantity: 100 }], defects: [] });
+      }
+    };
+    const app = createApp({ environment: configuredEnvironment, scYieldRepository });
+    for (const [interval, expectedBucket] of [['day', '2026-07-15'], ['week', '2026-W29'], ['month', '2026-07']]) {
+      const response = await request(app).get(`/api/sc-yield-tendency?dataset=yield&startDate=2026-07-01&endDate=2026-07-31&interval=${interval}`);
+      expect(response.status).toBe(200);
+      expect(response.body.data[0]).toMatchObject({ month: expectedBucket, line: 'CAN', input: 100, yield: 100 });
+    }
+    expect(buckets).toEqual(['day', 'week', 'month']);
+    expect((await request(app).get('/api/sc-yield-tendency?dataset=yield&startDate=2026-07-01&endDate=2026-07-31&interval=year')).status).toBe(400);
+    expect((await request(app).get('/api/sc-yield-tendency?dataset=closed&startDate=2026-07-01&endDate=2026-07-31&interval=month')).status).toBe(400);
+  });
+
   it('returns workbook-reconciliation rows only for the TA Yield source', async () => {
     const stagedRows = [{ line: 'Ta NEO Capacitor FPS series B3 case', lotNo: '6H01N00002', itemName: 'TEFPS', tapingDate: '2026-08-01', dispositionDescription: 'Cam1 defective for GPS', quantity: 13 }];
     const taYieldRepository = { getWorkbookReconciliationRows: () => Promise.reject(new Error('MES must not be queried when the workbook snapshot exists')) };
@@ -504,6 +524,8 @@ describe('dashboard API', () => {
     expect(saved.status).toBe(200);
     const inactive = await request(app).put('/api/mtd-targets').send({ product: 'NEO', serie: 'FPS B2', period: '2026-07', monthlyPlan: 0, workingDay: 22 });
     expect(inactive.status).toBe(200);
+    const ta = await request(app).put('/api/mtd-targets').send({ product: 'TA', serie: 'PSU B2', period: '2026-07', monthlyPlan: 500000, workingDay: 22 });
+    expect(ta.status).toBe(200);
     expect((await request(app).get('/api/mtd-targets')).body.data).toEqual(expect.arrayContaining([expect.objectContaining({ serie: 'FPS A3' }), expect.objectContaining({ serie: 'FPS B2', monthlyPlan: 0 })]));
   });
 
@@ -550,5 +572,22 @@ describe('dashboard API', () => {
     expect((await request(app).get('/api/ta-yield-actions')).body.data).toHaveLength(1);
     expect((await request(app).delete('/api/ta-yield-actions/1')).body.data).toEqual({ removed: true });
     expect((await request(app).get('/api/ta-yield-actions')).body.data).toEqual([]);
+  });
+
+  it('stores SC Yield actions through separate SC action routes', async () => {
+    const actions = [];
+    const scYieldActionRepository = {
+      list: () => Promise.resolve(actions.filter((action) => !action.deletedAt)),
+      create: (action) => { const stored = { ...action, id: actions.length + 1 }; actions.push(stored); return Promise.resolve(stored); },
+      update: (id, action) => { const existing = actions.find((item) => item.id === id); Object.assign(existing, action); return Promise.resolve(existing); },
+      remove: (id) => { actions.find((action) => action.id === id).deletedAt = '2026-09-03T00:00:00.000Z'; return Promise.resolve(true); }
+    };
+    const app = createApp({ environment: configuredEnvironment, scYieldActionRepository });
+    const payload = { actionDate: '2026-09-03', serie: 'FM', problem: 'High ESR variation', analysisAction: 'Check process conditions.', pic: 'SC owner', progress: 'Investigation started.', dueDate: '2026-09-08', status: 'IN_PROGRESS' };
+    const created = await request(app).post('/api/sc-yield-actions').send(payload);
+    expect(created.status).toBe(200);
+    expect(created.body.data).toMatchObject({ id: 1, serie: 'FM', status: 'IN_PROGRESS' });
+    expect((await request(app).patch('/api/sc-yield-actions/1').send({ ...payload, status: 'CLOSED' })).body.data.status).toBe('CLOSED');
+    expect((await request(app).delete('/api/sc-yield-actions/1')).body.data).toEqual({ removed: true });
   });
 });

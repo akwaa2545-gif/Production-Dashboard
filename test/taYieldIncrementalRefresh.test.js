@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { mergeTaWorkbookLots, taWorkbookBusinessKey, taYieldRefreshPlan, thailandTapingDate } from '../src/taYieldRefreshPlan.js';
+import { mergeTaWorkbookLots, taWorkbookBusinessKey, taYieldLateArrivalDates, taYieldRefreshPlan, thailandTapingDate } from '../src/taYieldRefreshPlan.js';
 
 describe('TA Yield scheduled staging refresh', () => {
   it('resumes from the day after the current-month snapshot instead of reloading prior days', async () => {
@@ -15,6 +15,10 @@ describe('TA Yield scheduled staging refresh', () => {
     expect(plan).toEqual({ mode: 'REFRESH_CURRENT' });
   });
 
+  it('includes the previous month end in the late-arrival retry window', () => {
+    expect(taYieldLateArrivalDates({ startDate: '2026-09-01', endDate: '2026-09-01' }, 2)).toEqual(['2026-08-31', '2026-09-01']);
+  });
+
   it('replaces current-day lots that MES has removed instead of retaining them', () => {
     const lots = mergeTaWorkbookLots(
       [{ lotNo: 'OLD', tapingDate: '2026-09-03T01:00:00.000Z' }, { lotNo: 'PRIOR', tapingDate: '2026-09-02T01:00:00.000Z' }],
@@ -23,6 +27,23 @@ describe('TA Yield scheduled staging refresh', () => {
     );
 
     expect(lots.map((lot) => lot.lotNo)).toEqual(['PRIOR', 'NEW']);
+  });
+
+  it('replaces every lot in the late-arrival retry window', () => {
+    const lots = mergeTaWorkbookLots(
+      [
+        { lotNo: 'OLDER', tapingDate: '2026-09-01T01:00:00.000Z' },
+        { lotNo: 'STALE-YESTERDAY', tapingDate: '2026-09-02T01:00:00.000Z' },
+        { lotNo: 'STALE-TODAY', tapingDate: '2026-09-03T01:00:00.000Z' }
+      ],
+      [
+        { lotNo: 'FRESH-YESTERDAY', tapingDate: '2026-09-02T02:00:00.000Z' },
+        { lotNo: 'FRESH-TODAY', tapingDate: '2026-09-03T02:00:00.000Z' }
+      ],
+      { replaceDates: new Set(['2026-09-02', '2026-09-03']), dateForLot: (lot) => lot.tapingDate.slice(0, 10), keyForLot: (lot) => lot.lotNo }
+    );
+
+    expect(lots.map((lot) => lot.lotNo)).toEqual(['OLDER', 'FRESH-YESTERDAY', 'FRESH-TODAY']);
   });
 
   it('uses the Thailand date and the documented lot key for historical repairs', () => {

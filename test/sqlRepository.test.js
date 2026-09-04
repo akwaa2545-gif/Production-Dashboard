@@ -55,6 +55,34 @@ describe('SqlRepository', () => {
     ]);
   });
 
+  it('uses Thailand calendar-day boundaries and buckets UTC Lot Complete Log rows in Thailand time', async () => {
+    const repository = new SqlRepository({
+      ...config,
+      view: 'PowerBIThailand.LotCompleteLog',
+      dateColumn: 'OccuredOn',
+      groupColumn: 'Series',
+      serieColumn: 'Series',
+      serieLookupView: 'PowerBIThailand.ClosedBatch_v',
+      serieSourceJoinColumn: 'JobName',
+      serieLookupJoinColumn: 'JobName',
+      reportingTimeZone: 'SE Asia Standard Time'
+    });
+    const pool = mockPool([
+      [{ bucketDate: '2026-08-03', jobName: 'JOB-1', quantityMoved: '5' }],
+      [{ jobName: 'JOB-1', serieName: 'CAN' }]
+    ]);
+    repository.pool = pool;
+
+    await expect(repository.getQuantity({ startDate: '2026-08-03', endDate: '2026-08-03' })).resolves.toEqual([
+      { bucketDate: '2026-08-03', itemName: 'CAN', quantityMoved: 5 }
+    ]);
+
+    expect(pool.calls[0].inputs).toContainEqual(['reportingTimeZone', 'SE Asia Standard Time']);
+    expect(pool.calls[0].statement).toContain("[source].[OccuredOn] >= CAST((CAST(@startDate AS datetime2) AT TIME ZONE @reportingTimeZone AT TIME ZONE 'UTC') AS datetime2)");
+    expect(pool.calls[0].statement).toContain("[source].[OccuredOn] < CAST((CAST(DATEADD(day, 1, @endDate) AS datetime2) AT TIME ZONE @reportingTimeZone AT TIME ZONE 'UTC') AS datetime2)");
+    expect(pool.calls[0].statement).toContain("CAST((CAST([source].[OccuredOn] AS datetimeoffset) AT TIME ZONE @reportingTimeZone) AS date)");
+  });
+
   it('uses ProdLine for blank NEO series while retaining the configured SC fallback', async () => {
     const repository = new SqlRepository({
       ...config,
@@ -118,6 +146,28 @@ describe('SqlRepository', () => {
     await repository.getChartData({ startDate: '2026-01-01', endDate: '2026-01-01' });
     expect(pool.calls[0].statement).toContain('CAST([source].[processName] AS nvarchar(4000)) <> @excludedChartValue0');
     expect(pool.calls[0].inputs).toContainEqual(['excludedChartValue0', 'RouteDecisionPoint']);
+  });
+
+  it('uses the Thailand reporting date for daily Lot Complete Log chart buckets', async () => {
+    const repository = new SqlRepository({
+      ...config,
+      view: 'PowerBIThailand.LotCompleteLog',
+      dateColumn: 'OccuredOn',
+      chartColumn: 'From_OperationName',
+      reportingTimeZone: 'SE Asia Standard Time'
+    });
+    const pool = mockPool([[{ bucketDate: '2026-08-03', chartName: 'Assembly', seriesName: 'CAN', quantityMoved: '5' }]]);
+    repository.pool = pool;
+
+    await expect(repository.getChartData({ startDate: '2026-08-03', endDate: '2026-08-03' }, true)).resolves.toMatchObject([
+      { bucketDate: '2026-08-03', chartName: 'Assembly', seriesName: 'CAN', quantityMoved: 5 }
+    ]);
+
+    expect(pool.calls[0].inputs).toContainEqual(['reportingTimeZone', 'SE Asia Standard Time']);
+    expect(pool.calls[0].statement).toContain("[source].[OccuredOn] >= CAST((CAST(@startDate AS datetime2) AT TIME ZONE @reportingTimeZone AT TIME ZONE 'UTC') AS datetime2)");
+    expect(pool.calls[0].statement).toContain("[source].[OccuredOn] < CAST((CAST(DATEADD(day, 1, @endDate) AS datetime2) AT TIME ZONE @reportingTimeZone AT TIME ZONE 'UTC') AS datetime2)");
+    expect(pool.calls[0].statement).toContain("CONVERT(varchar(10), CAST((CAST([source].[OccuredOn] AS datetimeoffset) AT TIME ZONE @reportingTimeZone) AS date), 23) AS bucketDate");
+    expect(pool.calls[0].statement).toContain("GROUP BY CAST((CAST([source].[OccuredOn] AS datetimeoffset) AT TIME ZONE @reportingTimeZone) AS date)");
   });
 
   it('returns Series segments for Lot Complete Log process charts', async () => {
@@ -296,6 +346,35 @@ describe('SqlRepository', () => {
 });
 
 describe('ScYieldRepository', () => {
+  it('uses a full reporting date bucket for daily SC tendency rows', async () => {
+    const repository = new ScYieldRepository({
+      ...config,
+      view: 'PowerBIThailand.CompleteAction_v', dateColumn: 'OccuredOn', jobColumn: 'JobName', productColumn: 'ProdType', productValue: 'SC', dispositionTypeColumn: 'DispositionType', dispositionCodeColumn: 'DispositionCode', quantityColumn: 'QuantityMoved', closedView: 'PowerBIThailand.ClosedBatch_v', closedJobColumn: 'JobName', closedProductColumn: 'ProdType', closedSerieColumn: 'Series', closedDateColumn: 'CloseDate', closedCategoryColumn: 'Category', closedCategoryValue: 'FG', closedGrossQuantityColumn: 'GrossQty'
+    });
+    const pool = mockPool([[{ bucketMonth: '2026-07-15', line: 'CAN', quantity: '10' }], []]);
+    repository.pool = pool;
+
+    await repository.getYieldRows({ startDate: '2026-07-01', endDate: '2026-07-31' }, 'day');
+
+    expect(pool.calls[0].statement).toContain('CONVERT(char(10), CAST([closed].[CloseDate] AS date), 23)');
+    expect(pool.calls[1].statement).toContain('CONVERT(char(10), CAST([closed].[CloseDate] AS date), 23)');
+  });
+
+  it('uses the ISO week-year for SC weekly buckets around New Year', async () => {
+    const repository = new ScYieldRepository({
+      ...config,
+      view: 'PowerBIThailand.CompleteAction_v', dateColumn: 'OccuredOn', jobColumn: 'JobName', productColumn: 'ProdType', productValue: 'SC', dispositionTypeColumn: 'DispositionType', dispositionCodeColumn: 'DispositionCode', quantityColumn: 'QuantityMoved', closedView: 'PowerBIThailand.ClosedBatch_v', closedJobColumn: 'JobName', closedProductColumn: 'ProdType', closedSerieColumn: 'Series', closedDateColumn: 'CloseDate', closedCategoryColumn: 'Category', closedCategoryValue: 'FG', closedGrossQuantityColumn: 'GrossQty'
+    });
+    const pool = mockPool([[], []]);
+    repository.pool = pool;
+
+    await repository.getYieldRows({ startDate: '2020-12-28', endDate: '2021-01-03' }, 'week');
+
+    expect(pool.calls[0].statement).toContain('DATEADD(day, 26 - DATEPART(ISO_WEEK');
+    expect(pool.calls[1].statement).toContain('DATEADD(day, 26 - DATEPART(ISO_WEEK');
+    expect(pool.calls[0].statement).not.toContain('CONCAT(DATEPART(year, CAST([closed].[CloseDate] AS date))');
+  });
+
   it('limits SC Yield rows to Completion 901 eligible JobName records with parameterized values', async () => {
     const repository = new ScYieldRepository({
       ...config,

@@ -63,6 +63,13 @@ let latestWipFlow = [];
 let latestYieldData = { goodDisposition: 'good', rows: [] };
 let latestScYieldData = [];
 let latestScYieldWeeklyData = [];
+let latestScYieldTendencyData = [];
+let latestScYieldActions = [];
+let scYieldActionStatus = 'IN_PROGRESS';
+let scYieldTrendSeries = 'Total';
+let scYieldInterval = 'month';
+let scYieldTrendChartType = 'summary';
+let scYieldTendencyRequestId = 0;
 let latestTaYieldData = { summary: [], details: [] };
 let latestTaYieldWeeklyData = [];
 let latestTaYieldTendencyData = [];
@@ -94,6 +101,7 @@ let taYieldLogSearch = '';
 let taYieldMachineState = { process: '', serie: '', pn: '', machine: '', defectType: '', defect: '', groupBy: 'day' };
 let appliedTaYieldMachineControlSnapshot = '';
 let selectedScYieldWeeks = [];
+let scYieldWeeklyVisible = false;
 let selectedTaYieldWeeks = [];
 let latestOperationTransitions = [];
 let operationTransitionRequestKey = '';
@@ -125,7 +133,7 @@ function setStatus(message, loading = false) {
   status.className = loading ? 'status loading' : 'status';
 }
 
-function setReportControlsLoading(loading) { reportLoadingCount = Math.max(0, reportLoadingCount + (loading ? 1 : -1)); const active = reportLoadingCount > 0; const toolbar = byId('reportControls'); byId('reportLoading').hidden = !active; toolbar.setAttribute('aria-busy', String(active)); if (active) { ['startDate', 'endDate', 'processSelect', 'serie', 'serieTrigger', 'case', 'pn', 'apply', 'dataSource'].forEach((id) => { byId(id).disabled = true; }); document.querySelectorAll('.process-option').forEach((button) => { button.disabled = true; }); return; } const filters = currentConfig.filters || {}; byId('startDate').disabled = false; byId('endDate').disabled = false; byId('dataSource').disabled = false; byId('apply').disabled = false; document.querySelectorAll('.process-option').forEach((button) => { button.disabled = false; }); byId('processSelect').disabled = selectedDataset() !== 'lot' || filters.process === false; byId('serie').disabled = filters.serie === false; byId('serieTrigger').disabled = filters.serie === false; byId('case').disabled = filters.case === false; byId('pn').disabled = filters.pn === false; }
+function setReportControlsLoading(loading) { reportLoadingCount = Math.max(0, reportLoadingCount + (loading ? 1 : -1)); const active = reportLoadingCount > 0; const toolbar = byId('reportControls'); byId('reportLoading').hidden = !active; toolbar.setAttribute('aria-busy', String(active)); const scTrendControlIds = ['scYieldTrendSeries', 'scYieldInterval', 'scYieldTrendChartType']; scTrendControlIds.forEach((id) => { const control = byId(id); if (control) control.disabled = active; }); if (active) { ['startDate', 'endDate', 'processSelect', 'serie', 'serieTrigger', 'case', 'pn', 'apply', 'dataSource'].forEach((id) => { byId(id).disabled = true; }); document.querySelectorAll('.process-option').forEach((button) => { button.disabled = true; }); return; } const filters = currentConfig.filters || {}; byId('startDate').disabled = false; byId('endDate').disabled = false; byId('dataSource').disabled = false; byId('apply').disabled = false; document.querySelectorAll('.process-option').forEach((button) => { button.disabled = false; }); byId('processSelect').disabled = selectedDataset() !== 'lot' || filters.process === false; byId('serie').disabled = filters.serie === false; byId('serieTrigger').disabled = filters.serie === false; byId('case').disabled = filters.case === false; byId('pn').disabled = filters.pn === false; }
 
 function selectedSeries() { return [...byId('serie').selectedOptions].map((option) => option.value); }
 function updateSerieTrigger() { const selected = selectedSeries(); byId('serieTrigger').textContent = selected.length ? (selected.length === 1 ? selected[0] : `${selected.length} series selected`) : 'All series'; }
@@ -148,8 +156,9 @@ function resolveInProgressReportingDate() { const today = bangkokToday(); return
 function isInProgressDay(date) { return Boolean(inProgressReportingDate) && date === inProgressReportingDate; }
 function isWipRefreshPendingDay(date) { return currentConfig.dataset === 'lot' && Boolean(inProgressReportingDate) && latestSourceReportingDate < inProgressReportingDate && date === latestSourceReportingDate; }
 function reportingDateLabel(date) { if (isInProgressDay(date)) return `${date.slice(5)} (live)`; return isWipRefreshPendingDay(date) ? `${date.slice(5)} (refreshing)` : date.slice(5); }
-function targetSetting(product, serie, period = selectedReportingPeriod(), includeZero = false) { if (!period) return undefined; const setting = readTargetSettings()[product]?.[serie]; const resolved = setting?.periods?.[period] || (setting?.period === period ? setting : undefined); return !includeZero && Number(resolved?.target) === 0 ? undefined : resolved; }
-function savedSeriesForPeriod(product, period) { if (!product || !period) return []; return Object.entries(readTargetSettings()[product] || {}).filter(([, setting]) => Boolean(setting?.periods?.[period] || setting?.period === period)).map(([serie]) => serie); }
+function mtdTargetProduct(product) { return product === 'NEO' ? 'TA' : product; }
+function targetSetting(product, serie, period = selectedReportingPeriod(), includeZero = false) { if (!period) return undefined; const setting = readTargetSettings()[mtdTargetProduct(product)]?.[serie]; const resolved = setting?.periods?.[period] || (setting?.period === period ? setting : undefined); return !includeZero && Number(resolved?.target) === 0 ? undefined : resolved; }
+function savedSeriesForPeriod(product, period) { if (!product || !period) return []; return Object.entries(readTargetSettings()[mtdTargetProduct(product)] || {}).filter(([, setting]) => Boolean(setting?.periods?.[period] || setting?.period === period)).map(([serie]) => serie); }
 function dailyQuantityCell(value, product, serie, date) { const setting = dailyTargetStatusEnabled && currentConfig.dataset === 'closed' && !isInProgressDay(date) ? targetSetting(product, serie, date.slice(0, 7)) : undefined; if (!setting) return `<td>${format.format(value)}</td>`; const dailyTarget = setting.target / setting.workingDay; const passed = value >= dailyTarget; return `<td class="daily-${passed ? 'pass' : 'below'}" title="Daily target ${format.format(dailyTarget)}" aria-label="${escapeHtml(serie)} ${date}: ${passed ? 'meets' : 'is below'} daily target ${format.format(dailyTarget)}">${format.format(value)}</td>`; }
 function mtdPlan(setting) { const currentDay = Number(byId('endDate').value.slice(-2)); const dailyTarget = setting.target / setting.workingDay; return { currentDay, dailyTarget, mtdTarget: dailyTarget * currentDay }; }
 function commentScope() { return { product: byId('product').value, pn: byId('pn').value.trim(), process: byId('process').value.trim() }; }
@@ -503,12 +512,24 @@ function bindTaYieldTrendTooltips(holder) {
   });
 }
 
+function setScYieldWeeklyVisibility(visible) {
+  scYieldWeeklyVisible = visible;
+  const holder = byId('scYieldWeeklyCharts');
+  const toggle = byId('scYieldWeeklyToggle');
+  if (!holder || !toggle) return;
+  holder.hidden = !scYieldWeeklyVisible;
+  toggle.setAttribute('aria-expanded', String(scYieldWeeklyVisible));
+  toggle.setAttribute('aria-checked', String(scYieldWeeklyVisible));
+  toggle.querySelector('.sc-yield-weekly-toggle-state').textContent = scYieldWeeklyVisible ? 'On' : 'Off';
+}
+
 function renderScYieldWeeklyChartsBase(rows) {
   latestScYieldWeeklyData = rows;
   let holder = byId('scYieldWeeklyCharts');
   if (!holder) {
-    byId('scYieldOverviewCharts').insertAdjacentHTML('beforebegin', '<section id="scYieldWeeklyCharts" class="sc-yield-series-section"><div><p class="section-kicker">Weekly performance</p><h3>Weekly yield tendency</h3></div></section>');
+    byId('scYieldOverviewCharts').insertAdjacentHTML('beforebegin', '<div class="sc-yield-weekly-disclosure"><button id="scYieldWeeklyToggle" class="sc-yield-weekly-toggle" type="button" role="switch" aria-label="Weekly yield tendency" aria-checked="false" aria-expanded="false" aria-controls="scYieldWeeklyCharts"><span class="sc-yield-weekly-toggle-label" aria-hidden="true">Weekly yield tendency</span><span class="sc-yield-weekly-toggle-track" aria-hidden="true"><span class="sc-yield-weekly-toggle-knob"></span></span><span class="sc-yield-weekly-toggle-state" aria-hidden="true">Off</span></button></div><section id="scYieldWeeklyCharts" class="sc-yield-series-section" hidden aria-labelledby="scYieldWeeklyTitle"><div><p class="section-kicker">Weekly performance</p><h3 id="scYieldWeeklyTitle">Weekly yield tendency</h3></div></section>');
     holder = byId('scYieldWeeklyCharts');
+    byId('scYieldWeeklyToggle').addEventListener('click', () => setScYieldWeeklyVisibility(!scYieldWeeklyVisible));
   }
   const allWeeks = [...new Set(rows.map((row) => row.month))].sort();
   if (!selectedScYieldWeeks.length) selectedScYieldWeeks = allWeeks;
@@ -540,11 +561,13 @@ function renderScYieldWeeklyChartsBase(rows) {
     return `<article class="sc-yield-series-card"><h4>${title}</h4><svg viewBox="0 0 ${width} ${height}" role="group" aria-label="${title}"><text x="8" y="28" font-size="11">${max.toFixed(1)}%</text><text x="8" y="183" font-size="11">${min.toFixed(1)}%</text>${lines}${marks}${weeks.map((week, index) => `<text x="${x(index)}" y="208" text-anchor="middle" font-size="10">${week.slice(-3)}</text>`).join('')}</svg><div class="sc-yield-weekly-tooltip" role="status" hidden></div></article>`;
   };
   holder.innerHTML = `<div><p class="section-kicker">Weekly performance</p><h3>Weekly yield tendency</h3><label>Select weeks <select id="scYieldWeekSelect" multiple size="4">${allWeeks.map((week) => `<option value="${week}" ${selectedScYieldWeeks.includes(week) ? 'selected' : ''}>${week}</option>`).join('')}</select></label></div><div class="sc-yield-series-grid">${chart('Weekly yield tendency', false)}${chart('Accumulated weekly yield tendency', true)}</div>`;
+  holder.querySelector('h3').id = 'scYieldWeeklyTitle';
+  setScYieldWeeklyVisibility(scYieldWeeklyVisible);
   bindScYieldWeeklyTooltips(holder);
   byId('scYieldWeekSelect').addEventListener('change', (event) => { selectedScYieldWeeks = [...event.target.selectedOptions].map((option) => option.value); renderScYieldWeeklyCharts(latestScYieldWeeklyData); });
 }
 
-function renderScYieldWeeklyCharts(rows) {
+function renderScYieldWeeklyCharts(rows, focusTargetId = '') {
   const allWeeks = [...new Set(rows.map((row) => row.month))].sort();
   selectedScYieldWeeks = selectedScYieldWeeks.filter((week) => allWeeks.includes(week));
   if (!selectedScYieldWeeks.length) selectedScYieldWeeks = allWeeks;
@@ -553,8 +576,9 @@ function renderScYieldWeeklyCharts(rows) {
   if (!selector) return;
   const start = selectedScYieldWeeks[0] || allWeeks[0]; const end = selectedScYieldWeeks.at(-1) || allWeeks.at(-1);
   selector.outerHTML = `<div class="sc-yield-week-range" role="group" aria-label="Weekly chart display range"><span class="sc-yield-week-range-title">Display range</span><label><span>From week</span><select id="scYieldWeekStart" aria-label="Start week">${allWeeks.map((week) => `<option value="${week}" ${week === start ? 'selected' : ''}>${week}</option>`).join('')}</select></label><span class="sc-yield-week-range-divider" aria-hidden="true">to</span><label><span>To week</span><select id="scYieldWeekEnd" aria-label="End week">${allWeeks.map((week) => `<option value="${week}" ${week === end ? 'selected' : ''}>${week}</option>`).join('')}</select></label></div>`;
-  const update = () => { const first = byId('scYieldWeekStart').value; const last = byId('scYieldWeekEnd').value; selectedScYieldWeeks = allWeeks.filter((week) => week >= first && week <= last); renderScYieldWeeklyCharts(rows); };
+  const update = (event) => { const first = byId('scYieldWeekStart').value; const last = byId('scYieldWeekEnd').value; selectedScYieldWeeks = allWeeks.filter((week) => week >= first && week <= last); renderScYieldWeeklyCharts(rows, event.currentTarget.id); };
   byId('scYieldWeekStart').addEventListener('change', update); byId('scYieldWeekEnd').addEventListener('change', update);
+  if (focusTargetId) byId(focusTargetId)?.focus();
 }
 
 function renderScYieldInputRatioChart(rows) {
@@ -642,6 +666,7 @@ function renderScYieldArSummary(rates, rows) {
 function renderScYield(rows = latestScYieldData) {
   latestScYieldData = rows;
   byId('scYieldLogTab')?.removeAttribute('hidden');
+  ensureScYieldActionsView();
   if (document.querySelector('.app-tab.active')?.dataset.view === 'sc-yield-log') renderScYieldCalculationLog(rows);
   if (scYieldTargetStorageRemote && !scYieldTargetSettingsLoaded && !scYieldTargetSettingsLoading) { scYieldTargetSettingsLoading = true; loadScYieldTargetSettings().then(() => renderScYield(rows)).catch((error) => setStatus(error.message)).finally(() => { scYieldTargetSettingsLoading = false; }); }
   const months = [...new Set(rows.map((row) => row.month))].sort(); const groups = [...new Set(rows.flatMap((row) => row.groups.map((group) => group.group)))].sort();
@@ -655,9 +680,9 @@ function renderScYield(rows = latestScYieldData) {
   byId('scYieldTableHead').innerHTML = `<tr><th>${singleMonth ? 'Series' : 'Month'}</th>${singleMonth ? '' : '<th>Series</th>'}<th>InputQ</th>${tableGroups.map((group) => `<th>${group}</th>`).join('')}<th>Defective</th></tr>`;
   byId('scYieldRows').innerHTML = rows.map((row) => { const quantities = Object.fromEntries(row.groups.map((group) => [group.group, group.quantity])); return `<tr><td>${escapeHtml(singleMonth ? row.line : row.month)}</td>${singleMonth ? '' : `<td>${escapeHtml(row.line)}</td>`}<td>${format.format(row.input)}</td>${tableGroups.map((group) => `<td>${format.format(quantities[group] || 0)}</td>`).join('')}<td>${format.format(row.defect)}</td></tr>`; }).join('') || `<tr><td colspan="${singleMonth ? 9 : 10}">No eligible SC Yield data matches the selected filters.</td></tr>`;
   renderScYieldInputRatioChart(rows);
-  if (!months.length) { byId('scYieldArSummary')?.setAttribute('hidden', ''); byId('scYieldChart').innerHTML = '<h2 id="scYieldTitle" class="sc-yield-chart-title">Total Yield of Super Capacitor</h2><p class="sc-yield-empty">No included SC Yield data matches the selected filters.</p>'; byId('scYieldSeriesCharts').innerHTML = ''; return; }
+  if (!months.length) { byId('scYieldArSummary')?.setAttribute('hidden', ''); renderScYieldTendencyCharts([]); byId('scYieldSeriesCharts').innerHTML = ''; return; }
   const rates = byMonth.map((entry) => { const targetRows = rows.filter((row) => row.month === entry.month && row.input > 0).map((row) => ({ input: row.input, target: scYieldTargetFor(row.line, entry.month) })).filter((row) => row.target !== undefined); const targetInput = targetRows.reduce((sum, row) => sum + row.input, 0); const target = targetInput ? targetRows.reduce((sum, row) => sum + row.input * row.target, 0) / targetInput : undefined; return { ...entry, target, defectRate: entry.input ? entry.defect / entry.input * 100 : undefined, yield: entry.input ? (entry.input - entry.defect) / entry.input * 100 : undefined, groupRates: Object.fromEntries(groups.map((group) => [group, entry.input ? (entry.groups[group] || 0) / entry.input * 100 : 0])) }; });
-  if (!rates.some((entry) => entry.yield !== undefined)) { byId('scYieldArSummary')?.setAttribute('hidden', ''); byId('scYieldChart').innerHTML = '<h2 id="scYieldTitle" class="sc-yield-chart-title">Total Yield of Super Capacitor</h2><p class="sc-yield-empty">No eligible SC input quantity is available to calculate yield for the selected period.</p>'; renderScYieldSeriesCharts(rows, groups); return; }
+  if (!rates.some((entry) => entry.yield !== undefined)) { byId('scYieldArSummary')?.setAttribute('hidden', ''); renderScYieldTendencyCharts(latestScYieldTendencyData); renderScYieldSeriesCharts(rows, groups); return; }
   renderScYieldArSummary(rates, rows);
   const hasTarget = rates.some((entry) => entry.target !== undefined); const yieldValues = [...rates.filter((entry) => entry.yield !== undefined).map((entry) => entry.yield), ...rates.filter((entry) => entry.target !== undefined).map((entry) => entry.target)]; let yieldMin = Math.max(0, Math.floor((Math.min(...yieldValues) - .5) * 2) / 2); let yieldMax = Math.min(100, Math.ceil((Math.max(...yieldValues) + .5) * 2) / 2); if (yieldMax - yieldMin < 1) { yieldMin = Math.max(0, yieldMin - .5); yieldMax = Math.min(100, yieldMax + .5); }
   const width = Math.max(760, months.length * 92 + 116); const height = 310; const left = 62; const right = 62; const top = 42; const bottom = 52; const plotWidth = width - left - right; const plotHeight = height - top - bottom; const base = top + plotHeight; const defectMax = Math.max(1, Math.ceil(Math.max(...rates.map((entry) => entry.defectRate || 0)) * 10) / 10); const slot = plotWidth / months.length; const barWidth = Math.min(48, slot * .56); const yYield = (value) => base - (value - yieldMin) / (yieldMax - yieldMin) * plotHeight;
@@ -667,7 +692,88 @@ function renderScYield(rows = latestScYieldData) {
   const targetPoints = rates.map((entry, index) => entry.target === undefined ? '' : `${left + index * slot + slot / 2},${yYield(entry.target)}`).filter(Boolean).join(' '); const targetDots = rates.map((entry, index) => entry.target === undefined ? '' : `<circle class="target-point" cx="${left + index * slot + slot / 2}" cy="${yYield(entry.target)}" r="3"><title>${entry.month} | Target: ${entry.target.toFixed(2)}%</title></circle>`).join('');
   const legend = groups.map((group, index) => `<span><i style="background:${chartColors[index % chartColors.length]}"></i>${escapeHtml(group)}</span>`).join('');
   byId('scYieldChart').innerHTML = `<h2 id="scYieldTitle" class="sc-yield-chart-title">Total Yield of Super Capacitor</h2><div class="sc-yield-legend"><strong>Mode group</strong>${legend}${hasTarget ? '<span><i class="target-line-key"></i>Target</span>' : ''}<span><i class="yield-line-key"></i>Yield</span></div><div class="sc-yield-chart-scroll"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Monthly SC defect rate by mode group and total yield"><text class="axis axis-title" x="${left}" y="18">%Defect</text><text class="axis axis-title" x="${width - right}" y="18" text-anchor="end">%Yield</text>${grid}<line x1="${left}" y1="${base}" x2="${width - right}" y2="${base}" stroke="#b8c7bf"/>${bars}${hasTarget ? `<polyline class="target-line" points="${targetPoints}"/>${targetDots}` : ''}${points}${dots}</svg></div>`;
+  renderScYieldTendencyCharts(latestScYieldTendencyData);
   renderScYieldSeriesCharts(rows, groups);
+}
+
+async function loadScYieldTendency(focusTargetId = '') {
+  const requestId = ++scYieldTendencyRequestId;
+  const holder = byId('scYieldChart');
+  holder?.setAttribute('aria-busy', 'true');
+  const params = new URLSearchParams({ dataset: 'yield', startDate: byId('startDate').value, endDate: byId('endDate').value, product: 'SC', interval: scYieldInterval });
+  selectedSeries().forEach((serie) => params.append('serie', serie));
+  try {
+    const rows = await request(`/api/sc-yield-tendency?${params}`);
+    if (requestId !== scYieldTendencyRequestId) return;
+    renderScYieldTendencyCharts(rows, focusTargetId);
+  } catch (error) {
+    if (requestId === scYieldTendencyRequestId) setStatus(`SC tendency could not be loaded: ${error.message}`);
+  } finally {
+    if (requestId === scYieldTendencyRequestId) byId('scYieldChart')?.removeAttribute('aria-busy');
+  }
+}
+
+function renderScYieldTendencyCharts(rows = latestScYieldTendencyData, focusTargetId = '') {
+  latestScYieldTendencyData = rows;
+  const holder = byId('scYieldChart');
+  const trendSeries = [...new Set(rows.map((row) => row.line || 'Unspecified'))].sort((left, right) => left.localeCompare(right));
+  if (scYieldTrendSeries !== 'Total' && !trendSeries.includes(scYieldTrendSeries)) scYieldTrendSeries = 'Total';
+  const scope = scYieldTrendSeries === 'Total' ? 'Total' : scYieldTrendSeries;
+  holder.innerHTML = `<div class="table-heading"><div><p class="section-kicker">Total quality trend</p><h3 id="scYieldTitle">Yield and defect tendency</h3></div><label class="yield-interval-control" for="scYieldTrendSeries">Series<select id="scYieldTrendSeries"><option value="Total">Total</option>${trendSeries.map((serie) => `<option value="${escapeHtml(serie)}" ${serie === scYieldTrendSeries ? 'selected' : ''}>${escapeHtml(serie)}</option>`).join('')}</select></label><label class="yield-interval-control" for="scYieldInterval">Group by<select id="scYieldInterval"><option value="day" ${scYieldInterval === 'day' ? 'selected' : ''}>Day</option><option value="week" ${scYieldInterval === 'week' ? 'selected' : ''}>Week</option><option value="month" ${scYieldInterval === 'month' ? 'selected' : ''}>Month</option></select></label><label class="yield-interval-control" for="scYieldTrendChartType">Chart view<select id="scYieldTrendChartType"><option value="summary" ${scYieldTrendChartType === 'summary' ? 'selected' : ''}>Column</option><option value="line" ${scYieldTrendChartType === 'line' ? 'selected' : ''}>Line</option></select></label></div><p id="scYieldTrendStatus" class="sc-yield-trend-status" role="status" aria-live="polite" aria-atomic="true"></p><section class="ta-yield-tendency-panel"><h4>${escapeHtml(scope)} yield</h4><div id="scYieldYieldChart"></div></section><section class="ta-yield-tendency-panel"><h4>Defect rate by mode group</h4><div id="scYieldDefectChart"></div></section>`;
+  byId('scYieldTrendSeries').addEventListener('change', () => { scYieldTrendSeries = byId('scYieldTrendSeries').value; renderScYieldTendencyCharts(latestScYieldTendencyData, 'scYieldTrendSeries'); });
+  byId('scYieldInterval').addEventListener('change', () => { scYieldInterval = byId('scYieldInterval').value; loadScYieldTendency('scYieldInterval'); });
+  byId('scYieldTrendChartType').addEventListener('change', () => { scYieldTrendChartType = byId('scYieldTrendChartType').value; renderScYieldTendencyCharts(latestScYieldTendencyData, 'scYieldTrendChartType'); });
+  if (focusTargetId) byId(focusTargetId)?.focus();
+  const trendStatus = byId('scYieldTrendStatus');
+  requestAnimationFrame(() => { if (trendStatus?.isConnected) trendStatus.textContent = `SC charts updated: ${scope}, grouped by ${scYieldInterval}, ${scYieldTrendChartType === 'line' ? 'line' : 'column'} view.`; });
+  const trendRows = scYieldTrendSeries === 'Total' ? rows : rows.filter((row) => row.line === scYieldTrendSeries);
+  const groups = [...new Set(trendRows.flatMap((row) => (row.groups || []).map((group) => group.group)))].sort();
+  const bucketNames = [...new Set(trendRows.map((row) => row.month))].sort();
+  const buckets = bucketNames.map((month) => {
+    const matches = trendRows.filter((row) => row.month === month);
+    const input = matches.reduce((sum, row) => sum + Number(row.input || 0), 0);
+    const defect = matches.reduce((sum, row) => sum + Number(row.defect || 0), 0);
+    const grouped = matches.reduce((values, row) => (row.groups || []).reduce((next, group) => ({ ...next, [group.group]: (next[group.group] || 0) + Number(group.quantity || 0) }), values), {});
+    const targetRows = matches.filter((row) => Number(row.input || 0) > 0).map((row) => ({ input: Number(row.input), target: scYieldTargetFor(row.line || 'Unspecified', taYieldTargetPeriod(month)) })).filter((row) => Number.isFinite(row.target));
+    const targetInput = targetRows.reduce((sum, row) => sum + row.input, 0);
+    return { month, input, defect, groups: grouped, target: targetInput ? targetRows.reduce((sum, row) => sum + row.input * row.target, 0) / targetInput : undefined, yield: input ? (input - defect) / input * 100 : undefined };
+  });
+  if (!buckets.some((row) => Number.isFinite(row.yield))) {
+    byId('scYieldYieldChart').innerHTML = '<p class="sc-yield-empty">No eligible SC Yield data matches the selected filters.</p>';
+    byId('scYieldDefectChart').innerHTML = '<p class="sc-yield-empty">No mapped defect data is available.</p>';
+    return;
+  }
+  const dailyColumnCount = scYieldInterval === 'day' ? Math.max(31, buckets.length) : buckets.length;
+  const width = Math.max(scYieldInterval === 'day' ? 760 : 860, dailyColumnCount * (scYieldInterval === 'day' ? 50 : 86) + 116);
+  const height = 250; const left = 54; const right = 54; const top = 30; const bottom = 48; const base = height - bottom; const plotHeight = base - top; const slot = (width - left - right) / buckets.length; const x = (index) => left + index * slot + slot / 2;
+  const label = (value) => scYieldInterval === 'day' ? value.slice(5) : scYieldInterval === 'week' ? value.slice(-3) : value.slice(5);
+  const viewportStyle = scYieldInterval === 'day' ? ` style="width:min(100%, ${31 * 50 + 116}px)"` : '';
+  const svgStyle = ` style="width:${width}px; min-width:${width}px; max-width:none; margin-inline:auto"`;
+  const valuesForScale = [...buckets.map((row) => row.yield), ...buckets.map((row) => row.target)].filter(Number.isFinite);
+  let minimum = Math.max(0, Math.floor((Math.min(...valuesForScale) - .5) * 2) / 2); let maximum = Math.min(100, Math.ceil((Math.max(...valuesForScale) + .5) * 2) / 2); if (maximum - minimum < 1) { minimum = Math.max(0, minimum - .5); maximum = Math.min(100, maximum + .5); }
+  const yieldY = (value) => base - (value - minimum) / (maximum - minimum) * plotHeight;
+  const yieldGrid = [0, .5, 1].map((ratio) => { const y = base - plotHeight * ratio; return `<line class="gridline" x1="${left}" y1="${y}" x2="${width - right}" y2="${y}"/><text class="axis" x="${left - 8}" y="${y + 4}" text-anchor="end">${(minimum + (maximum - minimum) * ratio).toFixed(1)}%</text>`; }).join('');
+  const labels = buckets.map((row, index) => `<text class="axis" x="${x(index)}" y="${base + 22}" text-anchor="middle">${escapeHtml(label(row.month))}</text>`).join('');
+  const targetPoints = buckets.map((row, index) => Number.isFinite(row.target) ? `${x(index)},${yieldY(row.target)}` : '').filter(Boolean).join(' ');
+  const targetDots = buckets.map((row, index) => Number.isFinite(row.target) ? `<circle class="target-point" cx="${x(index)}" cy="${yieldY(row.target)}" r="3"><title>${escapeHtml(row.month)}: target ${row.target.toFixed(2)}%</title></circle>` : '').join('');
+  const yieldColumns = buckets.map((row, index) => { if (!Number.isFinite(row.yield)) return ''; const columnWidth = Math.min(48, slot * .62); const target = row.target; const belowTarget = Number.isFinite(target) && row.yield < target; return `<rect class="yield-column${belowTarget ? ' below-target' : ''}" x="${x(index) - columnWidth / 2}" y="${yieldY(row.yield)}" width="${columnWidth}" height="${base - yieldY(row.yield)}"><title>${escapeHtml(row.month)}: yield ${row.yield.toFixed(2)}%${Number.isFinite(target) ? `; target ${target.toFixed(2)}%` : '; target incomplete'}</title></rect><text class="ta-yield-column-value" x="${x(index)}" y="${Math.max(top + 12, yieldY(row.yield) - 7)}" text-anchor="middle">${row.yield.toFixed(2)}%</text>`; }).join('');
+  const yieldLinePoints = buckets.map((row, index) => Number.isFinite(row.yield) ? `${x(index)},${yieldY(row.yield)}` : '').filter(Boolean).join(' ');
+  const yieldLineDots = buckets.map((row, index) => Number.isFinite(row.yield) ? `<circle class="yield-point" cx="${x(index)}" cy="${yieldY(row.yield)}" r="4"><title>${escapeHtml(row.month)}: yield ${row.yield.toFixed(2)}%</title></circle>` : '').join('');
+  const yieldVisual = scYieldTrendChartType === 'line' ? `<polyline class="yield-line" points="${yieldLinePoints}"/>${yieldLineDots}` : yieldColumns;
+  const yieldLegend = scYieldTrendChartType === 'line' ? '<span><i class="yield-line-key"></i>Yield line</span>' : '<span><i class="yield-column-key"></i>Yield column</span>';
+  byId('scYieldYieldChart').innerHTML = `<div class="sc-yield-legend">${yieldLegend}${targetPoints ? '<span><i class="target-line-key"></i>Target</span>' : ''}</div><div class="sc-yield-chart-scroll" tabindex="0" aria-label="Scrollable SC yield chart"${viewportStyle}><svg${svgStyle} viewBox="0 0 ${width} ${height}" role="group" aria-label="SC ${escapeHtml(scope)} yield by ${scYieldInterval}"><text class="axis axis-title" x="${left}" y="18">%Yield</text>${yieldGrid}<line x1="${left}" y1="${base}" x2="${width - right}" y2="${base}" stroke="#b8c7bf"/>${yieldVisual}${targetPoints ? `<polyline class="target-line" points="${targetPoints}"/>${targetDots}` : ''}${labels}</svg></div>`;
+  const displayedDefectRates = buckets.map((row) => groups.reduce((sum, group) => sum + (row.input ? Math.max(0, (row.groups[group] || 0) / row.input * 100) : 0), 0));
+  const defectMaximum = Math.max(1, Math.ceil(Math.max(...displayedDefectRates) * 10) / 10);
+  const defectGrid = [0, .5, 1].map((ratio) => { const y = base - plotHeight * ratio; return `<line class="gridline" x1="${left}" y1="${y}" x2="${width - right}" y2="${y}"/><text class="axis" x="${left - 8}" y="${y + 4}" text-anchor="end">${(defectMaximum * ratio).toFixed(1)}%</text>`; }).join('');
+  const bars = buckets.map((row, index) => { const barWidth = Math.min(48, slot * .62); const barX = x(index) - barWidth / 2; let stacked = 0; return groups.map((group, groupIndex) => { const rate = row.input ? Math.max(0, (row.groups[group] || 0) / row.input * 100) : 0; const barHeight = rate / defectMaximum * plotHeight; const y = base - stacked - barHeight; stacked += barHeight; return rate ? `<rect x="${barX}" y="${y}" width="${barWidth}" height="${barHeight}" fill="${chartColors[groupIndex % chartColors.length]}"><title>${escapeHtml(row.month)} | ${escapeHtml(group)}: ${rate.toFixed(3)}%</title></rect>` : ''; }).join(''); }).join('');
+  const defectLabels = displayedDefectRates.map((rate, index) => rate ? `<text class="ta-yield-column-value" x="${x(index)}" y="${Math.max(top + 12, base - rate / defectMaximum * plotHeight - 7)}" text-anchor="middle">${rate.toFixed(2)}%</text>` : '').join('');
+  const legend = groups.map((group, index) => `<span><i style="background:${chartColors[index % chartColors.length]}"></i>${escapeHtml(group)}</span>`).join('');
+  byId('scYieldDefectChart').innerHTML = displayedDefectRates.some((rate) => rate > 0) ? `<div class="sc-yield-legend"><strong>Mode group</strong>${legend}</div><div class="sc-yield-chart-scroll" tabindex="0" aria-label="Scrollable SC defect chart"${viewportStyle}><svg${svgStyle} viewBox="0 0 ${width} ${height}" role="group" aria-label="SC ${escapeHtml(scope)} defect rate by ${scYieldInterval}"><text class="axis axis-title" x="${left}" y="18">%Defect</text>${defectGrid}<line x1="${left}" y1="${base}" x2="${width - right}" y2="${base}" stroke="#b8c7bf"/>${bars}${defectLabels}${labels}</svg></div>` : `<p class="sc-yield-empty">No mapped defect data is available for ${escapeHtml(scope)} grouped by ${scYieldInterval}.</p>`;
+  const dataHead = groups.map((group) => `<th scope="col">${escapeHtml(group)}</th>`).join('');
+  const dataRows = buckets.map((row) => `<tr><th scope="row">${escapeHtml(row.month)}</th><td>${Number.isFinite(row.yield) ? `${row.yield.toFixed(2)}%` : '-'}</td><td>${Number.isFinite(row.target) ? `${row.target.toFixed(2)}%` : '-'}</td>${groups.map((group) => `<td>${row.input ? `${((row.groups[group] || 0) / row.input * 100).toFixed(2)}%` : '-'}</td>`).join('')}</tr>`).join('');
+  holder.insertAdjacentHTML('beforeend', `<details class="sc-yield-chart-data"><summary>View chart data</summary><div class="table-wrap" tabindex="0" aria-label="Scrollable SC chart data for ${escapeHtml(scope)}, grouped by ${scYieldInterval}"><table><caption class="sc-yield-table-caption">SC chart data for ${escapeHtml(scope)}, grouped by ${scYieldInterval}</caption><thead><tr><th scope="col">${scYieldInterval}</th><th scope="col">Yield</th><th scope="col">Target</th>${dataHead}</tr></thead><tbody>${dataRows}</tbody></table></div></details>`);
+  holder.querySelectorAll('.ta-yield-tendency-panel').forEach((panel) => panel.insertAdjacentHTML('beforeend', '<div class="ta-yield-trend-tooltip" aria-hidden="true" hidden></div>'));
+  bindTaYieldTrendTooltips(holder);
 }
 
 async function refreshDatabaseAuthentication() {
@@ -906,6 +1012,25 @@ async function saveTaYieldAction(event) {
   event.preventDefault(); const id = Number(byId('taActionId').value); const payload = { actionDate: byId('taActionDate').value, serie: byId('taActionSerie').value.trim(), problem: byId('taActionProblem').value.trim(), analysisAction: byId('taActionAnalysis').value.trim(), pic: byId('taActionPic').value.trim(), progress: byId('taActionProgress').value.trim(), dueDate: byId('taActionDueDate').value, status: byId('taActionStatus').value }; const status = byId('taActionModalStatus'); const save = byId('saveTaYieldAction'); save.disabled = true; status.textContent = 'Saving action…'; try { await request(id ? `/api/ta-yield-actions/${id}` : '/api/ta-yield-actions', { method: id ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); latestTaYieldActions = await request('/api/ta-yield-actions'); byId('taYieldActionModal').hidden = true; renderTaYield(latestTaYieldData); } catch (error) { status.textContent = error.message; } finally { save.disabled = false; }
 }
 
+function ensureScYieldActionsView() {
+  let view = byId('scYieldActions');
+  if (!view) { view = document.createElement('section'); view.id = 'scYieldActions'; view.className = 'ta-yield-actions'; byId('scYieldTableWrap').before(view); }
+  const displayDate = (value) => value ? String(value).slice(0, 10) : '—'; const open = latestScYieldActions.filter((action) => action.status !== 'CLOSED'); const closed = latestScYieldActions.filter((action) => action.status === 'CLOSED'); const visible = scYieldActionStatus === 'CLOSED' ? closed : open;
+  const rows = visible.map((action) => `<tr><td data-action-label="Date">${escapeHtml(displayDate(action.actionDate))}</td><td data-action-label="Series"><strong>${escapeHtml(action.serie)}</strong></td><td data-action-label="Problem">${escapeHtml(action.problem)}</td><td data-action-label="Analysis / action">${escapeHtml(action.analysisAction || '—')}</td><td data-action-label="Progress">${escapeHtml(action.progress || '—')}</td><td data-action-label="PIC">${escapeHtml(action.pic || '—')}</td><td data-action-label="Due">${escapeHtml(displayDate(action.dueDate))}</td><td data-action-label="Status"><span class="ta-action-status ${action.status.toLowerCase().replace('_', '-')}">${escapeHtml(action.status === 'CLOSED' ? 'Closed' : action.status === 'OPEN' ? 'Open' : 'In progress')}</span></td><td data-action-label="Action"><button type="button" data-edit-sc-action="${action.id}">Edit</button></td></tr>`).join('') || `<tr><td colspan="9" class="ta-action-empty">No ${scYieldActionStatus === 'CLOSED' ? 'closed' : 'in-progress'} SC Yield actions.</td></tr>`;
+  view.innerHTML = `<div class="ta-action-heading"><div><p class="section-kicker">Corrective action tracker</p><h3>SC Yield actions</h3><p>Problems, owners, analysis, and follow-up progress from the SC Yield review.</p></div><button id="addScYieldAction" class="ta-action-primary" type="button">Add action</button></div><div class="ta-action-tabs" role="tablist" aria-label="SC Yield action status"><button class="ta-action-tab${scYieldActionStatus === 'IN_PROGRESS' ? ' active' : ''}" type="button" data-sc-action-filter="IN_PROGRESS" role="tab" aria-selected="${scYieldActionStatus === 'IN_PROGRESS'}">In progress <b>${open.length}</b></button><button class="ta-action-tab${scYieldActionStatus === 'CLOSED' ? ' active' : ''}" type="button" data-sc-action-filter="CLOSED" role="tab" aria-selected="${scYieldActionStatus === 'CLOSED'}">Closed <b>${closed.length}</b></button></div><div class="ta-action-table-wrap"><table><thead><tr><th scope="col">Date</th><th scope="col">Series</th><th scope="col">Problem</th><th scope="col">Analysis / action</th><th scope="col">Progress</th><th scope="col">PIC</th><th scope="col">Due</th><th scope="col">Status</th><th scope="col">Action</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  byId('addScYieldAction').addEventListener('click', () => openScYieldActionModal()); view.querySelectorAll('[data-sc-action-filter]').forEach((button) => button.addEventListener('click', () => { scYieldActionStatus = button.dataset.scActionFilter; ensureScYieldActionsView(); })); view.querySelectorAll('[data-edit-sc-action]').forEach((button) => button.addEventListener('click', () => openScYieldActionModal(latestScYieldActions.find((action) => action.id === Number(button.dataset.editScAction))))); return view;
+}
+
+function ensureScYieldActionModal() {
+  let modal = byId('scYieldActionModal');
+  if (!modal) { modal = document.createElement('div'); modal.id = 'scYieldActionModal'; modal.className = 'ta-action-modal'; modal.hidden = true; modal.innerHTML = '<form class="ta-action-dialog" novalidate><header><div><p class="section-kicker">SC Yield corrective action</p><h3 id="scActionModalTitle">Add action</h3></div><button type="button" data-close-sc-action aria-label="Close">×</button></header><input id="scActionId" type="hidden" /><div class="ta-action-form-grid"><label>Date<input id="scActionDate" type="date" required /></label><label>Series<input id="scActionSerie" maxlength="100" required /></label><label>Status<select id="scActionStatus"><option value="OPEN">Open</option><option value="IN_PROGRESS">In progress</option><option value="CLOSED">Closed</option></select></label><label>Due date<input id="scActionDueDate" type="date" /></label></div><label>Problem<textarea id="scActionProblem" maxlength="2000" required></textarea></label><label>Analysis / action<textarea id="scActionAnalysis" maxlength="8000"></textarea></label><div class="ta-action-form-grid"><label>PIC<input id="scActionPic" maxlength="255" /></label><label>Progress<textarea id="scActionProgress" maxlength="8000"></textarea></label></div><p id="scActionModalStatus" role="status"></p><footer><button type="button" data-close-sc-action>Cancel</button><button id="saveScYieldAction" type="submit">Save action</button></footer></form>'; document.body.append(modal); modal.querySelectorAll('[data-close-sc-action]').forEach((button) => button.addEventListener('click', () => { modal.hidden = true; })); modal.addEventListener('click', (event) => { if (event.target === modal) modal.hidden = true; }); modal.querySelector('form').addEventListener('submit', saveScYieldAction); }
+  return modal;
+}
+
+function openScYieldActionModal(action) { const modal = ensureScYieldActionModal(); const set = (id, value) => { byId(id).value = value || ''; }; set('scActionId', action?.id); set('scActionDate', action?.actionDate || byId('endDate').value); set('scActionSerie', action?.serie || ''); set('scActionStatus', action?.status || 'OPEN'); set('scActionDueDate', action?.dueDate); set('scActionProblem', action?.problem); set('scActionAnalysis', action?.analysisAction); set('scActionPic', action?.pic); set('scActionProgress', action?.progress); byId('scActionModalTitle').textContent = action ? 'Edit action' : 'Add action'; byId('scActionModalStatus').textContent = ''; modal.hidden = false; byId('scActionProblem').focus(); }
+
+async function saveScYieldAction(event) { event.preventDefault(); const id = Number(byId('scActionId').value); const payload = { actionDate: byId('scActionDate').value, serie: byId('scActionSerie').value.trim(), problem: byId('scActionProblem').value.trim(), analysisAction: byId('scActionAnalysis').value.trim(), pic: byId('scActionPic').value.trim(), progress: byId('scActionProgress').value.trim(), dueDate: byId('scActionDueDate').value, status: byId('scActionStatus').value }; const status = byId('scActionModalStatus'); const save = byId('saveScYieldAction'); save.disabled = true; status.textContent = 'Saving action…'; try { await request(id ? `/api/sc-yield-actions/${id}` : '/api/sc-yield-actions', { method: id ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); latestScYieldActions = await request('/api/sc-yield-actions'); byId('scYieldActionModal').hidden = true; ensureScYieldActionsView(); } catch (error) { status.textContent = error.message; } finally { save.disabled = false; } }
+
 function renderTaYield(payload) {
   const weeklySection = byId('taYieldWeeklySection');
   weeklySection?.remove();
@@ -1024,6 +1149,7 @@ async function request(url, options = {}, retriedAfterAuthentication = false) {
 }
 async function loadData() {
   const requestId = ++dataRequestId;
+  scYieldTendencyRequestId += 1;
   let loadFailed = false;
   const params = new URLSearchParams({ dataset: selectedDataset(), startDate: byId('startDate').value, endDate: byId('endDate').value });
   const apply = byId('apply');
@@ -1034,7 +1160,7 @@ async function loadData() {
   const mtdParams = period && currentConfig.dataset === 'closed' ? new URLSearchParams(params) : undefined; if (mtdParams) mtdParams.set('startDate', `${period}-01`);
   apply.textContent = 'Loading'; setReportControlsLoading(true); setStatus(isScYield ? 'Loading SC Yield data...' : isTaYield ? 'Loading TA Yield data...' : 'Loading quantity data...', true);
   try {
-    if (isScYield) { const [rows, weeklyRows] = await Promise.all([request(`/api/sc-yield?${params}`), request(`/api/sc-yield-weekly?${params}`)]); if (requestId !== dataRequestId) return; renderScYield(rows); renderScYieldWeeklyCharts(weeklyRows); setStatus(''); return; }
+    if (isScYield) { const tendencyParams = new URLSearchParams(params); tendencyParams.set('interval', scYieldInterval); const tendencyRequest = scYieldInterval === 'month' ? Promise.resolve(undefined) : request(`/api/sc-yield-tendency?${tendencyParams}`); const [rows, weeklyRows, tendencyRows, actions] = await Promise.all([request(`/api/sc-yield?${params}`), request(`/api/sc-yield-weekly?${params}`), tendencyRequest, request('/api/sc-yield-actions').catch(() => [])]); if (requestId !== dataRequestId) return; latestScYieldTendencyData = tendencyRows || rows; latestScYieldActions = actions; renderScYield(rows); renderScYieldWeeklyCharts(weeklyRows); setStatus(''); return; }
     if (isTaYield) { const groupTendencyParams = new URLSearchParams(params); groupTendencyParams.set('interval', taYieldInterval); const groupTendencyRequest = request(`/api/ta-yield-tendency?${groupTendencyParams}`); const tendencyParams = new URLSearchParams(groupTendencyParams); if (taYieldTrendPartNumber !== 'All') tendencyParams.set('trendPn', taYieldTrendPartNumber); const tendencyRequest = taYieldTrendPartNumber === 'All' ? groupTendencyRequest : request(`/api/ta-yield-tendency?${tendencyParams}`); const [summary, groupTendencyRows, tendencyRows, targets, actions] = await Promise.all([request(`/api/ta-yield?${params}`), groupTendencyRequest, tendencyRequest, request('/api/ta-yield-targets'), request('/api/ta-yield-actions').catch(() => [])]); if (requestId !== dataRequestId) return; taYieldTargets = targets.reduce((settings, target) => ({ ...settings, [target.serie]: { ...(settings[target.serie] || {}), [target.period]: target.target } }), {}); latestTaYieldActions = actions; latestTaYieldLotsUrl = `/api/ta-yield-lots?${params}`; latestTaYieldData = { summary, details: [] }; latestTaYieldTendencyData = tendencyRows; latestTaYieldGroupTendencyData = groupTendencyRows; if (taYieldTableView === 'lots') { const details = await request(latestTaYieldLotsUrl); if (requestId !== dataRequestId) return; latestTaYieldData = { ...latestTaYieldData, details }; } renderTaYield(latestTaYieldData); setStatus(''); return; }
     if (isLot) {
       const data = await request(`/api/quantity?${params}`);

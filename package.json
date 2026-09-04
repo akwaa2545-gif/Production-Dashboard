@@ -15,6 +15,7 @@
     "migrate:staging-indexes": "node scripts/migrate-staging-indexes.mjs",
     "validate:staging": "node src/validateStaging.js",
     "migrate:ta-yield-actions": "node scripts/migrate-ta-yield-actions.mjs",
+    "migrate:sc-yield-actions": "node scripts/migrate-sc-yield-actions.mjs",
     "migrate:mtd-target-product-ta": "node scripts/migrate-mtd-target-product-ta.mjs --apply",
     "import:ta-yield-actions": "node scripts/import-ta-yield-actions.mjs",
     "migrate:ta-yield-targets": "node scripts/migrate-ta-yield-targets.mjs",

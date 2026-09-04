@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ExcelJS from 'exceljs';
-import { publicConfig, publicDataModel, publicScYieldConfig, publicTaYieldConfig, read901StagingConfig, readCellCommentConfig, readDatasetConfig, readMtdTargetConfig, readScYieldConfig, readScYieldStagingConfig, readScYieldTargetConfig, readTaYieldActionConfig, readTaYieldConfig, readTaYieldTargetConfig, readWipStagingConfig, readYieldDefectSettingConfig, readTaYieldStagingConfig } from './config.js';
+import { publicConfig, publicDataModel, publicScYieldConfig, publicTaYieldConfig, read901StagingConfig, readCellCommentConfig, readDatasetConfig, readMtdTargetConfig, readScYieldActionConfig, readScYieldConfig, readScYieldStagingConfig, readScYieldTargetConfig, readTaYieldActionConfig, readTaYieldConfig, readTaYieldTargetConfig, readWipStagingConfig, readYieldDefectSettingConfig, readTaYieldStagingConfig } from './config.js';
 import { MtdTargetRepository } from './mtdTargetRepository.js';
 import { CellCommentRepository } from './cellCommentRepository.js';
 import { SqlRepository } from './sqlRepository.js';
@@ -16,9 +16,10 @@ import { TaYieldRepository } from './taYieldRepository.js';
 import { ScYieldTargetRepository } from './scYieldTargetRepository.js';
 import { TaYieldTargetRepository } from './taYieldTargetRepository.js';
 import { TaYieldActionRepository } from './taYieldActionRepository.js';
+import { ScYieldActionRepository } from './scYieldActionRepository.js';
 import { YieldDefectSettingRepository } from './yieldDefectSettingRepository.js';
 import { TaYieldStagingRepository } from './taYieldStagingRepository.js';
-import { mergeTaWorkbookLots, taWorkbookBusinessKey, taYieldRefreshPlan, thailandTapingDate } from './taYieldRefreshPlan.js';
+import { mergeTaWorkbookLots, taWorkbookBusinessKey, taYieldLateArrivalDates, taYieldRefreshPlan, thailandTapingDate } from './taYieldRefreshPlan.js';
 import { stagingIncrementalRefreshFilters } from './stagingRefreshPlan.js';
 import { loadScYieldMapping, loadScYieldSourceModes, mapScYieldRows } from './scYieldMapping.js';
 import { loadTaWorkbookReconciliationMapping, loadTaYieldMapping, mapTaWorkbookReconciliationRows, mapTaWorkbookYieldRows, mapTaYieldLotDetails, mapTaYieldMachineEvents, mapTaYieldRows } from './taYieldMapping.js';
@@ -234,10 +235,11 @@ async function taYieldDataTableWorkbook(rows, filters) {
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
-export function createApp({ environment = process.env, repository, scYieldRepository, taYieldRepository, mtdTargetRepository, scYieldTargetRepository, taYieldTargetRepository, taYieldActionRepository, cellCommentRepository, staging901Repository, stagingWipRepository, scYieldStagingRepository, taYieldStagingRepository, yieldDefectSettingRepository, cache } = {}) {
+export function createApp({ environment = process.env, repository, scYieldRepository, taYieldRepository, mtdTargetRepository, scYieldTargetRepository, taYieldTargetRepository, scYieldActionRepository, taYieldActionRepository, cellCommentRepository, staging901Repository, stagingWipRepository, scYieldStagingRepository, taYieldStagingRepository, yieldDefectSettingRepository, cache } = {}) {
   const configs = { closed: readDatasetConfig(environment, 'closed'), lot: readDatasetConfig(environment, 'lot') };
   const scYieldConfig = readScYieldConfig(environment);
   const taYieldConfig = readTaYieldConfig(environment);
+  const scYieldActionConfig = readScYieldActionConfig(environment);
   const taYieldActionConfig = readTaYieldActionConfig(environment);
   const mtdTargetConfig = readMtdTargetConfig(environment);
   const scYieldTargetConfig = readScYieldTargetConfig(environment);
@@ -265,6 +267,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   const yieldDefectSettings = yieldDefectSettingRepository || (yieldDefectSettingConfig.ready ? new YieldDefectSettingRepository(yieldDefectSettingConfig) : undefined);
   const taYieldStaging = taYieldStagingRepository || (taYieldStagingConfig.enabled && taYieldStagingConfig.ready ? new TaYieldStagingRepository(taYieldStagingConfig) : undefined);
   const taYieldActions = taYieldActionRepository || (taYieldActionConfig.ready ? new TaYieldActionRepository(taYieldActionConfig) : undefined);
+  const scYieldActions = scYieldActionRepository || (scYieldActionConfig.ready ? new ScYieldActionRepository(scYieldActionConfig) : undefined);
   let taYieldQa = { status: 'NOT_RUN' };
   let taYieldPipeline = { status: 'IDLE', stage: 'Waiting for the next scheduled refresh.', updatedAt: new Date().toISOString(), startedAt: undefined, completedAt: undefined, logs: [] };
   const updateTaYieldPipeline = (status, stage, extra = {}) => {
@@ -400,6 +403,16 @@ export function createApp({ environment = process.env, repository, scYieldReposi
         if (!missingTable) throw error;
       }
       const plan = taYieldRefreshPlan(fullFilters, snapshot);
+      const lateArrivalDates = taYieldLateArrivalDates(fullFilters, environment.DASHBOARD_TA_YIELD_LATE_ARRIVAL_DAYS);
+      const previousMonthLateArrivalDates = lateArrivalDates.filter((date) => date < fullFilters.startDate);
+      for (const date of previousMonthLateArrivalDates) {
+        try {
+          await app.refreshTaYieldStagingDay({ date, timeoutMs: 900000 });
+        } catch (error) {
+          if (!/requires staging coverage|staging data is not ready|invalid object name/i.test(String(error?.message || ''))) throw error;
+          console.warn(`TA Yield late-arrival repair skipped for ${date}: ${error.message}`);
+        }
+      }
       if (plan.mode === 'REFRESH_CURRENT') return app.refreshTaYieldStagingResume({ refreshCurrent: true });
       if (plan.mode === 'RESUME') return app.refreshTaYieldStagingResume();
     }
@@ -438,8 +451,14 @@ export function createApp({ environment = process.env, repository, scYieldReposi
       if (!snapshot || snapshot.scopeStart !== fullFilters.startDate) throw new Error('TA Yield resume requires a current-month workbook snapshot that starts on the first day of the month.');
       if (snapshot.scopeEnd >= fullFilters.endDate && !refreshCurrent) return { status: 'ALREADY_CURRENT', ...fullFilters };
       const cursor = new Date(`${snapshot.scopeEnd}T00:00:00Z`); cursor.setUTCDate(cursor.getUTCDate() + 1);
-      const resumeFilters = refreshCurrent ? { ...fullFilters, startDate: fullFilters.endDate } : { ...fullFilters, startDate: cursor.toISOString().slice(0, 10) };
+      const lateArrivalDates = taYieldLateArrivalDates(fullFilters, environment.DASHBOARD_TA_YIELD_LATE_ARRIVAL_DAYS);
+      const retryStartDate = lateArrivalDates.find((date) => date >= fullFilters.startDate) || fullFilters.startDate;
+      const cursorStartDate = cursor.toISOString().slice(0, 10);
+      const resumeStartDate = refreshCurrent ? retryStartDate : (cursorStartDate < retryStartDate ? cursorStartDate : retryStartDate);
+      const resumeFilters = { ...fullFilters, startDate: resumeStartDate };
       if (resumeFilters.startDate > fullFilters.endDate) return { status: 'ALREADY_CURRENT', ...fullFilters };
+      const refreshedDates = new Set();
+      for (let date = new Date(`${resumeFilters.startDate}T00:00:00Z`); date <= new Date(`${fullFilters.endDate}T00:00:00Z`); date.setUTCDate(date.getUTCDate() + 1)) refreshedDates.add(date.toISOString().slice(0, 10));
       const requestTimeout = Math.min(Math.max(Number(timeoutMs) || 600000, 120000), 900000);
       const scope = `${resumeFilters.startDate} to ${resumeFilters.endDate}`;
       updateTaYieldPipeline('RUNNING', `Resume range resolved: ${scope}.`, { startedAt: new Date().toISOString(), completedAt: undefined });
@@ -453,14 +472,14 @@ export function createApp({ environment = process.env, repository, scYieldReposi
       const freshLots = mapTaWorkbookReconciliationRows(freshRows, mapping);
       const lotDate = (lot) => thailandTapingDate(lot.tapingDate);
       const resumeLotKey = taWorkbookBusinessKey;
-      const previousCurrentLots = refreshCurrent ? snapshot.rows.filter((lot) => lotDate(lot) === fullFilters.endDate) : [];
-      const mergedLots = mergeTaWorkbookLots(snapshot.rows, freshLots, { replaceDate: refreshCurrent ? fullFilters.endDate : undefined, dateForLot: lotDate, keyForLot: resumeLotKey });
+      const previousRefreshedLots = snapshot.rows.filter((lot) => refreshedDates.has(lotDate(lot)));
+      const mergedLots = mergeTaWorkbookLots(snapshot.rows, freshLots, { replaceDates: refreshedDates, dateForLot: lotDate, keyForLot: resumeLotKey });
       const partNumbers = [...new Set(mergedLots.map((row) => row.itemName).filter(Boolean))]; const monthlySummary = [{ partNumber: 'All', rows: mergedLots }, ...partNumbers.map((partNumber) => ({ partNumber, rows: mergedLots.filter((row) => row.itemName === partNumber) }))].flatMap((scope) => mapTaWorkbookYieldRows(scope.rows, mapping).flatMap((row) => row.groups.map((group) => ({ month: row.month, line: row.line, partNumber: scope.partNumber, group: group.group, input: row.input, finalGood: row.finalGood, defect: group.quantity }))));
       updateTaYieldPipeline('RUNNING', `Writing ${monthlySummary.length} merged monthly summary rows.`);
       await taYieldStaging.replaceMonthlySummary(monthlySummary, fullFilters);
       updateTaYieldPipeline('RUNNING', `Loading machine events for ${freshLots.length} resumed lots.`);
-      const machineEvents = (await Promise.all(['%Anodization%', '%Welding%', '%EI%'].map((processPattern) => source.getMachineEvents(fullFilters, { lotNumbers: freshLots.map((lot) => lot.lotNo), processPattern, timeoutMs: requestTimeout })))).flat();
-      await taYieldStaging.replaceMachineRowsForLots(machineEvents, freshLots, fullFilters, { lotNumbersToRemove: previousCurrentLots.map((lot) => lot.lotNo) });
+      const machineEvents = (await Promise.all(['%Anodization%', '%Welding%', '%EI%'].map((processPattern) => source.getMachineEvents(resumeFilters, { lotNumbers: freshLots.map((lot) => lot.lotNo), processPattern, timeoutMs: requestTimeout })))).flat();
+      await taYieldStaging.replaceMachineRowsForLots(machineEvents, freshLots, fullFilters, { lotNumbersToRemove: previousRefreshedLots.map((lot) => lot.lotNo) });
       updateTaYieldPipeline('RUNNING', `Publishing ${mergedLots.length} merged workbook rows for ${fullFilters.startDate} to ${fullFilters.endDate}.`);
       await taYieldStaging.replaceWorkbookRows(mergedLots, fullFilters);
       responseCache.clear(); updateTaYieldPipeline('SUCCEEDED', `Resume completed for ${scope}.`, { completedAt: new Date().toISOString() });
@@ -802,6 +821,19 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     if (context.dataset !== 'yield') return response.status(400).json({ success: false, error: 'SC Yield is available for the SC Yield data source only.' });
     return useDatabase(async () => { const [mapping, rows] = await Promise.all([configuredScYieldMapping(), scYieldRows(context, validation.filters, 'week')]); return mapScYieldRows(rows, mapping); }, response, context.config, false, { key: `${context.dataset}:weekly:${JSON.stringify(validation.filters)}`, ttlMs: 120000 });
   });
+  app.get('/api/sc-yield-tendency', (request, response) => {
+    const validation = validatedFilters(request.query);
+    if (validation.error) return response.status(400).json({ success: false, error: validation.error });
+    const interval = request.query.interval || 'month';
+    if (!['day', 'week', 'month'].includes(interval)) return response.status(400).json({ success: false, error: 'Interval must be day, week, or month.' });
+    const context = contextFor(request, response); if (!context) return undefined;
+    if (context.dataset !== 'yield') return response.status(400).json({ success: false, error: 'SC Yield is available for the SC Yield data source only.' });
+    const trendFilters = { startDate: validation.filters.startDate, endDate: validation.filters.endDate, ...(validation.filters.serie ? { serie: validation.filters.serie } : {}) };
+    return useDatabase(async () => {
+      const [mapping, rows] = await Promise.all([configuredScYieldMapping(), scYieldRows(context, trendFilters, interval)]);
+      return mapScYieldRows(rows, mapping);
+    }, response, context.config, false, { key: `${context.dataset}:tendency:${interval}:${JSON.stringify(trendFilters)}`, ttlMs: 120000 });
+  });
   app.get('/api/ta-yield', (request, response) => {
     const validation = validatedFilters(request.query); if (validation.error) return response.status(400).json({ success: false, error: validation.error }); const context = contextFor(request, response); if (!context) return undefined;
     if (context.dataset !== 'ta-yield') return response.status(400).json({ success: false, error: 'TA Yield is available for the TA Yield data source only.' });
@@ -876,6 +908,28 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     if (!Number.isInteger(id) || id < 1) return response.status(400).json({ success: false, error: 'Provide a valid action id.' });
     if (!taYieldActions) return response.status(503).json({ success: false, error: 'TA Yield action storage is not configured.' });
     try { return await taYieldActions.remove(id) ? response.json({ success: true, data: { removed: true } }) : response.status(404).json({ success: false, error: 'TA Yield action was not found.' }); } catch { return response.status(503).json({ success: false, error: 'TA Yield action could not be removed.' }); }
+  });
+  app.get('/api/sc-yield-actions', async (_request, response) => {
+    if (!scYieldActions) return response.status(503).json({ success: false, error: 'SC Yield action storage is not configured.' });
+    try { return response.json({ success: true, data: await scYieldActions.list() }); } catch { return response.status(503).json({ success: false, error: 'SC Yield actions are currently unavailable.' }); }
+  });
+  app.post('/api/sc-yield-actions', async (request, response) => {
+    const action = validTaYieldAction(request.body);
+    if (!action) return response.status(400).json({ success: false, error: 'Provide a valid date, series, problem, optional action details, and status.' });
+    if (!scYieldActions) return response.status(503).json({ success: false, error: 'SC Yield action storage is not configured.' });
+    try { return response.json({ success: true, data: await scYieldActions.create({ ...action, createdBy: scYieldActionConfig.displayName }) }); } catch { return response.status(503).json({ success: false, error: 'SC Yield action could not be saved.' }); }
+  });
+  app.patch('/api/sc-yield-actions/:id', async (request, response) => {
+    const id = Number(request.params.id); const action = validTaYieldAction(request.body);
+    if (!Number.isInteger(id) || id < 1 || !action) return response.status(400).json({ success: false, error: 'Provide a valid action record.' });
+    if (!scYieldActions) return response.status(503).json({ success: false, error: 'SC Yield action storage is not configured.' });
+    try { const updated = await scYieldActions.update(id, action); return updated ? response.json({ success: true, data: updated }) : response.status(404).json({ success: false, error: 'SC Yield action was not found.' }); } catch { return response.status(503).json({ success: false, error: 'SC Yield action could not be updated.' }); }
+  });
+  app.delete('/api/sc-yield-actions/:id', async (request, response) => {
+    const id = Number(request.params.id);
+    if (!Number.isInteger(id) || id < 1) return response.status(400).json({ success: false, error: 'Provide a valid action id.' });
+    if (!scYieldActions) return response.status(503).json({ success: false, error: 'SC Yield action storage is not configured.' });
+    try { return await scYieldActions.remove(id) ? response.json({ success: true, data: { removed: true } }) : response.status(404).json({ success: false, error: 'SC Yield action was not found.' }); } catch { return response.status(503).json({ success: false, error: 'SC Yield action could not be removed.' }); }
   });
   app.get('/api/export/ta-yield-datatable', async (request, response) => {
     const validation = validatedFilters(request.query);

@@ -4,6 +4,11 @@ import { SqlRepository } from './sqlRepository.js';
 const quoted = (identifier) => identifier.split('.').map((part) => `[${part}]`).join('.');
 const sourceColumn = (column) => quoted(`source.${column}`);
 const closedColumn = (column) => quoted(`closed.${column}`);
+const yieldBucketExpression = (dateExpression, bucket) => bucket === 'day'
+  ? `CONVERT(char(10), CAST(${dateExpression} AS date), 23)`
+  : bucket === 'week'
+    ? `CONCAT(DATEPART(year, DATEADD(day, 26 - DATEPART(ISO_WEEK, CAST(${dateExpression} AS date)), CAST(${dateExpression} AS date))), N'-W', RIGHT(CONCAT(N'0', DATEPART(ISO_WEEK, CAST(${dateExpression} AS date))), 2))`
+    : `CONVERT(char(7), CAST(${dateExpression} AS date), 23)`;
 
 export class ScYieldRepository extends SqlRepository {
   constructor(config) { super(config); }
@@ -68,7 +73,7 @@ export class ScYieldRepository extends SqlRepository {
     const job = closedColumn(config.closedJobColumn);
     const closedSource = quoted(config.closedView);
     const where = conditions.join(' AND ');
-    const bucketExpression = bucket === 'week' ? `CONCAT(DATEPART(year, CAST(${closedColumn(config.closedDateColumn)} AS date)), N'-W', RIGHT(CONCAT(N'0', DATEPART(ISO_WEEK, CAST(${closedColumn(config.closedDateColumn)} AS date))), 2))` : `CONVERT(char(7), CAST(${closedColumn(config.closedDateColumn)} AS date), 23)`;
+    const bucketExpression = yieldBucketExpression(closedColumn(config.closedDateColumn), bucket);
     const join = `INNER JOIN (SELECT ${job} AS [jobName], ${bucketExpression} AS [bucketMonth], MIN(${serie}) AS [serieName] FROM ${closedSource} AS [closed] WHERE ${where} GROUP BY ${job}, ${bucketExpression}) AS [closed] ON ${sourceColumn(config.jobColumn)} = [closed].[jobName]`;
     return { join, serie: '[closed].[serieName]', bucket: '[closed].[bucketMonth]' };
   }
@@ -109,7 +114,7 @@ export class ScYieldRepository extends SqlRepository {
     const inputDate = closedColumn(this.config.closedDateColumn);
     const inputProduct = closedColumn(this.config.closedProductColumn);
     const inputSerie = `COALESCE(NULLIF(LTRIM(RTRIM(CAST(${closedColumn(this.config.closedSerieColumn)} AS nvarchar(4000)))), N''), N'Element')`;
-    const inputBucket = bucket === 'week' ? `CONCAT(DATEPART(year, CAST(${inputDate} AS date)), N'-W', RIGHT(CONCAT(N'0', DATEPART(ISO_WEEK, CAST(${inputDate} AS date))), 2))` : `CONVERT(char(7), CAST(${inputDate} AS date), 23)`;
+    const inputBucket = yieldBucketExpression(inputDate, bucket);
     inputRequest.input('startDate', sql.Date, filters.startDate);
     inputRequest.input('endDate', sql.Date, filters.endDate);
     inputRequest.input('scYieldProduct', sql.NVarChar(100), this.config.productValue);

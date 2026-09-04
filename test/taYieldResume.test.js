@@ -23,7 +23,12 @@ describe('TA Yield staging resume', () => {
     expect(resume).toContain('new TaYieldRepository({ ...taYieldConfig, requestTimeout })');
     expect(resume).toContain('actionLookbackMonths: 0');
     expect(resume).toContain('refreshCurrent');
-    expect(resume).toContain('startDate: fullFilters.endDate');
+    expect(resume).toContain('DASHBOARD_TA_YIELD_LATE_ARRIVAL_DAYS');
+    expect(resume).toContain('replaceDates: refreshedDates');
+    expect(resume).toContain('source.getMachineEvents(resumeFilters');
+    expect(app).toContain('previousMonthLateArrivalDates');
+    expect(app).toContain('app.refreshTaYieldStagingDay({ date, timeoutMs: 900000 })');
+    expect(app).toContain('TA Yield late-arrival repair skipped for ${date}');
     expect(resume.indexOf('replaceMachineRowsForLots(machineEvents, freshLots, fullFilters, { lotNumbersToRemove:')).toBeLessThan(resume.indexOf('replaceWorkbookRows(mergedLots, fullFilters)'));
     expect(repository).toContain('getLatestWorkbookSnapshotForMonth(filters)');
     expect(repository).toContain('replaceMachineRowsForLots(events, lots, filters, { lotNumbersToRemove = [] } = {})');

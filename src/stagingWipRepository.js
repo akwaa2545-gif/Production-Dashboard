@@ -4,7 +4,19 @@ const q = (name) => name.split('.').map((part) => `[${part}]`).join('.');
 
 export class StagingWipRepository {
   constructor(config) { this.config = config; this.pool = undefined; this.connecting = undefined; }
-  async getPool() { if (this.pool) return this.pool; if (!this.connecting) this.connecting = new sql.ConnectionPool({ server: this.config.server, database: this.config.database, user: this.config.user, password: this.config.password, options: { encrypt: true, trustServerCertificate: this.config.trustServerCertificate } }).connect().then((pool) => (this.pool = pool)).finally(() => { this.connecting = undefined; }); return this.connecting; }
+  async getPool() { if (this.pool) return this.pool; if (!this.connecting) this.connecting = new sql.ConnectionPool({ server: this.config.server, database: this.config.database, user: this.config.user, password: this.config.password, requestTimeout: this.config.requestTimeout, options: { encrypt: true, trustServerCertificate: this.config.trustServerCertificate } }).connect().then((pool) => (this.pool = pool)).finally(() => { this.connecting = undefined; }); return this.connecting; }
+  async getOptions(filters = {}) {
+    const pool = await this.getPool();
+    const request = pool.request();
+    const clauses = ['Serie IS NOT NULL', "LTRIM(RTRIM(Serie)) <> ''"];
+    const products = Array.isArray(filters.product) ? filters.product : filters.product ? [filters.product] : [];
+    if (products.length) {
+      request.input('product', sql.NVarChar(sql.MAX), JSON.stringify(products));
+      clauses.push('Product IN (SELECT [value] FROM OPENJSON(@product))');
+    }
+    const result = await request.query(`SELECT DISTINCT Serie AS value FROM ${q(this.config.table)} WHERE ${clauses.join(' AND ')} ORDER BY value`);
+    return { process: [], serie: result.recordset.map((row) => row.value), case: [], pn: [] };
+  }
   async getQuantity(filters) {
     const request = (await this.getPool()).request(); request.input('startDate', sql.Date, filters.startDate); request.input('endDate', sql.Date, filters.endDate);
     const clauses = ['ReportingDate >= @startDate', 'ReportingDate < DATEADD(day, 1, @endDate)'];
