@@ -137,7 +137,8 @@ describe('TA yield tendency', () => {
   it('uses the saved target for the selected TA series', () => {
     const app = read('public/app.js');
     const targetLookup = app.slice(app.indexOf('function taYieldTargetFor'), app.indexOf('let currentConfig'));
-    const tendencyTargetBlock = app.slice(app.indexOf('const targetsByBucket'), app.indexOf('const valuesForScale'));
+    const targetStart = app.indexOf('const targetsByBucket');
+    const tendencyTargetBlock = app.slice(targetStart, app.indexOf('const valuesForScale', targetStart));
 
     expect(targetLookup).toContain('taYieldTargets[shortTaSeries(serie)]?.[period]');
     expect(tendencyTargetBlock).toContain('taYieldTargetFor(taYieldTrendSeries, row.month)');
