@@ -4,18 +4,23 @@ function asDateString(value) {
   return undefined;
 }
 
-export function stagingIncrementalRefreshPlan(monthFilters, lastDataDate) {
+export function stagingIncrementalRefreshPlan(monthFilters, lastDataDate, lateArrivalDays = 1) {
   const lastDate = asDateString(lastDataDate);
-  if (!lastDate || lastDate < monthFilters.startDate) return { ...monthFilters };
-  if (lastDate >= monthFilters.endDate) return { startDate: monthFilters.endDate, endDate: monthFilters.endDate };
+  if (!lastDate) return { ...monthFilters };
+  const days = Math.min(Math.max(Math.trunc(Number(lateArrivalDays)) || 1, 1), 7);
+  const lookback = new Date(`${monthFilters.endDate}T00:00:00.000Z`);
+  lookback.setUTCDate(lookback.getUTCDate() - days + 1);
+  const lookbackStart = lookback.toISOString().slice(0, 10);
+  if (lastDate < monthFilters.startDate && lastDate < lookbackStart) return { ...monthFilters };
   const nextDate = new Date(`${lastDate}T00:00:00.000Z`);
   nextDate.setUTCDate(nextDate.getUTCDate() + 1);
-  return { startDate: nextDate.toISOString().slice(0, 10), endDate: monthFilters.endDate };
+  const missingStart = nextDate.toISOString().slice(0, 10) > monthFilters.endDate ? monthFilters.endDate : nextDate.toISOString().slice(0, 10);
+  return { startDate: missingStart < lookbackStart ? missingStart : lookbackStart, endDate: monthFilters.endDate };
 }
 
-export async function stagingIncrementalRefreshFilters(target, monthFilters) {
+export async function stagingIncrementalRefreshFilters(target, monthFilters, lateArrivalDays = 1) {
   try {
-    return stagingIncrementalRefreshPlan(monthFilters, (await target.getActivity()).lastDataDate);
+    return stagingIncrementalRefreshPlan(monthFilters, (await target.getActivity()).lastDataDate, lateArrivalDays);
   } catch (error) {
     if (error?.number === 208 || /invalid object name/i.test(String(error?.message || ''))) return { ...monthFilters };
     throw error;

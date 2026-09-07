@@ -17,7 +17,7 @@ describe('TA yield tendency', () => {
 
     expect(html).toContain('id="taYieldChart"');
     expect(app).toContain('id="taYieldInterval"');
-    expect(app).toContain('id="taYieldTrendSeries"');
+    expect(app).toContain('id="taYieldTrendSeriesPicker"');
     expect(app).toContain('id="taYieldTrendPartNumber"');
     expect(app).toContain('Filter only the Yield and defect tendency charts by part number.');
     expect(app).toContain('const selectedTrendScope =');
@@ -58,13 +58,13 @@ describe('TA yield tendency', () => {
     expect(app).toContain('Target scope');
     expect(app).toContain('Target</span>');
     expect(app).toContain('class="target-line"');
-    expect(app).toContain('taYieldTrendSeries = byId(\'taYieldTrendSeries\').value');
-    expect(app).toContain('taYieldTargetFor(taYieldTrendSeries, row.month)');
+    expect(app).toContain('data-ta-yield-trend-series-apply');
+    expect(app).toContain("taYieldTargetFor('Total', row.month)");
     expect(app).toContain('requestAnimationFrame(scrollTaYieldTendencyToLatest)');
     expect(app).toContain("#taYieldYieldChart .sc-yield-chart-scroll, #taYieldDefectChart .sc-yield-chart-scroll");
     expect(app).toContain('viewport.scrollLeft = Math.max(0, viewport.scrollWidth - viewport.clientWidth)');
     expect(app).toContain('class="ta-yield-column-value"');
-    expect(app).toContain('${bars}${defectTotalLabels}${labels}');
+    expect(app).toContain('${defectVisual}${defectLabels}');
     expect(app).toContain('groups.reduce((total, group) => total + Math.max(0, row.input ? (row.groups[group] || 0) / row.input * 100 : 0), 0)');
     expect(app).toContain('const displayedDefectRates = buckets.map');
     expect(app).toContain('Math.max(...displayedDefectRates)');
@@ -72,6 +72,36 @@ describe('TA yield tendency', () => {
     expect(app).toContain("request('/api/staging-status')");
     expect(app).toContain('const initialEndDate = isTaYield ? await latestTaYieldStagingDate(todayString) : todayString;');
     expect(app).toContain("if (isTaYield && selectedDataset() !== 'ta-yield') return;");
+  });
+
+  it('allows a combined TA tendency scope to be chosen from a multi-series picker', () => {
+    const app = read('public/app.js');
+    const styles = read('public/styles.css');
+
+    expect(app).toContain("let taYieldTrendSeries = ['Total'];");
+    expect(app).toContain('id="taYieldTrendSeriesPicker"');
+    expect(app).toContain('data-ta-yield-trend-series-option');
+    expect(app).toContain('data-ta-yield-trend-series-apply');
+    expect(app).toContain('taYieldTrendSeries = selected.includes(\'Total\') || !selected.length ? [\'Total\'] : selected;');
+    expect(app).toContain('taYieldTrendSeries.includes(row.line)');
+    expect(styles).toContain('.ta-yield-series-picker');
+  });
+
+  it('draws a separate yield column and target line for every selected series', () => {
+    const app = read('public/app.js');
+
+    expect(app).toContain('const multiSeriesColumnChart = !isTotalTrendScope && taYieldTrendSeries.length > 1;');
+    expect(app).toContain('class="yield-column ta-yield-series-column');
+    expect(app).toContain('class="target-line ta-yield-series-target"');
+    expect(app).toContain('taYieldTargetFor(serie, bucket.month)');
+  });
+
+  it('draws a separate stacked defect column for every selected series', () => {
+    const app = read('public/app.js');
+
+    expect(app).toContain('const multiSeriesDefectBars = multiSeriesColumnChart');
+    expect(app).toContain('Columns left to right');
+    expect(app).toContain('const defectVisual = multiSeriesColumnChart ? multiSeriesDefectBars : bars;');
   });
 
   it('does not render the removed TA weekly tendency panel', () => {
@@ -141,7 +171,7 @@ describe('TA yield tendency', () => {
     const tendencyTargetBlock = app.slice(targetStart, app.indexOf('const valuesForScale', targetStart));
 
     expect(targetLookup).toContain('taYieldTargets[shortTaSeries(serie)]?.[period]');
-    expect(tendencyTargetBlock).toContain('taYieldTargetFor(taYieldTrendSeries, row.month)');
+    expect(tendencyTargetBlock).toContain("taYieldTargetFor('Total', row.month)");
   });
 
   it('falls back to a product-group target for raw Standard Production lines', () => {
@@ -164,6 +194,13 @@ describe('TA yield tendency', () => {
     expect(lineRenderer).toContain("${marks(target, '#f15a24', targetLabel, 4)}");
     expect(lineRenderer).toContain("const totalPlot = isTotal ?");
     expect(lineRenderer).toContain("const totalLegend = isTotal ?");
+  });
+
+  it('labels a selected-series aggregate as Combined Yield instead of Total Yield', () => {
+    const app = read('public/app.js');
+    expect(app).toContain("isTotalTrendScope ? 'Total Yield' : 'Combined Yield'");
+    expect(app).toContain("marks(total, '#5b17bd', aggregateLabel, 5)");
+    expect(app).toContain('${escapeHtml(aggregateLabel)}</span>');
   });
 
   it('renders the product-group trend beneath the main Total yield and Defect rate charts', () => {

@@ -1,6 +1,12 @@
 import sql from 'mssql';
 
 const q = (name) => name.split('.').map((part) => `[${part}]`).join('.');
+const dateOnly = (value) => value instanceof Date ? value.toISOString().slice(0, 10) : String(value || '').slice(0, 10);
+
+export function missing901SourceDates(sourceRows, existingRows) {
+  const sourceDates = new Set(sourceRows.map((row) => dateOnly(row.reportingDate)));
+  return [...new Set(existingRows.map((row) => dateOnly(row.bucketDate)).filter(Boolean))].filter((date) => !sourceDates.has(date)).sort();
+}
 
 export async function refresh901Staging({ source, sourceConfig, target, targetConfig, startDate, endDate }) {
   const sourcePool = await source.getPool();
@@ -27,6 +33,14 @@ export async function refresh901Staging({ source, sourceConfig, target, targetCo
       SUM(TRY_CONVERT(decimal(18,4), ${q(`source.${sourceConfig.quantityColumn}`)})) AS quantityMoved
     FROM [filtered] AS [source] LEFT JOIN [actionSeries] AS [actionSerie] ON ${sourceJob} = [actionSerie].jobName
     GROUP BY CAST(${q(`source.${sourceConfig.dateColumn}`)} AS date), CAST(${sourceProduct} AS nvarchar(30)), CAST(${resolvedSerie} AS nvarchar(4000)), CAST(${q(`source.${sourceConfig.pnColumn}`)} AS nvarchar(4000))`)).recordset;
+  if (typeof target.getQuantity === 'function') {
+    let existingRows = [];
+    try { existingRows = await target.getQuantity({ startDate, endDate }); } catch (error) {
+      if (!(error?.number === 208 || /invalid object name/i.test(String(error?.message || '')))) throw error;
+    }
+    const missingDates = missing901SourceDates(rows, existingRows);
+    if (missingDates.length) throw new Error(`MES returned no 901 rows for staged date(s): ${missingDates.join(', ')}. Existing staging rows were preserved.`);
+  }
   const pool = await target.getPool();
   await pool.request().query(`IF OBJECT_ID(N'${targetConfig.table}', N'U') IS NULL CREATE TABLE ${q(targetConfig.table)} (ReportingDate date NOT NULL, Product nvarchar(30) NOT NULL, Serie nvarchar(4000) NOT NULL, PartNumber nvarchar(4000) NULL, QuantityMoved decimal(18,4) NOT NULL, RefreshedAt datetime2 NOT NULL CONSTRAINT DF_Dashboard901Daily_RefreshedAt DEFAULT SYSUTCDATETIME()); IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Dashboard901Daily_Filter') CREATE INDEX IX_Dashboard901Daily_Filter ON ${q(targetConfig.table)} (ReportingDate, Product, Serie) INCLUDE (PartNumber, QuantityMoved);`);
   const transaction = new sql.Transaction(pool); await transaction.begin();

@@ -82,10 +82,12 @@ let taWorkbookVisibleRows = 50;
 let taYieldSummaryVisibleRows = 20;
 let taWorkbookDateDirection = 'desc';
 let taYieldInterval = 'month';
-let taYieldTrendSeries = 'Total';
+let taYieldTrendSeries = ['Total'];
 let taYieldTrendChartType = 'summary';
 let taYieldTrendPartNumber = 'All';
 let taYieldTrendPartNumbers = [];
+function taYieldTrendSeriesLabel(series) { if (series.includes('Total')) return 'Total'; if (series.length === 1) return shortTaSeries(series[0]); return `${series.length} series`; }
+function taYieldTrendSeriesScope(series) { if (series.includes('Total')) return 'Total'; const labels = series.map(shortTaSeries); return labels.length <= 2 ? labels.join(', ') : `${labels.slice(0, 2).join(', ')} +${labels.length - 2}`; }
 let taYieldTargets = {};
 let taYieldTargetTab = 'current';
 let taYieldTargetSearch = '';
@@ -102,6 +104,7 @@ let taYieldMachineState = { process: '', serie: '', pn: '', machine: '', defectT
 let appliedTaYieldMachineControlSnapshot = '';
 let selectedScYieldWeeks = [];
 let scYieldWeeklyVisible = false;
+let scYieldInputRatioVisible = false;
 let selectedTaYieldWeeks = [];
 let latestOperationTransitions = [];
 let operationTransitionRequestKey = '';
@@ -234,11 +237,81 @@ let stagingMonitorTimer;
 let stagingMonitorTab = 'overview';
 let stagingMonitorPayload;
 let stagingConsoleDialog;
+let staging901RepairRange = { startDate: '', endDate: '' };
+const staging901RepairPersistenceObserver = new MutationObserver((records) => {
+  records.forEach((record) => record.removedNodes.forEach((node) => {
+    if (node.nodeType === Node.ELEMENT_NODE) rememberStaging901RepairRange(node);
+  }));
+});
+staging901RepairPersistenceObserver.observe(document.body, { childList: true, subtree: true });
+function rememberStaging901RepairRange(root = document) {
+  const form = root.matches?.('[data-staging-901-repair]') ? root : root.querySelector?.('[data-staging-901-repair]');
+  if (!form) return;
+  staging901RepairRange = {
+    startDate: form.elements.startDate.value,
+    endDate: form.elements.endDate.value
+  };
+}
 function openStagingConsole() { if (!stagingConsoleDialog) { stagingConsoleDialog = document.createElement('dialog'); stagingConsoleDialog.id = 'stagingConsoleDialog'; stagingConsoleDialog.className = 'staging-console-dialog'; stagingConsoleDialog.innerHTML = '<form method="dialog"><button type="submit" aria-label="Close activity console">×</button></form><p class="section-kicker">Pipeline activity</p><h2></h2><ol></ol>'; document.body.append(stagingConsoleDialog); } return stagingConsoleDialog; }
 async function showStagingPipelineConsole(name) { const dialog = openStagingConsole(); const title = dialog.querySelector('h2'); const list = dialog.querySelector('ol'); title.textContent = `${name} activity`; list.innerHTML = '<li>Loading current activity…</li>'; dialog.showModal(); try { const response = await request('/api/staging-status'); const rows = response.data || response; const pipeline = response.pipelines?.taYield; const row = rows.find((item) => item.name === name); const events = name === 'TA Yield DataTable' && pipeline?.logs?.length ? pipeline.logs.map((item) => ({ at: item.at, status: item.status, stage: item.stage })) : [{ at: row?.lastRefreshedAt, status: stagingHealth(row || { enabled: false }), stage: row?.activityError || `Source: ${row?.source || 'Not available'}` }, { at: row?.lastRefreshedAt, status: 'coverage', stage: row?.firstDataDate ? `Coverage: ${String(row.firstDataDate).slice(0, 10)} → ${String(row.lastDataDate).slice(0, 10)}` : 'No refresh data recorded.' }, { at: row?.lastRefreshedAt, status: 'schedule', stage: row?.enabled ? `Scheduled every ${Math.round(row.intervalMs / 60000)} minutes.` : 'Pipeline is disabled.' }]; list.innerHTML = events.map((item) => `<li class="${escapeHtml(String(item.status).toLowerCase())}"><time>${escapeHtml(stagingTime(item.at))}</time><b>${escapeHtml(item.status)}</b><span>${escapeHtml(item.stage)}</span></li>`).join(''); } catch (error) { list.innerHTML = `<li class="failed"><span>${escapeHtml(error.message)}</span></li>`; } }
 const stagingActivityButtonObserver = new MutationObserver(() => { const view = byId('stagingStatusView'); if (!view || view.hidden) return; view.querySelectorAll('.staging-pipeline-card:not([data-console-ready])').forEach((card) => { const name = card.querySelector('h3')?.textContent; if (!name) return; card.dataset.consoleReady = 'true'; const button = document.createElement('button'); button.type = 'button'; button.className = 'staging-activity-button'; button.dataset.stagingPipeline = name; button.setAttribute('aria-label', `Open ${name} activity console`); button.title = 'Open activity console'; button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM7 9l3 3-3 3m5 0h5"/></svg>'; card.firstElementChild?.append(button); }); });
 stagingActivityButtonObserver.observe(document.body, { childList: true, subtree: true });
 document.addEventListener('click', (event) => { const button = event.target.closest('[data-staging-pipeline]'); if (button) showStagingPipelineConsole(button.dataset.stagingPipeline); });
+const staging901RepairObserver = new MutationObserver(() => {
+  const view = byId('stagingStatusView');
+  const monitor = view?.querySelector('.staging-monitor');
+  if (!monitor || view.hidden) return;
+  const completion901 = stagingMonitorPayload?.pipelines?.completion901;
+  if (!monitor.querySelector('.staging-901-run')) {
+    const panel = document.createElement('section');
+    panel.className = 'staging-ta-run staging-901-run';
+    panel.setAttribute('aria-live', 'polite');
+    panel.innerHTML = `<div><span class="staging-state ${escapeHtml(String(completion901?.status || 'idle').toLowerCase())}">${escapeHtml(completion901?.status || 'IDLE')}</span><h3>Completion 901 refresh</h3><p>${escapeHtml(completion901?.stage || 'Waiting for the next scheduled refresh.')}</p></div><dl><div><dt>Started</dt><dd>${escapeHtml(stagingTime(completion901?.startedAt))}</dd></div><div><dt>Completed</dt><dd>${escapeHtml(stagingTime(completion901?.completedAt))}</dd></div></dl>`;
+    monitor.querySelector('.staging-ta-run')?.insertAdjacentElement('beforebegin', panel);
+  }
+  const card = [...monitor.querySelectorAll('.staging-pipeline-card')].find((item) => item.querySelector('h3')?.textContent === 'Completion 901');
+  if (!card || card.querySelector('[data-staging-901-repair]')) return;
+  const selectedDate = byId('endDate')?.value || bangkokToday();
+  const repairStartDate = staging901RepairRange.startDate || selectedDate;
+  const repairEndDate = staging901RepairRange.endDate || selectedDate;
+  const repair = document.createElement('section');
+  repair.className = 'staging-901-repair';
+  repair.innerHTML = `<div><strong>901 restore / repair</strong><small>Reload late MES arrivals and replace only this date range.</small></div><form data-staging-901-repair><label>From<input name="startDate" type="date" value="${escapeHtml(repairStartDate)}" required></label><label>To<input name="endDate" type="date" value="${escapeHtml(repairEndDate)}" required></label><label>Operator token<input name="operatorToken" type="password" autocomplete="off" required></label><button type="submit" ${completion901?.status === 'RUNNING' ? 'disabled' : ''}>${completion901?.status === 'RUNNING' ? 'Repair running…' : 'Restore / Repair'}</button><p role="status" aria-live="polite">${completion901?.status === 'RUNNING' ? escapeHtml(completion901.stage || 'Repair is running.') : ''}</p></form>`;
+  card.append(repair);
+});
+staging901RepairObserver.observe(document.body, { childList: true, subtree: true });
+document.addEventListener('input', (event) => {
+  const form = event.target.closest('[data-staging-901-repair]');
+  if (!form) return;
+  if (event.target.name !== 'operatorToken') event.target.setAttribute('value', event.target.value);
+  staging901RepairRange = { startDate: form.elements.startDate.value, endDate: form.elements.endDate.value };
+});
+document.addEventListener('submit', async (event) => {
+  const form = event.target.closest('[data-staging-901-repair]');
+  if (!form) return;
+  event.preventDefault();
+  const startDate = form.elements.startDate.value;
+  const endDate = form.elements.endDate.value;
+  const operatorToken = form.elements.operatorToken.value;
+  staging901RepairRange = { startDate, endDate };
+  const status = form.querySelector('[role="status"]');
+  const button = form.querySelector('button[type="submit"]');
+  if (!startDate || !endDate || startDate > endDate) { status.textContent = 'Choose a valid date range.'; return; }
+  const days = (Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86400000 + 1;
+  if (days > 7) { status.textContent = 'Repair range cannot exceed 7 days.'; return; }
+  if (!operatorToken) { status.textContent = 'Enter the operator token.'; return; }
+  if (!window.confirm(`Restore 901 staging from live MES for ${startDate} to ${endDate}?`)) return;
+  button.disabled = true;
+  status.textContent = 'Starting repair…';
+  try {
+    await request('/api/staging/901-repair', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${operatorToken}` }, body: JSON.stringify({ startDate, endDate }) });
+    status.textContent = 'Repair started. Progress updates automatically.';
+    setTimeout(() => renderStagingStatus().catch(() => {}), 500);
+  } catch (error) {
+    status.textContent = error.message;
+    button.disabled = false;
+  }
+});
 const stagingTime = (value) => value ? new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'medium', timeZone: 'Asia/Bangkok' }).format(new Date(value)) : 'No refresh recorded';
 const isCurrentTaStagingCoverage = (row) => String(row?.name || '').startsWith('TA Yield') && typeof row?.lastDataDate === 'string' && row.lastDataDate.slice(0, 10) >= bangkokToday();
 const stagingHealth = (row, now = Date.now()) => !row.enabled ? 'disabled' : row.activityError ? 'failed' : !row.activityAvailable || !row.lastRefreshedAt ? 'waiting' : isCurrentTaStagingCoverage(row) ? 'healthy' : now - new Date(row.lastRefreshedAt).getTime() > row.intervalMs * 2 ? 'stale' : 'healthy';
@@ -581,7 +654,35 @@ function renderScYieldWeeklyCharts(rows, focusTargetId = '') {
   if (focusTargetId) byId(focusTargetId)?.focus();
 }
 
+function setScYieldInputRatioVisibility(visible) {
+  scYieldInputRatioVisible = visible;
+  const section = byId('scYieldInputRatioSection');
+  const toggle = byId('scYieldInputRatioToggle');
+  if (!section || !toggle) return;
+  section.hidden = !scYieldInputRatioVisible;
+  toggle.setAttribute('aria-expanded', String(scYieldInputRatioVisible));
+  toggle.setAttribute('aria-checked', String(scYieldInputRatioVisible));
+  toggle.querySelector('.sc-yield-weekly-toggle-state').textContent = scYieldInputRatioVisible ? 'On' : 'Off';
+}
+
+function ensureScYieldInputRatioDisclosure() {
+  const section = document.querySelector('.sc-yield-input-ratio-section');
+  if (!section) return;
+  section.id = 'scYieldInputRatioSection';
+  section.classList.add('is-disclosure-ready');
+  if (!byId('scYieldInputRatioToggle')) {
+    const column = document.createElement('div');
+    column.className = 'sc-yield-input-ratio-column';
+    section.before(column);
+    column.append(section);
+    column.insertAdjacentHTML('afterbegin', '<div class="sc-yield-weekly-disclosure sc-yield-input-ratio-disclosure"><button id="scYieldInputRatioToggle" class="sc-yield-weekly-toggle" type="button" role="switch" aria-label="Input Ratio of Super Capacitor" aria-checked="false" aria-expanded="false" aria-controls="scYieldInputRatioSection"><span class="sc-yield-weekly-toggle-label" aria-hidden="true">Input Ratio of Super Capacitor</span><span class="sc-yield-weekly-toggle-track" aria-hidden="true"><span class="sc-yield-weekly-toggle-knob"></span></span><span class="sc-yield-weekly-toggle-state" aria-hidden="true">Off</span></button></div>');
+    byId('scYieldInputRatioToggle').addEventListener('click', () => setScYieldInputRatioVisibility(!scYieldInputRatioVisible));
+  }
+  setScYieldInputRatioVisibility(scYieldInputRatioVisible);
+}
+
 function renderScYieldInputRatioChart(rows) {
+  ensureScYieldInputRatioDisclosure();
   const chart = byId('scYieldInputRatioChart');
   const series = ['CAN', 'FC', 'FM'];
   const colors = { CAN: '#4472c4', FC: '#d5413e', FM: '#7fa843' };
@@ -884,19 +985,24 @@ function renderTaYieldTendencyCharts(rows = latestTaYieldTendencyData, groupRows
   const trendSeries = [...new Map(rows.map((row) => [row.line, shortTaSeries(row.line)])).entries()].sort((left, right) => left[1].localeCompare(right[1]));
   taYieldTrendPartNumbers = [...new Set(groupRows.flatMap((row) => row.partNumbers || []))].sort();
   if (taYieldTrendPartNumber !== 'All' && !taYieldTrendPartNumbers.includes(taYieldTrendPartNumber)) taYieldTrendPartNumber = 'All';
-  if (taYieldTrendSeries !== 'Total' && !trendSeries.some(([serie]) => serie === taYieldTrendSeries)) taYieldTrendSeries = 'Total';
-  const selectedTrendScope = [taYieldTrendSeries === 'Total' ? 'Total' : shortTaSeries(taYieldTrendSeries), taYieldTrendPartNumber === 'All' ? '' : `P/N: ${taYieldTrendPartNumber}`].filter(Boolean).join(' · ');
-  holder.innerHTML = `<div class="table-heading"><div><p class="section-kicker">Total quality trend</p><h3>Yield and defect tendency</h3></div><label class="yield-interval-control" for="taYieldTrendPartNumber" title="Filter only the Yield and defect tendency charts by part number.">Part number<select id="taYieldTrendPartNumber" title="Choose a part number. The chart targets use the selected series target rules."><option value="All">All part numbers</option>${taYieldTrendPartNumbers.map((pn) => `<option value="${escapeHtml(pn)}" ${pn === taYieldTrendPartNumber ? 'selected' : ''}>${escapeHtml(pn)}</option>`).join('')}</select></label><label class="yield-interval-control" for="taYieldTrendSeries" title="Choose Total or a series. A specific series uses its own target; Total uses the fixed monthly Total target.">Series<select id="taYieldTrendSeries" title="Choose the series to display for the selected part number."><option value="Total">Total</option>${trendSeries.map(([serie, label]) => `<option value="${escapeHtml(serie)}" ${serie === taYieldTrendSeries ? 'selected' : ''}>${escapeHtml(label)}</option>`).join('')}</select></label><label class="yield-interval-control" for="taYieldInterval">Group by<select id="taYieldInterval"><option value="day" ${taYieldInterval === 'day' ? 'selected' : ''}>Day</option><option value="week" ${taYieldInterval === 'week' ? 'selected' : ''}>Week</option><option value="month" ${taYieldInterval === 'month' ? 'selected' : ''}>Month</option></select></label></div><section class="ta-yield-tendency-panel"><h4>${escapeHtml(selectedTrendScope)} yield</h4><div id="taYieldYieldChart"></div></section><section class="ta-yield-tendency-panel"><h4>${taYieldTrendPartNumber === 'All' ? 'Defect rate by mode group' : `Defect rate by mode group · P/N: ${escapeHtml(taYieldTrendPartNumber)}`}</h4><div id="taYieldDefectChart"></div></section>`;
+  taYieldTrendSeries = taYieldTrendSeries.filter((serie) => serie === 'Total' || trendSeries.some(([available]) => available === serie));
+  if (!taYieldTrendSeries.length || taYieldTrendSeries.includes('Total')) taYieldTrendSeries = ['Total'];
+  const isTotalTrendScope = taYieldTrendSeries.includes('Total');
+  const selectedTrendScope = [taYieldTrendSeriesScope(taYieldTrendSeries), taYieldTrendPartNumber === 'All' ? '' : `P/N: ${taYieldTrendPartNumber}`].filter(Boolean).join(' · ');
+  holder.innerHTML = `<div class="table-heading"><div><p class="section-kicker">Total quality trend</p><h3>Yield and defect tendency</h3></div><label class="yield-interval-control" for="taYieldTrendPartNumber" title="Filter only the Yield and defect tendency charts by part number.">Part number<select id="taYieldTrendPartNumber" title="Choose a part number. The chart targets use the selected series target rules."><option value="All">All part numbers</option>${taYieldTrendPartNumbers.map((pn) => `<option value="${escapeHtml(pn)}" ${pn === taYieldTrendPartNumber ? 'selected' : ''}>${escapeHtml(pn)}</option>`).join('')}</select></label><details id="taYieldTrendSeriesPicker" class="ta-yield-series-picker"><summary class="ta-yield-series-picker-trigger" aria-label="Choose one or more TA series"><span>Series</span><b>${escapeHtml(taYieldTrendSeriesLabel(taYieldTrendSeries))}</b></summary><div class="ta-yield-series-picker-menu" role="group" aria-label="TA series filter"><div class="ta-yield-series-picker-options"><label><input type="checkbox" data-ta-yield-trend-series-option value="Total"${isTotalTrendScope ? ' checked' : ''}>Total</label>${trendSeries.map(([serie, label]) => `<label><input type="checkbox" data-ta-yield-trend-series-option value="${escapeHtml(serie)}"${taYieldTrendSeries.includes(serie) ? ' checked' : ''}>${escapeHtml(label)}</label>`).join('')}</div><div class="ta-yield-series-picker-actions"><button type="button" data-ta-yield-trend-series-clear>Reset to total</button><button type="button" data-ta-yield-trend-series-apply>Apply</button></div></div></details><label class="yield-interval-control" for="taYieldInterval">Group by<select id="taYieldInterval"><option value="day" ${taYieldInterval === 'day' ? 'selected' : ''}>Day</option><option value="week" ${taYieldInterval === 'week' ? 'selected' : ''}>Week</option><option value="month" ${taYieldInterval === 'month' ? 'selected' : ''}>Month</option></select></label></div><section class="ta-yield-tendency-panel"><h4>${escapeHtml(selectedTrendScope)} yield</h4><div id="taYieldYieldChart"></div></section><section class="ta-yield-tendency-panel"><h4>${taYieldTrendPartNumber === 'All' ? 'Defect rate by mode group' : `Defect rate by mode group · P/N: ${escapeHtml(taYieldTrendPartNumber)}`}</h4><div id="taYieldDefectChart"></div></section>`;
   const productGroupPanel = document.createElement('section');
   productGroupPanel.className = 'sc-yield-series-section';
   productGroupPanel.setAttribute('aria-labelledby', 'taYieldGroupTrendTitle');
   productGroupPanel.innerHTML = '<div><p class="section-kicker">Product group trend</p><h4 id="taYieldGroupTrendTitle">TTL Yield by product group</h4></div><div id="taYieldGroupYieldCharts" class="sc-yield-series-grid"></div>';
   holder.append(productGroupPanel);
   byId('taYieldInterval').addEventListener('change', () => { taYieldInterval = byId('taYieldInterval').value; loadData(); });
-  byId('taYieldTrendSeries').addEventListener('change', () => { taYieldTrendSeries = byId('taYieldTrendSeries').value; renderTaYieldTendencyCharts(latestTaYieldTendencyData, latestTaYieldGroupTendencyData); });
+  const seriesPicker = byId('taYieldTrendSeriesPicker');
+  seriesPicker.addEventListener('change', (event) => { const option = event.target.closest('[data-ta-yield-trend-series-option]'); if (!option) return; const totalOption = seriesPicker.querySelector('[data-ta-yield-trend-series-option][value="Total"]'); if (option.value === 'Total' && option.checked) seriesPicker.querySelectorAll('[data-ta-yield-trend-series-option]').forEach((input) => { if (input !== option) input.checked = false; }); else if (option.checked) totalOption.checked = false; });
+  seriesPicker.querySelector('[data-ta-yield-trend-series-apply]').addEventListener('click', () => { const selected = [...seriesPicker.querySelectorAll('[data-ta-yield-trend-series-option]:checked')].map((option) => option.value); taYieldTrendSeries = selected.includes('Total') || !selected.length ? ['Total'] : selected; renderTaYieldTendencyCharts(latestTaYieldTendencyData, latestTaYieldGroupTendencyData); });
+  seriesPicker.querySelector('[data-ta-yield-trend-series-clear]').addEventListener('click', () => { taYieldTrendSeries = ['Total']; renderTaYieldTendencyCharts(latestTaYieldTendencyData, latestTaYieldGroupTendencyData); });
   byId('taYieldTrendPartNumber').addEventListener('change', () => { taYieldTrendPartNumber = byId('taYieldTrendPartNumber').value; loadData(); });
   const chartTypeLabel = document.createElement('label'); chartTypeLabel.className = 'yield-interval-control'; chartTypeLabel.innerHTML = 'Chart view<select id="taYieldTrendChartType"><option value="summary">Column</option><option value="multi-line">Line</option></select>'; holder.querySelector('.table-heading').append(chartTypeLabel); byId('taYieldTrendChartType').value = taYieldTrendChartType; byId('taYieldTrendChartType').addEventListener('change', () => { taYieldTrendChartType = byId('taYieldTrendChartType').value; renderTaYieldTendencyCharts(latestTaYieldTendencyData, latestTaYieldGroupTendencyData); });
-  const trendRows = taYieldTrendSeries === 'Total' ? rows : rows.filter((row) => row.line === taYieldTrendSeries);
+  const trendRows = isTotalTrendScope ? rows : rows.filter((row) => taYieldTrendSeries.includes(row.line));
   const groups = [...new Set(trendRows.flatMap((row) => row.groups.map((group) => group.group)))].sort();
   const buckets = [...new Set(trendRows.map((row) => row.month))].sort().map((month) => trendRows.filter((row) => row.month === month).reduce((total, row) => ({ month, input: total.input + Number(row.input || 0), finalGood: total.finalGood + Number(row.finalGood || 0), groups: row.groups.reduce((values, group) => ({ ...values, [group.group]: (values[group.group] || 0) + Number(group.quantity || 0) }), total.groups) }), { month, input: 0, finalGood: 0, groups: {} })).map((row) => ({ ...row, yield: row.input ? row.finalGood / row.input * 100 : undefined }));
   renderTaYieldGroupTendencyCharts(groupRows, [...new Set(groupRows.map((row) => row.month))].sort());
@@ -905,8 +1011,10 @@ function renderTaYieldTendencyCharts(rows = latestTaYieldTendencyData, groupRows
   const width = Math.max(taYieldInterval === 'day' ? 760 : 860, dailyColumnCount * (taYieldInterval === 'day' ? 50 : 86) + 116); const height = 250; const left = 54; const right = 54; const top = 30; const bottom = 48; const base = height - bottom; const plotHeight = base - top; const slot = (width - left - right) / buckets.length; const label = (value) => taYieldInterval === 'day' ? value.slice(5) : taYieldInterval === 'week' ? value.slice(-3) : value.slice(5);
   const taYieldDayChartViewportStyle = taYieldInterval === 'day' ? ` style="width:min(100%, ${31 * 50 + 116}px)"` : '';
   const taYieldChartSvgStyle = ` style="width:clamp(${width}px, 100%, 1280px); min-width:${width}px; max-width:none; margin-inline:auto"`;
-  const targetsByBucket = new Map(buckets.map((row) => [row.month, taYieldTargetFor(taYieldTrendSeries, row.month)]));
-  const valuesForScale = [...buckets.map((row) => row.yield), ...targetsByBucket.values()].filter(Number.isFinite); let minimum = Math.max(0, Math.floor((Math.min(...valuesForScale) - .5) * 2) / 2); let maximum = Math.min(100, Math.ceil((Math.max(...valuesForScale) + .5) * 2) / 2); if (maximum - minimum < 1) { minimum = Math.max(0, minimum - .5); maximum = Math.min(100, maximum + .5); }
+  const targetsByBucket = new Map(buckets.map((row) => { if (isTotalTrendScope) return [row.month, taYieldTargetFor('Total', row.month)]; const contributing = trendRows.filter((candidate) => candidate.month === row.month && Number(candidate.input || 0) > 0); const targeted = contributing.map((candidate) => ({ input: Number(candidate.input), target: taYieldTargetFor(candidate.line, row.month) })).filter((candidate) => Number.isFinite(candidate.target)); const input = targeted.reduce((total, candidate) => total + candidate.input, 0); return [row.month, contributing.length && targeted.length === contributing.length ? targeted.reduce((total, candidate) => total + candidate.input * candidate.target, 0) / input : undefined]; }));
+  const multiSeriesColumnChart = !isTotalTrendScope && taYieldTrendSeries.length > 1;
+  const selectedSeriesMetrics = multiSeriesColumnChart ? taYieldTrendSeries.map((serie, seriesIndex) => ({ serie, label: shortTaSeries(serie), color: chartColors[seriesIndex % chartColors.length], values: buckets.map((bucket) => { const matches = trendRows.filter((row) => row.line === serie && row.month === bucket.month); const input = matches.reduce((total, row) => total + Number(row.input || 0), 0); const defectGroups = matches.reduce((result, row) => (row.groups || []).reduce((next, group) => ({ ...next, [group.group]: (next[group.group] || 0) + Number(group.quantity || 0) }), result), {}); return { input, groups: defectGroups, yield: input ? matches.reduce((total, row) => total + Number(row.finalGood || 0), 0) / input * 100 : undefined, target: taYieldTargetFor(serie, bucket.month) }; }) })) : [];
+  const valuesForScale = [...buckets.map((row) => row.yield), ...targetsByBucket.values(), ...selectedSeriesMetrics.flatMap((series) => series.values.flatMap((point) => [point.yield, point.target]))].filter(Number.isFinite); let minimum = Math.max(0, Math.floor((Math.min(...valuesForScale) - .5) * 2) / 2); let maximum = Math.min(100, Math.ceil((Math.max(...valuesForScale) + .5) * 2) / 2); if (maximum - minimum < 1) { minimum = Math.max(0, minimum - .5); maximum = Math.min(100, maximum + .5); }
   const yieldY = (value) => base - (value - minimum) / (maximum - minimum) * plotHeight; const x = (index) => left + index * slot + slot / 2;
   const yieldGrid = [0, .5, 1].map((ratio) => { const y = base - plotHeight * ratio; return `<line class="gridline" x1="${left}" y1="${y}" x2="${width - right}" y2="${y}"/><text class="axis" x="${left - 8}" y="${y + 4}" text-anchor="end">${(minimum + (maximum - minimum) * ratio).toFixed(1)}%</text>`; }).join('');
   const targetPoints = buckets.map((row, index) => Number.isFinite(targetsByBucket.get(row.month)) ? `${x(index)},${yieldY(targetsByBucket.get(row.month))}` : '').filter(Boolean).join(' '); const targetDots = buckets.map((row, index) => Number.isFinite(targetsByBucket.get(row.month)) ? `<circle class="target-point" cx="${x(index)}" cy="${yieldY(targetsByBucket.get(row.month))}" r="3"><title>${escapeHtml(row.month)}: target ${targetsByBucket.get(row.month).toFixed(2)}%</title></circle>` : '').join(''); const labels = buckets.map((row, index) => `<text class="axis" x="${x(index)}" y="${base + 22}" text-anchor="middle">${escapeHtml(label(row.month))}</text>`).join('');
@@ -915,14 +1023,25 @@ function renderTaYieldTendencyCharts(rows = latestTaYieldTendencyData, groupRows
     const widthValue = Math.min(48, slot * .62); const heightValue = base - yieldY(row.yield); const target = targetsByBucket.get(row.month); const belowTarget = Number.isFinite(target) && row.yield < target;
     return `<rect class="yield-column${belowTarget ? ' below-target' : ''}" x="${x(index) - widthValue / 2}" y="${yieldY(row.yield)}" width="${widthValue}" height="${heightValue}"><title>${escapeHtml(row.month)}: yield ${row.yield.toFixed(2)}%${Number.isFinite(target) ? `; target ${target.toFixed(2)}%` : '; target incomplete'}</title></rect><text class="ta-yield-column-value" x="${x(index)}" y="${Math.max(top + 12, yieldY(row.yield) - 7)}" text-anchor="middle">${row.yield.toFixed(2)}%</text>`;
   }).join('');
-  byId('taYieldYieldChart').innerHTML = `<div class="sc-yield-legend"><span><i class="yield-column-key"></i>Yield column</span>${targetPoints ? '<span><i class="target-line-key"></i>Target</span>' : ''}</div><div class="sc-yield-chart-scroll"${taYieldDayChartViewportStyle}><svg${taYieldChartSvgStyle} viewBox="0 0 ${width} ${height}" role="img" aria-label="TA ${escapeHtml(taYieldTrendSeries === 'Total' ? 'total' : shortTaSeries(taYieldTrendSeries))} yield by ${taYieldInterval}"><text class="axis axis-title" x="${left}" y="18">%Yield</text>${yieldGrid}<line x1="${left}" y1="${base}" x2="${width - right}" y2="${base}" stroke="#b8c7bf"/>${yieldColumns}${targetPoints ? `<polyline class="target-line" points="${targetPoints}"/>${targetDots}` : ''}${labels}</svg></div>`;
-  if (taYieldTrendChartType === 'multi-line') renderTaYieldMultiSeriesChart(trendRows, buckets, targetsByBucket, label, taYieldTrendSeries === 'Total', `${taYieldTrendSeries === 'Total' ? 'Total' : shortTaSeries(taYieldTrendSeries)} Target`);
-  const displayedDefectRates = buckets.map((row) => groups.reduce((total, group) => total + Math.max(0, row.input ? (row.groups[group] || 0) / row.input * 100 : 0), 0)); const defectMaximum = Math.max(1, Math.ceil(Math.max(...displayedDefectRates) * 10) / 10); const defectGrid = [0, .5, 1].map((ratio) => { const y = base - plotHeight * ratio; return `<line class="gridline" x1="${left}" y1="${y}" x2="${width - right}" y2="${y}"/><text class="axis" x="${left - 8}" y="${y + 4}" text-anchor="end">${(defectMaximum * ratio).toFixed(1)}%</text>`; }).join('');
-  const bars = buckets.map((row, index) => { const barWidth = Math.min(48, slot * .62); const barX = x(index) - barWidth / 2; let stacked = 0; return groups.map((group, groupIndex) => { const signedRate = row.input ? (row.groups[group] || 0) / row.input * 100 : 0; const rate = Math.max(0, signedRate); const barHeight = rate / defectMaximum * plotHeight; const y = base - stacked - barHeight; stacked += barHeight; return rate ? `<rect x="${barX}" y="${y}" width="${barWidth}" height="${barHeight}" fill="${chartColors[groupIndex % chartColors.length]}"><title>${escapeHtml(row.month)} | ${escapeHtml(group)}: ${signedRate.toFixed(3)}%</title></rect>` : ''; }).join(''); }).join(''); const legend = groups.map((group, index) => `<span><i style="background:${chartColors[index % chartColors.length]}"></i>${escapeHtml(group)}</span>`).join('');
+  const multiSeriesYieldColumns = selectedSeriesMetrics.map((series, seriesIndex) => buckets.map((bucket, bucketIndex) => { const point = series.values[bucketIndex]; if (!Number.isFinite(point.yield)) return ''; const clusterWidth = Math.min(slot * .82, 56); const widthValue = Math.max(5, Math.min(18, clusterWidth / selectedSeriesMetrics.length - 3)); const columnX = x(bucketIndex) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length; const belowTarget = Number.isFinite(point.target) && point.yield < point.target; const color = belowTarget ? '#c9443d' : series.color; return `<rect class="yield-column ta-yield-series-column${belowTarget ? ' below-target' : ''}" style="fill:${color};stroke:${color}" x="${columnX - widthValue / 2}" y="${yieldY(point.yield)}" width="${widthValue}" height="${base - yieldY(point.yield)}"><title>${escapeHtml(bucket.month)} | ${escapeHtml(series.label)}: yield ${point.yield.toFixed(2)}%${Number.isFinite(point.target) ? `; target ${point.target.toFixed(2)}%` : '; target incomplete'}</title></rect><text class="ta-yield-column-value" x="${columnX}" y="${Math.max(top + 12, yieldY(point.yield) - 7)}" text-anchor="middle">${point.yield.toFixed(2)}%</text>`; }).join('')).join('');
+  const multiSeriesTargets = selectedSeriesMetrics.map((series, seriesIndex) => { const clusterWidth = Math.min(slot * .82, 56); const points = series.values.map((point, bucketIndex) => Number.isFinite(point.target) ? `${x(bucketIndex) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length},${yieldY(point.target)}` : '').filter(Boolean).join(' '); const dots = series.values.map((point, bucketIndex) => { if (!Number.isFinite(point.target)) return ''; const pointX = x(bucketIndex) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length; return `<circle class="target-point" style="fill:${series.color}" cx="${pointX}" cy="${yieldY(point.target)}" r="3"><title>${escapeHtml(buckets[bucketIndex].month)} | ${escapeHtml(series.label)}: target ${point.target.toFixed(2)}%</title></circle>`; }).join(''); return points ? `<polyline class="target-line ta-yield-series-target" style="stroke:${series.color}" points="${points}"/>${dots}` : ''; }).join('');
+  const yieldVisual = multiSeriesColumnChart ? multiSeriesYieldColumns : yieldColumns;
+  const targetVisual = multiSeriesColumnChart ? multiSeriesTargets : targetPoints ? `<polyline class="target-line" points="${targetPoints}"/>${targetDots}` : '';
+  const yieldLegend = multiSeriesColumnChart ? selectedSeriesMetrics.map((series) => `<span><i style="background:${series.color}"></i>${escapeHtml(series.label)} yield</span>`).join('') : '<span><i class="yield-column-key"></i>Yield column</span>';
+  const targetLegend = multiSeriesColumnChart ? selectedSeriesMetrics.map((series) => `<span><i class="target-line-key" style="background:${series.color}"></i>${escapeHtml(series.label)} target</span>`).join('') : targetPoints ? '<span><i class="target-line-key"></i>Target</span>' : '';
+  byId('taYieldYieldChart').innerHTML = `<div class="sc-yield-legend">${yieldLegend}${targetLegend}</div><div class="sc-yield-chart-scroll"${taYieldDayChartViewportStyle}><svg${taYieldChartSvgStyle} viewBox="0 0 ${width} ${height}" role="img" aria-label="TA ${escapeHtml(taYieldTrendSeriesScope(taYieldTrendSeries).toLowerCase())} yield by ${taYieldInterval}"><text class="axis axis-title" x="${left}" y="18">%Yield</text>${yieldGrid}<line x1="${left}" y1="${base}" x2="${width - right}" y2="${base}" stroke="#b8c7bf"/>${yieldVisual}${targetVisual}${labels}</svg></div>`;
+  if (taYieldTrendChartType === 'multi-line') renderTaYieldMultiSeriesChart(trendRows, buckets, targetsByBucket, label, isTotalTrendScope || taYieldTrendSeries.length > 1, `${isTotalTrendScope ? 'Total' : 'Combined'} Target`, isTotalTrendScope ? 'Total Yield' : 'Combined Yield');
+  const displayedDefectRates = buckets.map((row) => groups.reduce((total, group) => total + Math.max(0, row.input ? (row.groups[group] || 0) / row.input * 100 : 0), 0)); const multiSeriesDefectRates = selectedSeriesMetrics.flatMap((series) => series.values.map((point) => groups.reduce((total, group) => total + Math.max(0, point.input ? (point.groups[group] || 0) / point.input * 100 : 0), 0))); const defectMaximum = Math.max(1, Math.ceil(Math.max(...(multiSeriesColumnChart ? multiSeriesDefectRates : displayedDefectRates)) * 10) / 10); const defectGrid = [0, .5, 1].map((ratio) => { const y = base - plotHeight * ratio; return `<line class="gridline" x1="${left}" y1="${y}" x2="${width - right}" y2="${y}"/><text class="axis" x="${left - 8}" y="${y + 4}" text-anchor="end">${(defectMaximum * ratio).toFixed(1)}%</text>`; }).join('');
+  const bars = buckets.map((row, index) => { const barWidth = Math.min(48, slot * .62); const barX = x(index) - barWidth / 2; let stacked = 0; return groups.map((group, groupIndex) => { const signedRate = row.input ? (row.groups[group] || 0) / row.input * 100 : 0; const rate = Math.max(0, signedRate); const barHeight = rate / defectMaximum * plotHeight; const y = base - stacked - barHeight; stacked += barHeight; return rate ? `<rect x="${barX}" y="${y}" width="${barWidth}" height="${barHeight}" fill="${chartColors[groupIndex % chartColors.length]}"><title>${escapeHtml(row.month)} | ${escapeHtml(group)}: ${signedRate.toFixed(3)}%</title></rect>` : ''; }).join(''); }).join('');
+  const multiSeriesDefectBars = multiSeriesColumnChart ? selectedSeriesMetrics.map((series, seriesIndex) => series.values.map((point, bucketIndex) => { if (!point.input) return ''; const clusterWidth = Math.min(slot * .82, 56); const barWidth = Math.max(5, Math.min(18, clusterWidth / selectedSeriesMetrics.length - 3)); const barX = x(bucketIndex) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length - barWidth / 2; let stacked = 0; const segments = groups.map((group, groupIndex) => { const signedRate = (point.groups[group] || 0) / point.input * 100; const rate = Math.max(0, signedRate); const barHeight = rate / defectMaximum * plotHeight; const y = base - stacked - barHeight; stacked += barHeight; return rate ? `<rect x="${barX}" y="${y}" width="${barWidth}" height="${barHeight}" fill="${chartColors[groupIndex % chartColors.length]}"><title>${escapeHtml(buckets[bucketIndex].month)} | ${escapeHtml(series.label)} | ${escapeHtml(group)}: ${signedRate.toFixed(3)}%</title></rect>` : ''; }).join(''); const total = groups.reduce((sum, group) => sum + Math.max(0, (point.groups[group] || 0) / point.input * 100), 0); const center = barX + barWidth / 2; return `${segments}${total ? `<text class="ta-yield-column-value" x="${center}" y="${Math.max(top + 12, base - total / defectMaximum * plotHeight - 7)}" text-anchor="middle">${total.toFixed(2)}%</text>` : ''}`; }).join('')).join('') : '';
+  const legend = groups.map((group, index) => `<span><i style="background:${chartColors[index % chartColors.length]}"></i>${escapeHtml(group)}</span>`).join('');
   const defectTotalLabels = displayedDefectRates.map((rate, index) => {
     return rate ? `<text class="ta-yield-column-value" x="${x(index)}" y="${Math.max(top + 12, base - rate / defectMaximum * plotHeight - 7)}" text-anchor="middle">${rate.toFixed(2)}%</text>` : '';
   }).join('');
-  byId('taYieldDefectChart').innerHTML = `<div class="sc-yield-legend"><strong>Mode group</strong>${legend}</div><div class="sc-yield-chart-scroll"${taYieldDayChartViewportStyle}><svg${taYieldChartSvgStyle} viewBox="0 0 ${width} ${height}" role="img" aria-label="TA defect rate by ${taYieldInterval}"><text class="axis axis-title" x="${left}" y="18">%Defect</text>${defectGrid}<line x1="${left}" y1="${base}" x2="${width - right}" y2="${base}" stroke="#b8c7bf"/>${bars}${defectTotalLabels}${labels}</svg></div>`;
+  const defectVisual = multiSeriesColumnChart ? multiSeriesDefectBars : bars;
+  const defectLabels = multiSeriesColumnChart ? labels : `${defectTotalLabels}${labels}`;
+  const defectSeriesLegend = multiSeriesColumnChart ? `<span class="ta-yield-defect-series-note">Columns left to right: ${escapeHtml(selectedSeriesMetrics.map((series) => series.label).join(' · '))}</span>` : '';
+  byId('taYieldDefectChart').innerHTML = `<div class="sc-yield-legend"><strong>Mode group</strong>${legend}${defectSeriesLegend}</div><div class="sc-yield-chart-scroll"${taYieldDayChartViewportStyle}><svg${taYieldChartSvgStyle} viewBox="0 0 ${width} ${height}" role="img" aria-label="TA defect rate by ${taYieldInterval}"><text class="axis axis-title" x="${left}" y="18">%Defect</text>${defectGrid}<line x1="${left}" y1="${base}" x2="${width - right}" y2="${base}" stroke="#b8c7bf"/>${defectVisual}${defectLabels}</svg></div>`;
   holder.querySelectorAll('.ta-yield-tendency-panel').forEach((panel) => panel.insertAdjacentHTML('beforeend', '<div class="ta-yield-trend-tooltip" role="status" hidden></div>'));
   bindTaYieldTrendTooltips(holder);
   requestAnimationFrame(scrollTaYieldTendencyToLatest);
@@ -1403,7 +1522,7 @@ const enableMachinePointTooltips = () => document.querySelectorAll('.ta-machine-
 new MutationObserver(enableMachinePointTooltips).observe(document.body, { childList: true, subtree: true });
 enableMachinePointTooltips();
 
-function renderTaYieldMultiSeriesChart(rows, buckets, targetsByBucket, label, isTotal, targetLabel) {
+function renderTaYieldMultiSeriesChart(rows, buckets, targetsByBucket, label, isTotal, targetLabel, aggregateLabel) {
   const lines = [...new Set(rows.map((row) => row.line))].sort();
   const series = lines.map((line) => ({ name: shortTaSeries(line), color: chartColors[lines.indexOf(line) % chartColors.length], values: buckets.map((bucket) => { const matches = rows.filter((row) => row.line === line && row.month === bucket.month); const input = matches.reduce((sum, row) => sum + Number(row.input || 0), 0); return input ? matches.reduce((sum, row) => sum + Number(row.finalGood || 0), 0) / input * 100 : undefined; }) }));
   const values = [...buckets.map((row) => row.yield), ...targetsByBucket.values(), ...series.flatMap((row) => row.values)].filter(Number.isFinite);
@@ -1416,13 +1535,13 @@ function renderTaYieldMultiSeriesChart(rows, buckets, targetsByBucket, label, is
   const total = buckets.map((row) => row.yield); const target = buckets.map((row) => targetsByBucket.get(row.month));
   const grid = [0, .5, 1].map((ratio) => { const value = min + (max - min) * ratio; const position = y(value); return `<line class="gridline" x1="${left}" y1="${position}" x2="${width - right}" y2="${position}"/><text class="axis" x="${left - 7}" y="${position + 4}" text-anchor="end">${value.toFixed(1)}%</text>`; }).join('');
   const regularPlot = series.map((row) => `<polyline points="${polyline(row.values)}" fill="none" stroke="${row.color}" stroke-width="2" opacity=".45"/>${marks(row.values, row.color, row.name, 2.5)}`).join('');
-  const totalPlot = isTotal ? `<polyline class="ta-yield-total-line" points="${polyline(total)}" fill="none" stroke="#5b17bd" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>${marks(total, '#5b17bd', 'Total Yield', 5)}` : '';
+  const totalPlot = isTotal ? `<polyline class="ta-yield-total-line" points="${polyline(total)}" fill="none" stroke="#5b17bd" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>${marks(total, '#5b17bd', aggregateLabel, 5)}` : '';
   const targetPlot = target.some(Number.isFinite) ? `<polyline points="${polyline(target)}" fill="none" stroke="#ffffff" stroke-width="9"/><polyline class="ta-yield-total-target-line" points="${polyline(target)}" fill="none" stroke="#f15a24" stroke-width="4" stroke-dasharray="9 5"/>${marks(target, '#f15a24', targetLabel, 4)}` : '';
   const targetLegend = target.some(Number.isFinite) ? `<span class="ta-yield-priority-legend"><i class="ta-yield-total-target-key"></i>${escapeHtml(targetLabel)}</span>` : '';
   const seriesLegend = series.map((row) => `<span><i style="background:${row.color}"></i>${escapeHtml(row.name)}</span>`).join('');
-  const totalLegend = isTotal ? '<span class="ta-yield-priority-legend"><i class="ta-yield-total-key"></i>Total Yield</span>' : '';
+  const totalLegend = isTotal ? `<span class="ta-yield-priority-legend"><i class="ta-yield-total-key"></i>${escapeHtml(aggregateLabel)}</span>` : '';
   const legend = `${totalLegend}${targetLegend}${seriesLegend}`;
-  byId('taYieldYieldChart').innerHTML = `<div class="sc-yield-legend">${legend}</div><div class="sc-yield-chart-scroll"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="TA yield by series${isTotal ? ', total yield, and total target' : ''}">${grid}${regularPlot}${totalPlot}${targetPlot}${buckets.map((row, index) => `<text class="axis" x="${x(index)}" y="${base + 22}" text-anchor="middle">${escapeHtml(label(row.month))}</text>`).join('')}</svg></div>`;
+  byId('taYieldYieldChart').innerHTML = `<div class="sc-yield-legend">${legend}</div><div class="sc-yield-chart-scroll"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="TA yield by series${isTotal ? `, ${aggregateLabel.toLowerCase()}, and ${targetLabel.toLowerCase()}` : ''}">${grid}${regularPlot}${totalPlot}${targetPlot}${buckets.map((row, index) => `<text class="axis" x="${x(index)}" y="${base + 22}" text-anchor="middle">${escapeHtml(label(row.month))}</text>`).join('')}</svg></div>`;
 }
 
 function scrollTaYieldTendencyToLatest() {
@@ -1515,7 +1634,7 @@ renderTaYieldMachineView = async function renderTaYieldMachineViewWithGrouping()
 function stagingPipelineBlueprintFromStatus(row) { return [{ label: 'Source', detail: row.source || 'Source query', kind: 'source' }, { label: 'Lookup context', detail: 'Series, part number & process', kind: 'lookup' }, { label: 'Transform', detail: row.plan || 'Dataset mapping and aggregation', kind: 'transform' }, { label: 'Staging table', detail: row.table || 'Configured target table', kind: 'destination' }, { label: 'Validate', detail: 'Freshness, row count & coverage', kind: 'validate' }]; }
 function renderAccurateStagingPipelineMap(rows) { const lane = (row) => { const health = stagingHealth(row); const stages = stagingPipelineBlueprintFromStatus(row); return `<article class="staging-flow ${health}"><header><div><span class="staging-state ${health}">${escapeHtml(health)}</span><h3>${escapeHtml(row.name)}</h3></div><span class="staging-flow-rows">${row.activityAvailable ? `${format.format(row.rowCount || 0)} rows` : 'Activity unavailable'}</span></header><div class="staging-flow-stages">${stages.map((stage, index) => `<div class="staging-flow-stage ${stage.kind}"><span class="staging-flow-order">${index + 1}</span><b>${escapeHtml(stage.label)}</b><small>${escapeHtml(stage.detail)}</small></div>`).join('')}</div><footer><span>Coverage: ${escapeHtml(row.firstDataDate ? `${String(row.firstDataDate).slice(0, 10)} → ${String(row.lastDataDate).slice(0, 10)}` : 'Waiting for data')}</span><span>${escapeHtml(stagingTime(row.lastRefreshedAt))}</span></footer></article>`; }; return `<section class="staging-pipeline-map" aria-labelledby="stagingMapTitle"><header class="staging-map-heading"><div><p class="section-kicker">Data lineage</p><h2 id="stagingMapTitle">Staging pipeline map</h2><p>Current source and target-table names come from live status. Lookup and transform nodes show the conceptual processing path between them.</p></div><div class="staging-map-legend" aria-label="Pipeline stage legend"><span class="source">Source</span><span class="lookup">Lookup</span><span class="transform">Transform</span><span class="destination">Stage table</span><span class="validate">Validate</span></div></header><div class="staging-flow-list">${rows.map(lane).join('')}</div></section>`; }
 function setAccurateStagingMonitorTab(view, tab) { stagingMonitorTab = tab === 'map' ? 'map' : 'overview'; view.querySelectorAll('[data-staging-monitor-tab]').forEach((button) => { const active = button.dataset.stagingMonitorTab === stagingMonitorTab; button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active)); }); view.querySelectorAll('[data-staging-monitor-panel]').forEach((panel) => { panel.hidden = panel.dataset.stagingMonitorPanel !== stagingMonitorTab; }); }
-renderStagingStatus = async function renderStagingStatusWithPersistentPipelineMap() { await renderStagingStatusWithTabs(); const view = ensureUtilityView('stagingStatusView'); const monitor = view.querySelector('.staging-monitor'); if (!monitor) return; const rows = stagingMonitorPayload?.data || []; const overview = monitor.outerHTML; view.innerHTML = `<div class="staging-monitor-tabs" aria-label="Staging views"><button type="button" class="${stagingMonitorTab === 'overview' ? 'active' : ''}" aria-pressed="${stagingMonitorTab === 'overview'}" data-staging-monitor-tab="overview">Overview</button><button type="button" class="${stagingMonitorTab === 'map' ? 'active' : ''}" aria-pressed="${stagingMonitorTab === 'map'}" data-staging-monitor-tab="map">Pipeline map</button></div><div data-staging-monitor-panel="overview" ${stagingMonitorTab === 'overview' ? '' : 'hidden'}>${overview}</div><div data-staging-monitor-panel="map" ${stagingMonitorTab === 'map' ? '' : 'hidden'}>${renderAccurateStagingPipelineMap(rows)}</div>`; };
+renderStagingStatus = async function renderStagingStatusWithPersistentPipelineMap() { const view = ensureUtilityView('stagingStatusView'); rememberStaging901RepairRange(view); await renderStagingStatusWithTabs(); const monitor = view.querySelector('.staging-monitor'); if (!monitor) return; const rows = stagingMonitorPayload?.data || []; const overview = monitor.outerHTML; view.innerHTML = `<div class="staging-monitor-tabs" aria-label="Staging views"><button type="button" class="${stagingMonitorTab === 'overview' ? 'active' : ''}" aria-pressed="${stagingMonitorTab === 'overview'}" data-staging-monitor-tab="overview">Overview</button><button type="button" class="${stagingMonitorTab === 'map' ? 'active' : ''}" aria-pressed="${stagingMonitorTab === 'map'}" data-staging-monitor-tab="map">Pipeline map</button></div><div data-staging-monitor-panel="overview" ${stagingMonitorTab === 'overview' ? '' : 'hidden'}>${overview}</div><div data-staging-monitor-panel="map" ${stagingMonitorTab === 'map' ? '' : 'hidden'}>${renderAccurateStagingPipelineMap(rows)}</div>`; };
 document.addEventListener('click', (event) => { const tab = event.target.closest('[data-staging-monitor-tab]'); if (tab) setAccurateStagingMonitorTab(ensureUtilityView('stagingStatusView'), tab.dataset.stagingMonitorTab); });
 
 initialize();

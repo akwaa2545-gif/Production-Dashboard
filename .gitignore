@@ -6,6 +6,7 @@ node_modules/
 coverage/
 .restore-points/
 .claude-flow/
+.tmp-edge-*/
 
 *.log
 ~$*.xlsx

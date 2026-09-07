@@ -12,6 +12,21 @@ describe('stagingIncrementalRefreshPlan', () => {
     expect(stagingIncrementalRefreshPlan(month, '2026-09-03')).toEqual({ startDate: '2026-09-03', endDate: '2026-09-03' });
   });
 
+  it('rechecks a rolling late-arrival window when configured', () => {
+    expect(stagingIncrementalRefreshPlan({ startDate: '2026-09-01', endDate: '2026-09-06' }, '2026-09-06', 5))
+      .toEqual({ startDate: '2026-09-02', endDate: '2026-09-06' });
+  });
+
+  it('allows the late-arrival window to cross a month boundary', () => {
+    expect(stagingIncrementalRefreshPlan({ startDate: '2026-09-01', endDate: '2026-09-01' }, '2026-08-31', 5))
+      .toEqual({ startDate: '2026-08-28', endDate: '2026-09-01' });
+  });
+
+  it('clamps the late-arrival window to seven days', () => {
+    expect(stagingIncrementalRefreshPlan({ startDate: '2026-09-01', endDate: '2026-09-10' }, '2026-09-10', 30))
+      .toEqual({ startDate: '2026-09-04', endDate: '2026-09-10' });
+  });
+
   it('loads the current month when staging has no current-month data', () => {
     expect(stagingIncrementalRefreshPlan(month, '2026-08-31')).toEqual(month);
     expect(stagingIncrementalRefreshPlan(month, undefined)).toEqual(month);

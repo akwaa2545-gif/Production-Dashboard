@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
 describe('Staging monitoring dashboard', () => {
-  it('renders live pipeline health, progress, and activity without manual refresh controls', () => {
+  it('renders live pipeline health, progress, and a scoped 901 repair control', () => {
     const app = read('public/app.js');
     const styles = read('public/styles.css');
     const server = read('src/app.js');
@@ -14,6 +14,16 @@ describe('Staging monitoring dashboard', () => {
     expect(app).toContain('stagingMonitorTimer');
     expect(app).toContain('Updated every 10 seconds while this tab is open.');
     expect(app).toContain('pipelines?.taYield');
+    expect(app).toContain('pipelines?.completion901');
+    expect(app).toContain('901 restore / repair');
+    expect(app).toContain('/api/staging/901-repair');
+    expect(app).toContain('data-staging-901-repair');
+    expect(app).toContain('name="operatorToken" type="password" autocomplete="off"');
+    expect(app).toContain("Authorization: `Bearer ${operatorToken}`");
+    expect(app).toContain("event.target.name !== 'operatorToken'");
+    expect(app).toContain('staging901RepairRange');
+    expect(app).toContain('rememberStaging901RepairRange(view)');
+    expect(app).toContain("event.target.setAttribute('value', event.target.value)");
     expect(app).toContain('data-staging-pipeline');
     expect(app).toContain('showStagingPipelineConsole');
     expect(app).toContain('renderStagingStatusWithRetry');

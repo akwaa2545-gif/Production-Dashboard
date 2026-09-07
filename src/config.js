@@ -113,6 +113,7 @@ export function readMtdTargetConfig(environment = process.env) {
 }
 
 export function read901StagingConfig(environment = process.env) {
+  const configuredLateArrivalDays = Math.trunc(Number(environment.DASHBOARD_901_LATE_ARRIVAL_DAYS));
   const config = {
     enabled: environment.DASHBOARD_901_STAGING_ENABLED === 'true',
     server: environment.STAGING_SQL_SERVER,
@@ -121,7 +122,8 @@ export function read901StagingConfig(environment = process.env) {
     password: environment.STAGING_SQL_PASSWORD,
     table: environment.STAGING_901_SQL_TABLE || 'dbo.Dashboard901Daily',
     trustServerCertificate: environment.STAGING_SQL_TRUST_SERVER_CERTIFICATE === 'true',
-    requestTimeout: sqlRequestTimeout(environment)
+    requestTimeout: sqlRequestTimeout(environment),
+    lateArrivalDays: Math.min(Math.max(Number.isFinite(configuredLateArrivalDays) ? configuredLateArrivalDays : 5, 1), 7)
   };
   return { ...config, ready: Boolean(config.server && config.database && config.user && config.password && isSafeView(config.table)) };
 }

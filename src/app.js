@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'node:path';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import ExcelJS from 'exceljs';
 import { publicConfig, publicDataModel, publicScYieldConfig, publicTaYieldConfig, read901StagingConfig, readCellCommentConfig, readDatasetConfig, readMtdTargetConfig, readScYieldActionConfig, readScYieldConfig, readScYieldStagingConfig, readScYieldTargetConfig, readTaYieldActionConfig, readTaYieldConfig, readTaYieldTargetConfig, readWipStagingConfig, readYieldDefectSettingConfig, readTaYieldStagingConfig } from './config.js';
@@ -48,6 +49,32 @@ function isConnectionError(error) {
 
 function validDate(value) {
   return typeof value === 'string' && datePattern.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
+}
+
+function validCalendarDate(value) {
+  if (!validDate(value)) return false;
+  return new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value;
+}
+
+function validated901RepairRange(value, today) {
+  const startDate = value?.startDate;
+  const endDate = value?.endDate;
+  if (!validCalendarDate(startDate) || !validCalendarDate(endDate)) return { error: 'Provide valid startDate and endDate values in YYYY-MM-DD format.' };
+  if (startDate > endDate) return { error: 'startDate must be on or before endDate.' };
+  if (endDate > today) return { error: '901 staging repair cannot include a future date.' };
+  const days = (Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86400000 + 1;
+  if (days > 7) return { error: '901 staging repair cannot exceed 7 days.' };
+  return { filters: { startDate, endDate } };
+}
+
+function authorized901Repair(request, configuredToken) {
+  const token = String(configuredToken || '');
+  if (token.length < 32) return { configured: false, authorized: false };
+  const authorization = String(request.get('authorization') || '');
+  const suppliedToken = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+  const expectedDigest = createHash('sha256').update(token).digest();
+  const suppliedDigest = createHash('sha256').update(suppliedToken).digest();
+  return { configured: true, authorized: Boolean(suppliedToken) && timingSafeEqual(expectedDigest, suppliedDigest) };
 }
 
 function thailandCalendarDate(value) {
@@ -235,7 +262,7 @@ async function taYieldDataTableWorkbook(rows, filters) {
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
-export function createApp({ environment = process.env, repository, scYieldRepository, taYieldRepository, mtdTargetRepository, scYieldTargetRepository, taYieldTargetRepository, scYieldActionRepository, taYieldActionRepository, cellCommentRepository, staging901Repository, stagingWipRepository, scYieldStagingRepository, taYieldStagingRepository, yieldDefectSettingRepository, cache } = {}) {
+export function createApp({ environment = process.env, repository, scYieldRepository, taYieldRepository, mtdTargetRepository, scYieldTargetRepository, taYieldTargetRepository, scYieldActionRepository, taYieldActionRepository, cellCommentRepository, staging901Repository, stagingWipRepository, scYieldStagingRepository, taYieldStagingRepository, yieldDefectSettingRepository, refresh901StagingOperation = refresh901Staging, cache } = {}) {
   const configs = { closed: readDatasetConfig(environment, 'closed'), lot: readDatasetConfig(environment, 'lot') };
   const scYieldConfig = readScYieldConfig(environment);
   const taYieldConfig = readTaYieldConfig(environment);
@@ -268,6 +295,12 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   const taYieldStaging = taYieldStagingRepository || (taYieldStagingConfig.enabled && taYieldStagingConfig.ready ? new TaYieldStagingRepository(taYieldStagingConfig) : undefined);
   const taYieldActions = taYieldActionRepository || (taYieldActionConfig.ready ? new TaYieldActionRepository(taYieldActionConfig) : undefined);
   const scYieldActions = scYieldActionRepository || (scYieldActionConfig.ready ? new ScYieldActionRepository(scYieldActionConfig) : undefined);
+  let completion901Pipeline = { status: 'IDLE', stage: 'Waiting for the next scheduled refresh.', updatedAt: new Date().toISOString(), startedAt: undefined, completedAt: undefined, logs: [] };
+  const updateCompletion901Pipeline = (status, stage, extra = {}) => {
+    const entry = { at: new Date().toISOString(), status, stage };
+    completion901Pipeline = { ...completion901Pipeline, ...extra, status, stage, updatedAt: entry.at, logs: [entry, ...completion901Pipeline.logs].slice(0, 20) };
+    console.log(`901 staging: ${stage}`);
+  };
   let taYieldQa = { status: 'NOT_RUN' };
   let taYieldPipeline = { status: 'IDLE', stage: 'Waiting for the next scheduled refresh.', updatedAt: new Date().toISOString(), startedAt: undefined, completedAt: undefined, logs: [] };
   const updateTaYieldPipeline = (status, stage, extra = {}) => {
@@ -324,7 +357,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const row = (name, table, source, activity, enabled, interval, extra = {}) => ({ name, table, source, enabled, intervalMs: interval, activityAvailable: Boolean(activity && !activity.unavailable), activityError: activity?.error, rowCount: Number(activity?.rowCount || 0), firstDataDate: activity?.firstDataDate, lastDataDate: activity?.lastDataDate, lastRefreshedAt: activity?.lastRefreshedAt, ...extra });
     const wipProcessActivity = wip?.unavailable ? wip : wip ? { rowCount: wip.processRowCount, lastRefreshedAt: wip.processLastRefreshedAt, firstDataDate: wip.firstDataDate, lastDataDate: wip.lastDataDate } : undefined;
     const status = [row('Completion 901', staging901Config.table, 'MES Closed Batch → staging', completion, Boolean(staging901), intervalMs), row('WIP daily quantity', stagingWipConfig.table, 'MES Lot Complete Log → staging', wip, Boolean(stagingWip), wipIntervalMs), row('WIP process chart', stagingWipConfig.processTable, 'MES Lot Complete Log → staging', wipProcessActivity, Boolean(stagingWip), wipIntervalMs), row('SC Yield', scYieldStagingConfig.table, 'MES normalized SC Yield input/defect rows → staging', scYield, Boolean(scYieldStaging), Math.max(Number(environment.DASHBOARD_SC_YIELD_STAGING_INTERVAL_MS) || 300000, 60000), { plan: 'Monthly input and defect snapshots preserve the direct MES row shape before mapping.' }), row('TA Yield DataTable', taYieldStagingConfig.workbookTable, 'MES workbook reconciliation → staging', taWorkbook, Boolean(taYieldStaging), wipIntervalMs, { plan: 'Workbook rows retain the Excel reference conditions before mapping.' }), row('TA Yield Machine events', taYieldStagingConfig.machineRowTable, 'MES normalized machine events → staging', taMachine, Boolean(taYieldStaging), wipIntervalMs, { plan: 'Anodization, Welding, and EI events joined to normalized TA lot defects.' }), row('TA Yield Monthly summary', taYieldStagingConfig.monthlySummaryTable, 'TA workbook yield aggregates → staging', taMonthlySummary, Boolean(taYieldStaging), wipIntervalMs, { plan: 'Monthly yield and defect aggregates for all parts and individual part numbers.' })];
-    response.json({ success: true, data: status, checkedAt: new Date().toISOString(), pipelines: { taYield: taYieldPipeline } });
+    response.json({ success: true, data: status, checkedAt: new Date().toISOString(), pipelines: { completion901: completion901Pipeline, taYield: taYieldPipeline } });
   });
 
   function contextFor(request, response) {
@@ -349,13 +382,59 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     if (stagingRefreshInProgress) return { status: 'SKIPPED' };
     stagingRefreshInProgress = true;
     try {
-      if (!repositories.has('closed')) repositories.set('closed', repository || new SqlRepository(configs.closed));
-      const filters = await stagingIncrementalRefreshFilters(staging901, currentThailandMonthFilters());
-      const result = await refresh901Staging({ source: repositories.get('closed'), sourceConfig: configs.closed, target: staging901, targetConfig: staging901Config, ...filters });
+      const scheduledSource = repository || new SqlRepository({ ...configs.closed, requestTimeout: Math.max(configs.closed.requestTimeout, 900000) });
+      const filters = await stagingIncrementalRefreshFilters(staging901, currentThailandMonthFilters(), staging901Config.lateArrivalDays);
+      const scope = `${filters.startDate} to ${filters.endDate}`;
+      updateCompletion901Pipeline('RUNNING', `Refreshing MES rows for ${scope}.`, { startDate: filters.startDate, endDate: filters.endDate, startedAt: new Date().toISOString(), completedAt: undefined, result: undefined });
+      const result = await refresh901StagingOperation({ source: scheduledSource, sourceConfig: configs.closed, target: staging901, targetConfig: staging901Config, ...filters });
       responseCache.invalidate('closed:');
+      updateCompletion901Pipeline('SUCCEEDED', `Scheduled refresh completed for ${scope}.`, { completedAt: new Date().toISOString(), result });
       return { status: 'REFRESHED', ...result };
+    } catch (error) {
+      console.error('901 staging refresh failed:', error.message);
+      updateCompletion901Pipeline('FAILED', 'Scheduled refresh failed. Check the server log for details.', { completedAt: new Date().toISOString() });
+      throw error;
     } finally { stagingRefreshInProgress = false; }
   };
+
+  app.repair901Staging = async (filters) => {
+    if (!staging901) return { status: 'SKIPPED' };
+    if (stagingRefreshInProgress) return { status: 'SKIPPED' };
+    stagingRefreshInProgress = true;
+    const scope = `${filters.startDate} to ${filters.endDate}`;
+    try {
+      const repairSource = repository || new SqlRepository({ ...configs.closed, requestTimeout: Math.max(configs.closed.requestTimeout, 900000) });
+      updateCompletion901Pipeline('RUNNING', `Repairing MES rows for ${scope}.`, { startDate: filters.startDate, endDate: filters.endDate, startedAt: new Date().toISOString(), completedAt: undefined, result: undefined });
+      const result = await refresh901StagingOperation({ source: repairSource, sourceConfig: configs.closed, target: staging901, targetConfig: staging901Config, ...filters });
+      responseCache.invalidate('closed:');
+      updateCompletion901Pipeline('SUCCEEDED', `Restore/repair completed for ${scope}.`, { completedAt: new Date().toISOString(), result });
+      return { status: 'REPAIRED', ...result };
+    } catch (error) {
+      console.error('901 staging repair failed:', error.message);
+      updateCompletion901Pipeline('FAILED', 'Restore/repair failed. Check the server log for details.', { completedAt: new Date().toISOString() });
+      throw error;
+    } finally { stagingRefreshInProgress = false; }
+  };
+
+  app.post('/api/staging/901-repair', (request, response) => {
+    const operator = authorized901Repair(request, environment.DASHBOARD_901_REPAIR_TOKEN);
+    if (!operator.configured) return response.status(503).json({ success: false, error: '901 staging repair operator authorization is not configured.' });
+    if (!operator.authorized) return response.status(401).json({ success: false, code: 'OPERATOR_AUTH_REQUIRED', error: 'Operator authorization required.' });
+    const requestOrigin = request.get('origin');
+    const repairPort = Number(environment.PORT || 3000);
+    const allowedOrigins = (environment.DASHBOARD_901_REPAIR_ALLOWED_ORIGINS || `http://localhost:${repairPort},http://127.0.0.1:${repairPort},http://[::1]:${repairPort}`).split(',').map((value) => value.trim()).filter(Boolean);
+    if (!requestOrigin || !allowedOrigins.includes(requestOrigin)) return response.status(403).json({ success: false, error: 'Cross-origin staging repair is not allowed.' });
+    const normalizedRemoteAddress = String(request.socket.remoteAddress || '').replace(/^::ffff:/, '');
+    const allowedAddresses = (environment.DASHBOARD_901_REPAIR_ALLOWED_IPS || '127.0.0.1,::1').split(',').map((value) => value.trim()).filter(Boolean);
+    if (!allowedAddresses.includes(normalizedRemoteAddress) && !allowedAddresses.includes(request.socket.remoteAddress)) return response.status(403).json({ success: false, error: 'This computer is not authorized to repair 901 staging.' });
+    const validation = validated901RepairRange(request.body, currentThailandMonthFilters().endDate);
+    if (validation.error) return response.status(400).json({ success: false, error: validation.error });
+    if (!staging901) return response.status(503).json({ success: false, error: '901 staging is not configured.' });
+    if (stagingRefreshInProgress) return response.status(409).json({ success: false, error: '901 staging repair is already running.' });
+    const filters = validation.filters;
+    void app.repair901Staging(filters).catch(() => {});
+    return response.status(202).json({ success: true, data: { status: 'RUNNING', ...filters } });
+  });
 
   let wipStagingRefreshInProgress = false;
   app.refreshWipStaging = async () => {

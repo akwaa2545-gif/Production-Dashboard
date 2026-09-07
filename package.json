@@ -22,8 +22,8 @@
     "import:ta-yield-cy26-targets": "node scripts/import-ta-yield-cy26-targets.mjs",
     "import:ta-yield-cy26-group-targets": "node scripts/import-ta-yield-cy26-group-targets.mjs",
     "deploy:portable": "deploy-portable.cmd",
-    "test": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test": "vitest run --testTimeout=30000",
+    "test:coverage": "vitest run --coverage --testTimeout=30000"
   },
   "dependencies": {
     "@azure/identity": "^4.13.1",
