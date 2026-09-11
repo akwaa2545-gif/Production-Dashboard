@@ -170,6 +170,40 @@ describe('SqlRepository', () => {
     expect(pool.calls[0].statement).toContain("GROUP BY CAST((CAST([source].[OccuredOn] AS datetimeoffset) AT TIME ZONE @reportingTimeZone) AS date)");
   });
 
+  it('optionally groups daily process staging rows by MES part number', async () => {
+    const repository = new SqlRepository({
+      ...config,
+      view: 'PowerBIThailand.LotCompleteLog',
+      dateColumn: 'OccuredOn',
+      chartColumn: 'From_OperationName',
+      pnColumn: 'From_ItemName'
+    });
+    const pool = mockPool([[
+      { bucketDate: '2026-09-08', chartName: 'Taping', seriesName: 'FPS A08', partNumber: 'TEFPSA081C226MTHF8R', quantityMoved: '15000' },
+      { bucketDate: '2026-09-08', chartName: 'Taping', seriesName: 'FPS A08', partNumber: '   ', quantityMoved: '100' }
+    ]]);
+    repository.pool = pool;
+
+    await expect(repository.getChartData({ startDate: '2026-09-08', endDate: '2026-09-08' }, true, true)).resolves.toMatchObject([
+      { partNumber: 'TEFPSA081C226MTHF8R', quantityMoved: 15000 },
+      { partNumber: null, quantityMoved: 100 }
+    ]);
+    expect(pool.calls[0].statement).toContain('AS partNumber');
+    expect(pool.calls[0].statement).toContain('CAST([source].[From_ItemName] AS nvarchar(4000))');
+    expect(pool.calls[0].statement).toContain('GROUP BY');
+  });
+
+  it('does not expose a part number in normal dashboard chart rows', async () => {
+    const repository = new SqlRepository({ ...config, chartColumn: 'From_OperationName', pnColumn: 'From_ItemName' });
+    const pool = mockPool([[{ chartName: 'Taping', seriesName: 'FPS A08', quantityMoved: '15000' }]]);
+    repository.pool = pool;
+
+    const rows = await repository.getChartData({ startDate: '2026-09-08', endDate: '2026-09-08' });
+
+    expect(rows[0]).not.toHaveProperty('partNumber');
+    expect(pool.calls[0].statement).not.toContain('AS partNumber');
+  });
+
   it('returns Series segments for Lot Complete Log process charts', async () => {
     const repository = new SqlRepository({
       ...config,

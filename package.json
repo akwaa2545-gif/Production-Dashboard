@@ -13,6 +13,7 @@
     "migrate:ta-yield-monthly-summary": "node scripts/migrate-ta-yield-monthly-summary.mjs",
     "migrate:ta-yield-machine-rows": "node scripts/migrate-ta-yield-machine-rows.mjs",
     "migrate:staging-indexes": "node scripts/migrate-staging-indexes.mjs",
+    "migrate:wip-process-part-number": "node scripts/migrate-wip-process-part-number.mjs",
     "validate:staging": "node src/validateStaging.js",
     "migrate:ta-yield-actions": "node scripts/migrate-ta-yield-actions.mjs",
     "migrate:sc-yield-actions": "node scripts/migrate-sc-yield-actions.mjs",

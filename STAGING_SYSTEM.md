@@ -26,7 +26,7 @@ Dashboard quantity table / export / chart
 |---|---|---|
 | Completion 901 daily quantity by series | `dbo.Dashboard901Daily` | Active |
 | WIP daily quantity by series | `dbo.DashboardWipDaily` | Active |
-| WIP daily quantity by operation and series | `dbo.DashboardWipProcessDaily` | Being completed; SC data is present, NEO product mapping still needs correction |
+| WIP daily quantity by operation, series, and part number | `dbo.DashboardWipProcessDaily` | Stores MES part number for staging/audit; dashboard totals still aggregate by operation and series |
 
 TA Yield and SC Yield are not staged. They still read MES live.
 
@@ -124,6 +124,9 @@ npm run refresh:901-staging
 # Refresh WIP current Thailand month
 npm run refresh:wip-staging
 
+# Add the nullable PartNumber column to an existing WIP process staging table
+npm run migrate:wip-process-part-number
+
 # Validate direct MES against staging
 npm run validate:staging
 ```
@@ -172,3 +175,4 @@ The WIP process chart originally read MES live, causing a slow graph and mislead
 
 The current SC process data is present in `dbo.DashboardWipProcessDaily`. The NEO process-data product assignment is not yet correct and must be fixed and validated before the WIP process chart can be relied on for NEO. The WIP daily quantity staging table remains valid and independently validated for both NEO and SC.
 
+`DashboardWipProcessDaily.PartNumber` is populated from the configured MES `LOT_PN_COLUMN` (normally `From_ItemName`). It is retained only in staging and is not exposed through dashboard filters, APIs, or charts. Existing rows remain `NULL` until their dates are refreshed. To backfill history, set `STAGING_WIP_START_DATE` and `STAGING_WIP_END_DATE`, then run `npm run refresh:wip-staging`; the date-range refresh is transactional and safe to repeat.

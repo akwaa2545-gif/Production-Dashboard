@@ -31,6 +31,29 @@ describe('StagingWipRepository options', () => {
     expect(calls.statements[0]).toContain('[dbo].[DashboardWipDaily]');
     expect(calls.statements[0]).not.toContain('[dbo].[DashboardWipProcessDaily]');
   });
+
+  it('keeps dashboard process totals grouped without the staging-only PartNumber', async () => {
+    const calls = { statements: [] };
+    const repository = new StagingWipRepository({ table: 'dbo.DashboardWipDaily', processTable: 'dbo.DashboardWipProcessDaily' });
+    repository.pool = {
+      request: () => {
+        const stagedRequest = {
+          input: () => stagedRequest,
+          query: (statement) => {
+            calls.statements.push(statement);
+            return Promise.resolve({ recordset: [{ chartName: 'Taping', seriesName: 'FPS A08', quantityMoved: '25000' }] });
+          }
+        };
+        return stagedRequest;
+      }
+    };
+
+    await expect(repository.getChartData({ startDate: '2026-09-08', endDate: '2026-09-08', product: 'NEO' })).resolves.toEqual([
+      { chartName: 'Taping', seriesName: 'FPS A08', quantityMoved: 25000 }
+    ]);
+    expect(calls.statements[0]).toContain('GROUP BY OperationName, Serie');
+    expect(calls.statements[0]).not.toContain('PartNumber');
+  });
 });
 
 describe('WIP staging API options', () => {

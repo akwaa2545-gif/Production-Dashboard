@@ -573,7 +573,7 @@ export class SqlRepository {
     return [...totals.entries()].map(([key, quantityMoved]) => { const [bucketDate, itemName] = key.split('|'); return { bucketDate, itemName, quantityMoved }; }).sort((left, right) => `${left.bucketDate}|${left.itemName}`.localeCompare(`${right.bucketDate}|${right.itemName}`));
   }
 
-  async getChartData(filters, daily = false) {
+  async getChartData(filters, daily = false, includePartNumber = false) {
     if (!this.config.chartColumn) return [];
     const pool = await this.getPool();
     const request = pool.request();
@@ -588,6 +588,9 @@ export class SqlRepository {
     const toRouteSequenceColumn = this.config.toRouteSequenceColumn ? sourceColumn(this.config.toRouteSequenceColumn) : undefined;
     const series = seriesLookupDefinition(this.config);
     const seriesColumn = series?.column || (this.config.serieColumn ? sourceSerieExpression(this.config) : sourceColumn(this.config.pnColumn));
+    const partNumberColumn = includePartNumber && this.config.pnColumn
+      ? `NULLIF(LTRIM(RTRIM(CAST(${sourceColumn(this.config.pnColumn)} AS nvarchar(4000)))), N'')`
+      : undefined;
     const quantityColumn = sourceColumn(this.config.quantityColumn);
     const clauses = addDateRangeClauses(request, this.config, dateColumn);
     addConfiguredFilters(request, this.config, clauses);
@@ -606,6 +609,7 @@ export class SqlRepository {
         ${daily ? `CONVERT(varchar(10), ${reportingDateExpression(this.config, dateColumn)}, 23) AS bucketDate,` : ''}
         CAST(${chartColumn} AS nvarchar(4000)) AS chartName,
         CAST(${seriesColumn} AS nvarchar(4000)) AS seriesName,
+        ${partNumberColumn ? `${partNumberColumn} AS partNumber,` : ''}
         ${fromRouteStepColumn ? `MIN(CAST(${fromRouteStepColumn} AS nvarchar(4000))) AS fromRouteStepName,` : ''}
         ${toRouteStepColumn ? `MIN(CAST(${toRouteStepColumn} AS nvarchar(4000))) AS toRouteStepName,` : ''}
         ${fromRouteStepColumn ? `MIN(TRY_CONVERT(decimal(18, 4), ${fromRouteStepColumn})) AS fromRouteStepOrder,` : ''}
@@ -616,12 +620,13 @@ export class SqlRepository {
       FROM ${quoted(this.config.view)} AS [source]
       ${series?.join || ''}
       WHERE ${clauses.join(' AND ')} 
-      ${daily ? `GROUP BY ${reportingDateExpression(this.config, dateColumn)}, ` : 'GROUP BY '}CAST(${chartColumn} AS nvarchar(4000)), CAST(${seriesColumn} AS nvarchar(4000))
+      ${daily ? `GROUP BY ${reportingDateExpression(this.config, dateColumn)}, ` : 'GROUP BY '}CAST(${chartColumn} AS nvarchar(4000)), CAST(${seriesColumn} AS nvarchar(4000))${partNumberColumn ? `, ${partNumberColumn}` : ''}
       ORDER BY chartName ASC, seriesName ASC`);
     return result.recordset.map((row) => ({
       ...row,
       chartName: String(row.chartName || '').trim() || 'Unspecified',
       seriesName: String(row.seriesName || '').trim() || 'Unspecified',
+      ...(includePartNumber ? { partNumber: String(row.partNumber || '').trim() || null } : {}),
       fromRouteStepName: String(row.fromRouteStepName || '').trim(),
       toRouteStepName: String(row.toRouteStepName || '').trim(),
       fromRouteStepOrder: row.fromRouteStepOrder === null || row.fromRouteStepOrder === undefined ? undefined : Number(row.fromRouteStepOrder),
