@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import ExcelJS from 'exceljs';
-import { publicConfig, publicDataModel, publicScYieldConfig, publicTaYieldConfig, read901StagingConfig, readCellCommentConfig, readDatasetConfig, readMtdTargetConfig, readScYieldActionConfig, readScYieldConfig, readScYieldStagingConfig, readScYieldTargetConfig, readTaYieldActionConfig, readTaYieldConfig, readTaYieldTargetConfig, readWipStagingConfig, readYieldDefectSettingConfig, readTaYieldStagingConfig } from './config.js';
+import { publicConfig, publicDataModel, publicScYieldConfig, publicTaYieldConfig, read901StagingConfig, readCellCommentConfig, readDatasetConfig, readDefectModeStagingConfig, readMtdTargetConfig, readScYieldActionConfig, readScYieldConfig, readScYieldStagingConfig, readScYieldTargetConfig, readTaYieldActionConfig, readTaYieldConfig, readTaYieldTargetConfig, readWipStagingConfig, readYieldDefectSettingConfig, readTaYieldStagingConfig } from './config.js';
 import { MtdTargetRepository } from './mtdTargetRepository.js';
 import { CellCommentRepository } from './cellCommentRepository.js';
 import { SqlRepository } from './sqlRepository.js';
@@ -19,10 +19,12 @@ import { TaYieldTargetRepository } from './taYieldTargetRepository.js';
 import { TaYieldActionRepository } from './taYieldActionRepository.js';
 import { ScYieldActionRepository } from './scYieldActionRepository.js';
 import { YieldDefectSettingRepository } from './yieldDefectSettingRepository.js';
+import { DefectModeStagingRepository } from './defectModeStagingRepository.js';
+import { refreshDefectModeStaging } from './defectModeStagingRefresh.js';
 import { TaYieldStagingRepository } from './taYieldStagingRepository.js';
 import { mergeTaWorkbookLots, taWorkbookBusinessKey, taYieldLateArrivalDates, taYieldRefreshPlan, thailandTapingDate } from './taYieldRefreshPlan.js';
 import { stagingIncrementalRefreshFilters } from './stagingRefreshPlan.js';
-import { loadScYieldMapping, loadScYieldSourceModes, mapScYieldRows } from './scYieldMapping.js';
+import { loadScYieldMapping, mapScYieldRows } from './scYieldMapping.js';
 import { loadTaWorkbookReconciliationMapping, loadTaYieldMapping, mapTaWorkbookReconciliationRows, mapTaWorkbookYieldRows, mapTaYieldLotDetails, mapTaYieldMachineEvents, mapTaYieldRows } from './taYieldMapping.js';
 import { TtlCache } from './ttlCache.js';
 
@@ -262,7 +264,7 @@ async function taYieldDataTableWorkbook(rows, filters) {
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
-export function createApp({ environment = process.env, repository, scYieldRepository, taYieldRepository, mtdTargetRepository, scYieldTargetRepository, taYieldTargetRepository, scYieldActionRepository, taYieldActionRepository, cellCommentRepository, staging901Repository, stagingWipRepository, scYieldStagingRepository, taYieldStagingRepository, yieldDefectSettingRepository, refresh901StagingOperation = refresh901Staging, cache } = {}) {
+export function createApp({ environment = process.env, repository, scYieldRepository, taYieldRepository, mtdTargetRepository, scYieldTargetRepository, taYieldTargetRepository, scYieldActionRepository, taYieldActionRepository, cellCommentRepository, staging901Repository, stagingWipRepository, scYieldStagingRepository, taYieldStagingRepository, defectModeStagingRepository, yieldDefectSettingRepository, refresh901StagingOperation = refresh901Staging, cache } = {}) {
   const configs = { closed: readDatasetConfig(environment, 'closed'), lot: readDatasetConfig(environment, 'lot') };
   const scYieldConfig = readScYieldConfig(environment);
   const taYieldConfig = readTaYieldConfig(environment);
@@ -276,10 +278,10 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   const stagingWipConfig = readWipStagingConfig(environment);
   const scYieldStagingConfig = readScYieldStagingConfig(environment);
   const yieldDefectSettingConfig = readYieldDefectSettingConfig(environment);
+  const defectModeStagingConfig = readDefectModeStagingConfig(environment);
   const taYieldStagingConfig = readTaYieldStagingConfig(environment);
   const repositories = new Map();
   let scYieldMapping;
-  let scYieldSourceModes;
   let taYieldMapping;
   let taWorkbookReconciliationMapping;
   let taYieldMachineDefectViews;
@@ -292,6 +294,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   const stagingWip = stagingWipRepository || (stagingWipConfig.enabled && stagingWipConfig.ready ? new StagingWipRepository(stagingWipConfig) : undefined);
   const scYieldStaging = scYieldStagingRepository || (scYieldStagingConfig.enabled && scYieldStagingConfig.ready ? new ScYieldStagingRepository(scYieldStagingConfig) : undefined);
   const yieldDefectSettings = yieldDefectSettingRepository || (yieldDefectSettingConfig.ready ? new YieldDefectSettingRepository(yieldDefectSettingConfig) : undefined);
+  const defectModesStaging = defectModeStagingRepository || (defectModeStagingConfig.enabled && defectModeStagingConfig.ready ? new DefectModeStagingRepository(defectModeStagingConfig) : undefined);
   const taYieldStaging = taYieldStagingRepository || (taYieldStagingConfig.enabled && taYieldStagingConfig.ready ? new TaYieldStagingRepository(taYieldStagingConfig) : undefined);
   const taYieldActions = taYieldActionRepository || (taYieldActionConfig.ready ? new TaYieldActionRepository(taYieldActionConfig) : undefined);
   const scYieldActions = scYieldActionRepository || (scYieldActionConfig.ready ? new ScYieldActionRepository(scYieldActionConfig) : undefined);
@@ -309,6 +312,36 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     console.log(`TA Yield staging: ${stage}`);
   };
   const responseCache = cache || new TtlCache({ maxEntries: Math.min(Math.max(Number(environment.DASHBOARD_CACHE_MAX_ENTRIES) || 500, 10), 2000) });
+  let defectModeCacheWarmTimer;
+  async function cachedDefectModes(refreshBeforeMs = 0) {
+    if (!repositories.has('ta-yield')) repositories.set('ta-yield', taYieldRepository || new TaYieldRepository(taYieldConfig));
+    if (!repositories.has('yield') && scYieldConfig.ready) repositories.set('yield', scYieldRepository || new ScYieldRepository(scYieldConfig));
+    const today = currentThailandMonthFilters();
+    const scModeFilters = { startDate: `${today.startDate.slice(0, 4)}-01-01`, endDate: today.endDate };
+    const load = (key, loader) => responseCache.getOrSet(key, 60000, loader, refreshBeforeMs).catch((error) => {
+      const stale = responseCache.getStale(key);
+      if (stale !== undefined) {
+        console.warn(`Defect mode cache refresh failed for ${key}; serving the last MES result: ${error.message}`);
+        return { value: stale, status: 'STALE', error: error.message };
+      }
+      console.error(`Defect mode MES query failed for ${key}: ${error.message}`);
+      return { value: [], status: 'ERROR', error: error.message };
+    });
+    return Promise.all([
+      load('defect-modes:ta', () => repositories.get('ta-yield').getDefectModes()),
+      scYieldConfig.ready ? load('defect-modes:sc', () => repositories.get('yield').getDefectModes(scModeFilters)) : Promise.resolve({ value: [], status: 'DISABLED' })
+    ]);
+  }
+  function scheduleDefectModeCacheWarmup(reset = false) {
+    if (defectModeCacheWarmTimer && !reset) return;
+    clearTimeout(defectModeCacheWarmTimer);
+    defectModeCacheWarmTimer = setTimeout(async () => {
+      defectModeCacheWarmTimer = undefined;
+      try { await cachedDefectModes(40000); } catch (error) { console.warn(`Defect mode cache warm-up skipped: ${error.message}`); }
+      scheduleDefectModeCacheWarmup();
+    }, 20000);
+    defectModeCacheWarmTimer.unref?.();
+  }
   async function configuredScYieldMapping() { scYieldMapping ||= loadScYieldMapping(scYieldConfig.mappingFile); const [base, overrides] = await Promise.all([scYieldMapping, yieldDefectSettings ? yieldDefectSettings.list() : []]); const byMode = new Map(overrides.filter((item) => item.dataset === 'SC').map((item) => [item.mode.toUpperCase(), item])); return new Map([...base.entries()].map(([key, value]) => { const override = byMode.get(value.mode.toUpperCase()); return [key, override ? { ...value, group: override.group, included: override.included } : value]; })); }
   async function configuredTaYieldMapping() { taYieldMapping ||= loadTaYieldMapping(taYieldConfig.mappingFile); const [base, overrides] = await Promise.all([taYieldMapping, yieldDefectSettings ? yieldDefectSettings.list() : []]); const byMode = new Map(overrides.filter((item) => item.dataset === 'TA').map((item) => [item.mode.toUpperCase(), item])); const configure = (entries) => new Map([...entries].map(([code, value]) => { const override = byMode.get(code.toUpperCase()); return [code, override ? { ...value, main: override.group, included: override.included } : value]; })); return { neo: configure(base.neo), gps: configure(base.gps) }; }
   async function taMachineDefectViews() { taYieldMachineDefectViews ||= loadTaYieldMapping(taYieldConfig.mappingFile).then((mapping) => { const entries = [...mapping.neo.entries(), ...mapping.gps.entries()]; return { codes: [...new Set(entries.map(([code]) => code))].sort(), categories: [...new Set(entries.map(([, entry]) => entry.category).filter(Boolean))].sort() }; }); return taYieldMachineDefectViews; }
@@ -316,32 +349,48 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   app.use(express.json({ limit: '8kb' }));
   app.use(express.static(path.join(here, '../public'), { setHeaders: (response) => response.set('Cache-Control', 'no-store') }));
   app.get('/api/health', (_request, response) => response.json({ success: true, data: { status: 'ok', ...(environment.DEPLOY_REVISION ? { revision: environment.DEPLOY_REVISION } : {}) } }));
-  app.get('/api/defect-settings', async (_request, response) => {
+  app.get('/api/defect-settings', async (request, response) => {
     try {
-      if (!repositories.has('ta-yield')) repositories.set('ta-yield', taYieldRepository || new TaYieldRepository(taYieldConfig));
-      if (!repositories.has('yield') && scYieldConfig.ready) repositories.set('yield', scYieldRepository || new ScYieldRepository(scYieldConfig));
-      const mesTaModesRequest = responseCache.getOrSet('ta-yield:defect-modes', 3600000, () => repositories.get('ta-yield').getDefectModes()).catch(() => ({ value: [] }));
-      const scModeToday = currentThailandMonthFilters(); const scModeFilters = { startDate: `${scModeToday.startDate.slice(0, 4)}-01-01`, endDate: scModeToday.endDate };
-      const mesScModesRequest = scYieldConfig.ready ? responseCache.getOrSet('sc-yield:defect-modes', 3600000, () => repositories.get('yield').getDefectModes(scModeFilters)).catch(() => ({ value: [] })) : Promise.resolve({ value: [] });
-      const mesTaModesFallback = new Promise((resolve) => { const timer = setTimeout(() => resolve({ value: [] }), 3000); timer.unref?.(); });
-      scYieldSourceModes ||= loadScYieldSourceModes(scYieldConfig.mappingFile);
-      const [scMappings, workbookScModes, taMappings, overrides, mesTaModes, mesScModes] = await Promise.all([configuredScYieldMapping(), scYieldSourceModes, configuredTaYieldMapping(), yieldDefectSettings ? yieldDefectSettings.list() : [], Promise.race([mesTaModesRequest, mesTaModesFallback]), Promise.race([mesScModesRequest, mesTaModesFallback])]);
+      if (!defectModesStaging) return response.status(503).json({ success: false, error: 'Defect-mode staging is not configured.' });
+      const [stagedTaModes, stagedScModes] = await Promise.all([defectModesStaging.getModes('TA'), defectModesStaging.getModes('SC')]);
+      const stagedModes = [...stagedTaModes.map((item) => ({ ...item, dataset: 'TA' })), ...stagedScModes.map((item) => ({ ...item, dataset: 'SC' }))];
+      const [scMappings, taMappings, overrides, [taModes, scModes]] = await Promise.all([
+        configuredScYieldMapping().catch(() => new Map()),
+        configuredTaYieldMapping().catch(() => ({ neo: new Map(), gps: new Map() })),
+        yieldDefectSettings ? yieldDefectSettings.list() : [],
+        Promise.resolve([
+          { value: stagedModes.filter((item) => item.dataset === 'TA').map((item) => ({ mode: item.mode, description: item.description })), status: 'STAGED' },
+          { value: stagedModes.filter((item) => item.dataset === 'SC').map((item) => ({ mode: item.mode, description: item.description })), status: 'STAGED' }
+        ])
+      ]);
+      const mesTaModes = taModes.value; const mesScModes = scModes.value;
       const override = new Map(overrides.map((item) => [`${item.dataset}|${item.mode.toUpperCase()}`, item]));
       const mappedScModes = new Map();
       scMappings.forEach((value, key) => { mappedScModes.set(key.toUpperCase(), value); mappedScModes.set(value.mode.toUpperCase(), value); });
-      const allScModes = new Map([...workbookScModes, ...mesScModes.value.map((item) => item.mode)].map((mode) => { const canonical = mappedScModes.get(mode.toUpperCase())?.mode || mode; return [canonical.toUpperCase(), canonical]; }));
-      [...new Set(mappedScModes.values())].forEach((value) => { if (!allScModes.has(value.mode.toUpperCase())) allScModes.set(value.mode.toUpperCase(), value.mode); });
-      overrides.filter((item) => item.dataset === 'SC').forEach((item) => { if (!allScModes.has(item.mode.toUpperCase())) allScModes.set(item.mode.toUpperCase(), item.mode); });
-      const sc = [...allScModes.values()].map((mode) => { const mapped = mappedScModes.get(mode.toUpperCase()); const saved = override.get(`SC|${mode.toUpperCase()}`); return { mode, group: saved?.group || (mapped?.included ? mapped.group : 'Unmapped'), included: saved?.included ?? Boolean(mapped?.included) }; }).sort((a, b) => a.group.localeCompare(b.group) || a.mode.localeCompare(b.mode));
+      const allScModes = new Map(mesScModes.map((item) => item.mode).filter(Boolean).map((mode) => [mode.toUpperCase(), mode]));
+      const sc = [...allScModes.values()].map((mode) => { const mapped = mappedScModes.get(mode.toUpperCase()); const saved = override.get(`SC|${mode.toUpperCase()}`) || (mapped && override.get(`SC|${mapped.mode.toUpperCase()}`)); return { mode, group: saved?.group || (mapped?.included ? mapped.group : 'Unmapped'), included: saved?.included ?? Boolean(mapped?.included) }; }).sort((a, b) => a.group.localeCompare(b.group) || a.mode.localeCompare(b.mode));
       const mappedTaModes = new Map([...new Map([...taMappings.neo, ...taMappings.gps]).entries()].map(([source, target]) => [source.toUpperCase(), { source, target }]));
-      const allTaModes = new Map(mesTaModes.value.map((item) => [item.mode.toUpperCase(), { source: item.mode, description: item.description } ]));
-      mappedTaModes.forEach(({ source }, key) => { if (!allTaModes.has(key)) allTaModes.set(key, { source, description: '' }); });
-      overrides.filter((item) => item.dataset === 'TA').forEach((item) => { const key = item.mode.toUpperCase(); if (!allTaModes.has(key)) allTaModes.set(key, { source: item.mode, description: '' }); });
+      const allTaModes = new Map(mesTaModes.filter((item) => item.mode).map((item) => [item.mode.toUpperCase(), { source: item.mode, description: item.description } ]));
       const ta = [...allTaModes.values()]
         .map(({ source, description }) => { const target = mappedTaModes.get(source.toUpperCase())?.target; const saved = override.get(`TA|${source.toUpperCase()}`); return { source, description, target: saved?.group || target?.main || target?.category || 'Unmapped', included: saved?.included ?? Boolean(target?.main || target?.category) }; })
         .sort((a, b) => a.target.localeCompare(b.target) || a.source.localeCompare(b.source));
-      response.json({ success: true, data: { sc, ta } });
-    } catch (error) { response.status(503).json({ success: false, error: 'Defect mapping settings are unavailable.' }); }
+      response.json({ success: true, data: { sc, ta }, meta: { refreshedAt: new Date().toISOString(), taSource: taModes.status, scSource: scModes.status, taError: taModes.error, scError: scModes.error } });
+    } catch (error) { console.error(`Defect mapping settings are unavailable: ${error.message}`); response.status(503).json({ success: false, error: 'Defect mapping settings are unavailable.' }); }
+  });
+  let defectModeStagingSyncInProgress = false;
+  app.refreshDefectModeStaging = async () => {
+    if (!defectModesStaging || defectModeStagingSyncInProgress) return { status: 'SKIPPED' };
+    defectModeStagingSyncInProgress = true;
+    try {
+      if (!repositories.has('ta-yield')) repositories.set('ta-yield', taYieldRepository || new TaYieldRepository(taYieldConfig));
+      if (!repositories.has('yield')) repositories.set('yield', scYieldRepository || new ScYieldRepository(scYieldConfig));
+      const result = await refreshDefectModeStaging({ taSource: repositories.get('ta-yield'), scSource: repositories.get('yield'), target: defectModesStaging });
+      return { status: 'REFRESHED', ...result };
+    } finally { defectModeStagingSyncInProgress = false; }
+  };
+  app.post('/api/defect-settings/sync', async (_request, response) => {
+    if (defectModeStagingSyncInProgress) return response.status(409).json({ success: false, error: 'Defect-mode staging sync is already running.' });
+    try { await app.refreshDefectModeStaging(); const [ta, sc] = await Promise.all([defectModesStaging.getModes('TA'), defectModesStaging.getModes('SC')]); response.json({ success: true, data: { ta: ta.map((item) => ({ source: item.mode, description: item.description })), sc } }); } catch (error) { response.status(503).json({ success: false, error: `Defect-mode staging sync failed: ${error.message}` }); }
   });
   app.put('/api/defect-settings', async (request, response) => {
     const dataset = request.body?.dataset; const mode = typeof request.body?.mode === 'string' ? request.body.mode.trim() : ''; const group = typeof request.body?.group === 'string' ? request.body.group.trim() : ''; const included = request.body?.included;

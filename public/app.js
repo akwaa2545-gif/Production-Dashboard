@@ -6,6 +6,39 @@ const escapeHtml = (value) => String(value).replace(/[&<>'"]/g, (character) => (
 const pnState = { items: [], hasMore: false, offset: 0, requestId: 0, loading: false, query: '', error: '', selected: [] };
 const clientResponseCache = new Map();
 const clientCacheLimit = 80;
+function installDefectSettingsRefreshControl() {
+  const heading = document.querySelector('#defectSettingsView .defect-studio-heading');
+  if (!heading) return false;
+  if (heading.querySelector('[data-refresh-defect-settings]')) return true;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'defect-settings-refresh';
+  button.dataset.refreshDefectSettings = 'true';
+  button.textContent = 'Sync MES now';
+  heading.append(button);
+  return true;
+}
+
+function watchForDefectSettingsRefreshControl() {
+  const view = byId('defectSettingsView');
+  if (!view || installDefectSettingsRefreshControl()) return;
+  const observer = new MutationObserver(() => {
+    if (installDefectSettingsRefreshControl()) observer.disconnect();
+  });
+  observer.observe(view, { childList: true, subtree: true });
+}
+
+document.addEventListener('click', (event) => {
+  const tab = event.target.closest('[data-view]');
+  if (tab?.dataset.view === 'defects') watchForDefectSettingsRefreshControl();
+  const refresh = event.target.closest('[data-refresh-defect-settings]');
+  if (!refresh) return;
+  refresh.disabled = true;
+  refresh.textContent = 'Syncing MES…';
+  request('/api/defect-settings/sync', { method: 'POST' })
+    .then(() => { renderDefectSettings(); watchForDefectSettingsRefreshControl(); })
+    .catch((error) => { refresh.disabled = false; refresh.textContent = `Sync failed: ${error.message}`; });
+});
 const scYieldTargetSettingsKey = 'onemes-sc-yield-target-settings-v1';
 function readScYieldTargetSettings() { try { const settings = JSON.parse(localStorage.getItem(scYieldTargetSettingsKey) || '{}'); return settings && typeof settings === 'object' ? settings : {}; } catch { return {}; } }
 let scYieldTargetSettings = readScYieldTargetSettings();

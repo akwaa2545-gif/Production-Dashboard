@@ -35,6 +35,10 @@ export class TtlCache {
     }
   }
 
+  getStale(key) {
+    return this.entries.get(key)?.value;
+  }
+
   clear() {
     this.entries.clear();
     for (const request of this.inFlight.values()) this.invalidatedRequests.add(request);

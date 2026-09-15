@@ -16,6 +16,66 @@ const configuredEnvironment = {
 };
 
 describe('dashboard API', () => {
+  it('reads TA and SC defect modes from staging without querying MES', async () => {
+    const app = createApp({
+      environment: configuredEnvironment,
+      taYieldRepository: { getDefectModes: () => Promise.reject(new Error('Defect Settings must not query TA MES')) },
+      scYieldRepository: { getDefectModes: () => Promise.reject(new Error('Defect Settings must not query SC MES')) },
+      defectModeStagingRepository: {
+        getModes: () => Promise.resolve([
+          { dataset: 'TA', mode: 'TA_STAGED', description: 'Staged TA disposition' },
+          { dataset: 'SC', mode: 'SC_STAGED' }
+        ])
+      }
+    });
+
+    const response = await request(app).get('/api/defect-settings');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.ta).toEqual([expect.objectContaining({ source: 'TA_STAGED', description: 'Staged TA disposition' })]);
+    expect(response.body.data.sc).toEqual([expect.objectContaining({ mode: 'SC_STAGED' })]);
+  });
+
+  it('syncs new MES defect modes into staging before returning them', async () => {
+    let staged = [];
+    const replaced = [];
+    const app = createApp({
+      environment: configuredEnvironment,
+      taYieldRepository: { getDefectModes: () => Promise.resolve([{ mode: 'TA_NEW', description: 'Fresh TA disposition' }]) },
+      scYieldRepository: { getDefectModes: () => Promise.resolve([{ mode: 'SC_NEW' }]) },
+      defectModeStagingRepository: {
+        getModes: () => Promise.resolve(staged),
+        replaceModes: (modes) => { replaced.push(modes); staged = modes; return Promise.resolve(); }
+      }
+    });
+
+    const response = await request(app).post('/api/defect-settings/sync');
+
+    expect(response.status).toBe(200);
+    expect(replaced).toEqual([
+      [
+        { dataset: 'TA', mode: 'TA_NEW', description: 'Fresh TA disposition' },
+        { dataset: 'SC', mode: 'SC_NEW', description: '' }
+      ]
+    ]);
+    expect(response.body.data).toMatchObject({ status: 'REFRESHED', ta: 1, sc: 1 });
+    const settings = await request(app).get('/api/defect-settings');
+    expect(settings.body.data.ta).toEqual([expect.objectContaining({ source: 'TA_NEW', description: 'Fresh TA disposition' })]);
+    expect(settings.body.data.sc).toEqual([expect.objectContaining({ mode: 'SC_NEW' })]);
+  });
+
+  it('returns service unavailable when defect-mode staging cannot be read', async () => {
+    const response = await request(createApp({
+      environment: configuredEnvironment,
+      taYieldRepository: { getDefectModes: () => Promise.reject(new Error('MES must not be used as a fallback')) },
+      scYieldRepository: { getDefectModes: () => Promise.reject(new Error('MES must not be used as a fallback')) },
+      defectModeStagingRepository: { getModes: () => Promise.reject(new Error('ProductionMES staging is unavailable')) }
+    })).get('/api/defect-settings');
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ success: false, error: 'Defect mapping settings are unavailable.' });
+  });
+
   it('loads TA MTD parameter series from complete MES history instead of the latest staging snapshot', async () => {
     const taYieldRepository = {
       getMtdSeriesOptions: () => Promise.resolve({ process: [], serie: ['FPS B2', 'FPU A2', 'PSH B2', 'PSU B2'], case: [], pn: [] })

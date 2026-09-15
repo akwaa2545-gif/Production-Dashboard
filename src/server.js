@@ -9,6 +9,7 @@ const warmEnabled = process.env.DASHBOARD_CACHE_WARMER_ENABLED !== 'false';
 const stagingIntervalMs = Math.max(Number(process.env.DASHBOARD_901_STAGING_INTERVAL_MS) || 300000, 60000);
 const wipStagingIntervalMs = Math.max(Number(process.env.DASHBOARD_WIP_STAGING_INTERVAL_MS) || 300000, 60000);
 const scYieldStagingIntervalMs = Math.max(Number(process.env.DASHBOARD_SC_YIELD_STAGING_INTERVAL_MS) || 300000, 60000);
+const defectModeStagingIntervalMs = Math.max(Number(process.env.DASHBOARD_DEFECT_MODE_STAGING_INTERVAL_MS) || 300000, 60000);
 app.listen(port, host, () => {
   console.log(`OneMES dashboard listening on http://${host}:${port}`);
   const warm = () => app.warmCurrentMonthCaches().catch((error) => console.warn(`Dashboard cache warmer skipped: ${error.message}`));
@@ -16,6 +17,9 @@ app.listen(port, host, () => {
     setTimeout(warm, 120000).unref();
     setInterval(warm, warmIntervalMs).unref();
   }
+  const refreshDefectModeStaging = () => app.refreshDefectModeStaging().catch((error) => console.warn(`Defect-mode staging refresh skipped: ${error.message}`));
+  setTimeout(refreshDefectModeStaging, 10000).unref();
+  setInterval(refreshDefectModeStaging, defectModeStagingIntervalMs).unref();
   const refresh901Staging = () => app.refresh901Staging().catch((error) => console.warn(`901 staging refresh skipped: ${error.message}`));
   setTimeout(refresh901Staging, 15000).unref();
   setInterval(refresh901Staging, stagingIntervalMs).unref();

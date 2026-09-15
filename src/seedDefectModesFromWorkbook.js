@@ -1,0 +1,15 @@
+import 'dotenv/config';
+import { readDefectModeStagingConfig, readYieldDefectSettingConfig, readScYieldConfig, readTaYieldConfig } from './config.js';
+import { DefectModeStagingRepository } from './defectModeStagingRepository.js';
+import { YieldDefectSettingRepository } from './yieldDefectSettingRepository.js';
+import { loadScYieldMapping } from './scYieldMapping.js';
+import { loadTaYieldMapping } from './taYieldMapping.js';
+const staging = new DefectModeStagingRepository(readDefectModeStagingConfig()); const settings = new YieldDefectSettingRepository(readYieldDefectSettingConfig());
+const sc = await loadScYieldMapping(readScYieldConfig().mappingFile); const ta = await loadTaYieldMapping(readTaYieldConfig().mappingFile);
+const unique = (rows) => [...new Map(rows.map((row) => [row.mode.toUpperCase(), row])).values()];
+const scRows = unique([...sc.values()].map((x) => ({ mode: x.mode, description: '' }))); const taEntries = [...new Map([...ta.neo, ...ta.gps].map(([mode, value]) => [mode.toUpperCase(), { mode, value }])).values()]; const taRows = taEntries.map(({ mode }) => ({ mode, description: '' }));
+await Promise.all([staging.addModes('SC', scRows), staging.addModes('TA', taRows)]);
+const existing = new Set((await settings.list()).map((x) => `${x.dataset}|${x.mode.toUpperCase()}`));
+for (const x of unique([...sc.values()])) if (!existing.has(`SC|${x.mode.toUpperCase()}`)) await settings.upsert({ dataset: 'SC', mode: x.mode, group: x.group, included: x.included, updatedBy: 'Workbook seed' });
+for (const { mode, value: x } of taEntries) if (!existing.has(`TA|${mode.toUpperCase()}`)) await settings.upsert({ dataset: 'TA', mode, group: x.main || x.category || 'Unmapped', included: Boolean(x.main || x.category), updatedBy: 'Workbook seed' });
+console.log('Workbook seed complete.');

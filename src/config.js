@@ -141,6 +141,12 @@ export function readYieldDefectSettingConfig(environment = process.env) {
   return { ...base, table, ready: Boolean(base.server && base.database && base.user && base.password && isSafeView(table)) };
 }
 
+export function readDefectModeStagingConfig(environment = process.env) {
+  const base = read901StagingConfig(environment);
+  const table = environment.STAGING_DEFECT_MODE_SQL_TABLE || 'dbo.DashboardYieldDefectMode';
+  return { ...base, enabled: environment.DASHBOARD_DEFECT_MODE_STAGING_ENABLED !== 'false', table, ready: Boolean(base.server && base.database && base.user && base.password && isSafeView(table)) };
+}
+
 export function readTaYieldStagingConfig(environment = process.env) {
   const base = read901StagingConfig(environment);
   const table = environment.STAGING_TA_YIELD_LOT_SQL_TABLE || 'dbo.DashboardTaYieldLotInput';
