@@ -22,10 +22,7 @@ describe('dashboard API', () => {
       taYieldRepository: { getDefectModes: () => Promise.reject(new Error('Defect Settings must not query TA MES')) },
       scYieldRepository: { getDefectModes: () => Promise.reject(new Error('Defect Settings must not query SC MES')) },
       defectModeStagingRepository: {
-        getModes: () => Promise.resolve([
-          { dataset: 'TA', mode: 'TA_STAGED', description: 'Staged TA disposition' },
-          { dataset: 'SC', mode: 'SC_STAGED' }
-        ])
+        getModes: (dataset) => Promise.resolve(dataset === 'TA' ? [{ mode: 'TA_STAGED', description: 'Staged TA disposition' }] : [{ mode: 'SC_STAGED' }])
       }
     });
 
@@ -37,28 +34,23 @@ describe('dashboard API', () => {
   });
 
   it('syncs new MES defect modes into staging before returning them', async () => {
-    let staged = [];
+    const staged = new Map([['TA', []], ['SC', []]]);
     const replaced = [];
     const app = createApp({
       environment: configuredEnvironment,
       taYieldRepository: { getDefectModes: () => Promise.resolve([{ mode: 'TA_NEW', description: 'Fresh TA disposition' }]) },
       scYieldRepository: { getDefectModes: () => Promise.resolve([{ mode: 'SC_NEW' }]) },
       defectModeStagingRepository: {
-        getModes: () => Promise.resolve(staged),
-        replaceModes: (modes) => { replaced.push(modes); staged = modes; return Promise.resolve(); }
+        getModes: (dataset) => Promise.resolve(staged.get(dataset)),
+        addModes: (dataset, modes) => { replaced.push({ dataset, modes }); staged.set(dataset, modes); return Promise.resolve(); }
       }
     });
 
     const response = await request(app).post('/api/defect-settings/sync');
 
     expect(response.status).toBe(200);
-    expect(replaced).toEqual([
-      [
-        { dataset: 'TA', mode: 'TA_NEW', description: 'Fresh TA disposition' },
-        { dataset: 'SC', mode: 'SC_NEW', description: '' }
-      ]
-    ]);
-    expect(response.body.data).toMatchObject({ status: 'REFRESHED', ta: 1, sc: 1 });
+    expect(replaced).toEqual([{ dataset: 'TA', modes: [{ mode: 'TA_NEW', description: 'Fresh TA disposition' }] }, { dataset: 'SC', modes: [{ mode: 'SC_NEW', description: '' }] }]);
+    expect(response.body.data.ta).toEqual([expect.objectContaining({ source: 'TA_NEW' })]);
     const settings = await request(app).get('/api/defect-settings');
     expect(settings.body.data.ta).toEqual([expect.objectContaining({ source: 'TA_NEW', description: 'Fresh TA disposition' })]);
     expect(settings.body.data.sc).toEqual([expect.objectContaining({ mode: 'SC_NEW' })]);
