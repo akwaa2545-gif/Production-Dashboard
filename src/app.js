@@ -24,7 +24,7 @@ import { refreshDefectModeStaging } from './defectModeStagingRefresh.js';
 import { TaYieldStagingRepository } from './taYieldStagingRepository.js';
 import { mergeTaWorkbookLots, taWorkbookBusinessKey, taYieldLateArrivalDates, taYieldRefreshPlan, thailandTapingDate } from './taYieldRefreshPlan.js';
 import { stagingIncrementalRefreshFilters } from './stagingRefreshPlan.js';
-import { loadScYieldMapping, mapScYieldRows } from './scYieldMapping.js';
+import { loadScYieldMapping, mapScYieldRows, mergeScYieldMapping } from './scYieldMapping.js';
 import { loadTaWorkbookReconciliationMapping, loadTaYieldMapping, mapTaWorkbookReconciliationRows, mapTaWorkbookYieldRows, mapTaYieldLotDetails, mapTaYieldMachineEvents, mapTaYieldRows } from './taYieldMapping.js';
 import { TtlCache } from './ttlCache.js';
 
@@ -342,7 +342,11 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     }, 20000);
     defectModeCacheWarmTimer.unref?.();
   }
-  async function configuredScYieldMapping() { scYieldMapping ||= loadScYieldMapping(scYieldConfig.mappingFile); const [base, overrides] = await Promise.all([scYieldMapping, yieldDefectSettings ? yieldDefectSettings.list() : []]); const byMode = new Map(overrides.filter((item) => item.dataset === 'SC').map((item) => [item.mode.toUpperCase(), item])); return new Map([...base.entries()].map(([key, value]) => { const override = byMode.get(value.mode.toUpperCase()); return [key, override ? { ...value, group: override.group, included: override.included } : value]; })); }
+  async function configuredScYieldMapping() {
+    scYieldMapping ||= loadScYieldMapping(scYieldConfig.mappingFile);
+    const [base, overrides] = await Promise.all([scYieldMapping, yieldDefectSettings ? yieldDefectSettings.list() : []]);
+    return mergeScYieldMapping(base, overrides);
+  }
   async function configuredTaYieldMapping() { taYieldMapping ||= loadTaYieldMapping(taYieldConfig.mappingFile); const [base, overrides] = await Promise.all([taYieldMapping, yieldDefectSettings ? yieldDefectSettings.list() : []]); const byMode = new Map(overrides.filter((item) => item.dataset === 'TA').map((item) => [item.mode.toUpperCase(), item])); const configure = (entries) => new Map([...entries].map(([code, value]) => { const override = byMode.get(code.toUpperCase()); return [code, override ? { ...value, main: override.group, included: override.included } : value]; })); return { neo: configure(base.neo), gps: configure(base.gps) }; }
   async function taMachineDefectViews() { taYieldMachineDefectViews ||= loadTaYieldMapping(taYieldConfig.mappingFile).then((mapping) => { const entries = [...mapping.neo.entries(), ...mapping.gps.entries()]; return { codes: [...new Set(entries.map(([code]) => code))].sort(), categories: [...new Set(entries.map(([, entry]) => entry.category).filter(Boolean))].sort() }; }); return taYieldMachineDefectViews; }
   const app = express();

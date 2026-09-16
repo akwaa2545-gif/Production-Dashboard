@@ -250,6 +250,40 @@ describe('dashboard API', () => {
     expect(wrongSource.status).toBe(400);
   });
 
+  it.each([
+    ['/api/sc-yield', 'month'],
+    ['/api/sc-yield-weekly', 'week'],
+    ['/api/sc-yield-tendency', 'month']
+  ])('includes saved SC modes absent from the workbook in %s', async (endpoint, bucket) => {
+    const bucketMonth = bucket === 'week' ? '2026-W32' : '2026-08';
+    const rows = {
+      inputs: [{ bucketMonth, line: 'CAN', quantity: 772300 }],
+      defects: [
+        ['2511_Cap NG', 826], ['2512_LC NG', 1077],
+        ['2615_Cap NG Re', 75], ['2616', 118]
+      ].map(([dispositionCode, quantity]) => ({ bucketMonth, line: 'CAN', dispositionCode, quantity }))
+    };
+    const app = createApp({
+      environment: configuredEnvironment,
+      scYieldRepository: { getYieldRows: () => Promise.resolve(rows) },
+      yieldDefectSettingRepository: { list: () => Promise.resolve([
+        { dataset: 'SC', mode: '2615_Cap NG Re', group: 'CAP', included: true },
+        { dataset: 'SC', mode: '2616_LC NG Re', group: 'LC', included: true }
+      ]) }
+    });
+
+    const response = await request(app).get(`${endpoint}?dataset=yield&startDate=2026-08-01&endDate=2026-08-31`);
+
+    expect(response.status).toBe(200);
+    const [row] = response.body.data;
+    expect(row).toMatchObject({ month: bucketMonth, line: 'CAN', input: 772300, defect: 2096, unmapped: 0 });
+    expect(row.groups).toEqual([
+      expect.objectContaining({ group: 'CAP', quantity: 901 }),
+      expect.objectContaining({ group: 'LC', quantity: 1195 })
+    ]);
+    expect(row.modes.filter((mode) => mode.quantity > 0)).toHaveLength(4);
+  });
+
   it('falls back to direct MES SC Yield rows when the requested range is not staged exactly', async () => {
     const scYieldRepository = { getYieldRows: () => Promise.resolve({ inputs: [{ bucketMonth: '2026-07', line: 'FM', quantity: 100 }], defects: [] }) };
     const scYieldStagingRepository = { getYieldRows: () => Promise.reject(new Error('SC Yield staging snapshot does not exactly match the requested end date.')) };

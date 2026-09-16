@@ -51,6 +51,20 @@ export async function loadScYieldSourceModes(filename) {
   return [...modes.values()].sort((left, right) => left.localeCompare(right));
 }
 
+export function mergeScYieldMapping(base, overrides) {
+  const settings = overrides.filter((item) => item.dataset === 'SC' && text(item.mode)).map((item) => {
+    const keys = keysForMode(item.mode);
+    const existing = keys.map((key) => base.get(key)).find(Boolean);
+    const entry = { mode: existing?.mode || text(item.mode), group: item.group, included: item.included };
+    return { keys, entry };
+  });
+  const byMode = new Map(settings.map(({ entry }) => [entry.mode.toUpperCase(), entry]));
+  const configured = [...base.entries()].map(([key, entry]) => [key, byMode.get(entry.mode.toUpperCase()) || entry]);
+  // Saved modes can be newer than the workbook; include their full and numeric aliases.
+  const saved = settings.flatMap(({ keys, entry }) => keys.map((key) => [key, byMode.get(entry.mode.toUpperCase())]));
+  return new Map([...configured, ...saved]);
+}
+
 export function mapScYieldRows(rows, mapping) {
   const includedModes = [...new Map([...mapping.values()].filter((entry) => entry.included).map((entry) => [entry.mode, entry])).values()].sort((left, right) => left.mode.localeCompare(right.mode));
   const inputByKey = new Map();
