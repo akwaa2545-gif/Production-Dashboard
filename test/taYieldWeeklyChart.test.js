@@ -9,6 +9,16 @@ const taYieldTargetResolver = (targets) => {
   return new Function('taYieldTargets', `${app.slice(start, end)}\nreturn taYieldTargetFor;`)(targets);
 };
 
+const tendencyTargets = (targets, selection, trendRows, buckets = [{ month: '2026-08' }]) => {
+  const app = read('public/app.js');
+  const start = app.indexOf('const targetsByBucket');
+  const end = app.indexOf('const valuesForScale', start);
+  return new Function('taYieldTargetFor', 'taYieldTrendSeries', 'isTotalTrendScope', 'trendRows', 'buckets', 'shortTaSeries', 'chartColors',
+    `${app.slice(start, end)}\nreturn { targetsByBucket, selectedSeriesMetrics };`)(
+    taYieldTargetResolver(targets), selection, selection.includes('Total'), trendRows, buckets, String, ['#000', '#fff']
+  );
+};
+
 describe('TA yield tendency', () => {
 
   it('splits total yield and defect charts with one Day, Week, or Month interval control', () => {
@@ -174,12 +184,55 @@ describe('TA yield tendency', () => {
     expect(tendencyTargetBlock).toContain("taYieldTargetFor('Total', row.month)");
   });
 
-  it('falls back to a product-group target for raw Standard Production lines', () => {
+  it('does not substitute a product-group target for raw Standard Production lines', () => {
     const targetFor = taYieldTargetResolver({
       'Standard Production': { '2026-08': 94.5 }
     });
 
-    expect(targetFor('Ta NEO Capacitor PSG series A3 case', '2026-08-24')).toBe(94.5);
+    expect(targetFor('Ta NEO Capacitor PSG series A3 case', '2026-08-24')).toBeUndefined();
+  });
+
+  it('resolves the exact saved series after normalizing its raw line name', () => {
+    const targetFor = taYieldTargetResolver({ 'PSG A3': { '2026-08': 91 }, 'Standard Production': { '2026-08': 94.5 } });
+    expect(targetFor('Ta NEO Capacitor PSG series A3 case', '2026-08-24')).toBe(91);
+    expect(targetFor('Ta NEO Capacitor PSG series A3 case', '2026-09')).toBeUndefined();
+  });
+
+  it('does not substitute the Standard Production target for a missing Total target', () => {
+    const targetFor = taYieldTargetResolver({ 'Standard Production': { '2026-08': 94.5 } });
+    expect(targetFor('Total', '2026-08')).toBeUndefined();
+  });
+
+  it.each([undefined, null, '', ' ', 'invalid', false, [], {}])('treats an invalid or unset saved target (%j) as missing', (target) => {
+    const targetFor = taYieldTargetResolver({ 'PSG A3': { '2026-08': target }, 'Standard Production': { '2026-08': 94.5 } });
+    expect(targetFor('PSG A3', '2026-08')).toBeUndefined();
+  });
+
+  it.each([0, 100, '94.5'])('preserves the saved numeric target %j', (target) => {
+    const targetFor = taYieldTargetResolver({ Total: { '2026-08': target } });
+    expect(targetFor('Total', '2026-08')).toBe(Number(target));
+  });
+
+  it('uses only the Total setting for Total tendency buckets', () => {
+    const saved = tendencyTargets({ Total: { '2026-08': 92 }, 'Standard Production': { '2026-08': 94.5 } }, ['Total'], []);
+    const missing = tendencyTargets({ 'Standard Production': { '2026-08': 94.5 } }, ['Total'], []);
+    expect(saved.targetsByBucket.get('2026-08')).toBe(92);
+    expect(missing.targetsByBucket.get('2026-08')).toBeUndefined();
+  });
+
+  it('uses a single selected series target even when its bucket has zero input', () => {
+    const result = tendencyTargets({ 'FPS A1': { '2026-08': 88 } }, ['FPS A1'], [{ line: 'FPS A1', month: '2026-08', input: 0, finalGood: 0 }]);
+    expect(result.targetsByBucket.get('2026-08')).toBe(88);
+  });
+
+  it('omits a calculated combined target while preserving each selected series target and actual yield', () => {
+    const result = tendencyTargets({ 'FPS A1': { '2026-08': 80 }, 'FPS A2': { '2026-08': 88 } }, ['FPS A1', 'FPS A2'], [
+      { line: 'FPS A1', month: '2026-08', input: 100, finalGood: 90 },
+      { line: 'FPS A2', month: '2026-08', input: 300, finalGood: 270 }
+    ]);
+    expect(result.targetsByBucket.get('2026-08')).toBeUndefined();
+    expect(result.selectedSeriesMetrics.map((series) => series.values[0].target)).toEqual([80, 88]);
+    expect(result.selectedSeriesMetrics.map((series) => series.values[0].yield)).toEqual([90, 90]);
   });
 
   it('keeps Total Yield and Total Target visible above ordinary Line-view series', () => {
