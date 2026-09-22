@@ -249,6 +249,9 @@ body { margin: 0; background: #fff; }
 .ta-machine-line-scroll{position:relative;overflow:hidden}
 .ta-machine-date-machine-chart{width:100%!important;height:440px!important;min-width:0}
 .ta-yield-column-value{fill:#25304b;font-size:10px;font-weight:800;paint-order:stroke;stroke:#fff;stroke-width:3px;stroke-linejoin:round;pointer-events:none}
+.ta-yield-series-column-label{fill:#53617d!important;font-size:8px!important;font-weight:800}
+.ta-yield-series-label-swatch{stroke:#fff;stroke-width:1}
+#taYieldYieldChart .sc-yield-legend{align-items:center;gap:8px 12px;border-bottom:1px solid #e2e7f0;padding:8px 10px 11px}#taYieldYieldChart .sc-yield-legend span{border:1px solid #dbe1ed;border-radius:999px;background:#f8faff;padding:4px 8px;color:#28355b;font-size:12px}#taYieldYieldChart .sc-yield-legend i{width:12px;height:12px;border-radius:2px}#taYieldYieldChart .sc-yield-legend .target-line-key{width:18px;height:3px;border-radius:0}
 
 .source-control{position:relative;gap:5px;padding:9px 10px;border:1px solid rgba(214,222,255,.5);border-radius:6px;background:rgba(17,29,103,.24);box-shadow:inset 0 1px rgba(255,255,255,.1)}.source-control-label{color:#fff;font-size:10px;letter-spacing:.09em}.source-control select{height:38px;border-color:#d7ddff;border-radius:4px;padding:0 34px 0 11px;appearance:none;background:#fff linear-gradient(45deg,transparent 50%,#28358c 50%) calc(100% - 15px) 16px/6px 6px no-repeat,linear-gradient(135deg,#28358c 50%,transparent 50%) calc(100% - 10px) 16px/6px 6px no-repeat;color:#1d2b72;box-shadow:0 2px 5px rgba(14,23,83,.16)}.source-control select:hover{border-color:#fff;background-color:#f5f7ff}.source-control small{color:#cbd4ff;font-size:10px;font-weight:700;letter-spacing:0;text-transform:none}.source-control::after{position:absolute;inset:0;border-radius:6px;box-shadow:0 0 0 0 rgba(255,255,255,0);content:"";pointer-events:none}.source-control:focus-within::after{box-shadow:0 0 0 2px rgba(255,255,255,.38)}.source-control select optgroup{background:#28358c;color:#fff;font-weight:900}.source-control select option{background:#f5f7ff;color:#1d2b72;font-weight:800}.source-control select option:checked{background:#4c5bb5;color:#fff}
 @media(max-width:1220px){.page-header{margin-inline:-28px;padding-inline:28px}}
@@ -277,3 +280,73 @@ body { margin: 0; background: #fff; }
 .sc-yield-target-controls input:focus-visible { outline: 2px solid #28358c; outline-offset: 2px; }
 .sc-yield-target-controls p { flex: 1 1 240px; max-width: 560px; margin: 0; color: #65708a; font-size: 13px; line-height: 1.5; }
 #scYieldTargetParameters input { width: 130px; min-height: 36px; }
+.dashboard-source-indicator { margin-top: 6px; color: #59657a; font-size: 11px; line-height: 1.4; }
+.filter-title .dashboard-source-indicator span { display: inline; font-size: inherit; font-weight: 600; }
+.dashboard-source-indicator[data-mode=staging] { color: #28358c; }
+.dashboard-source-indicator[data-mode=live] { color: #126446; }
+.dashboard-source-indicator[data-mode=switching], .dashboard-source-indicator[data-mode=unavailable] { color: #805214; }
+
+/* Screenshot-style report range picker. The native values stay in the form for existing report requests. */
+.date-range-field { position: relative; display: grid; gap: 7px; min-width: 0; }
+.filter-toolbar .serie-field { display: none !important; }
+.date-range-label { color: #4f5c77; font-size: 11px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.filters .date-range-field > input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.filters .date-range-trigger { display: flex; width: 100%; height: 42px; align-items: center; justify-content: space-between; border: 1px solid #cbd1df; border-radius: 3px; background: #fff; padding: 0 12px; color: #20283a; font: 700 13px/1 Bahnschrift, "Aptos", "Segoe UI", sans-serif; letter-spacing: 0; text-align: left; cursor: pointer; text-transform: none; }
+.filters .date-range-trigger::after { margin-left: 12px; color: #5d6880; content: "⌄"; font-size: 15px; }.filters .date-range-trigger:hover { border-color: #8f9abc; }.filters .date-range-trigger:focus-visible { border-color: #28358c; outline: 0; box-shadow: 0 0 0 3px #dfe4ff; }.filters .date-range-trigger:disabled { background: #f0f2f7; color: #7a8499; cursor: wait; }
+.date-range-popover { position: absolute; z-index: 30; top: calc(100% + 9px); right: 0; display: grid; grid-template-columns: 145px minmax(460px, 1fr); width: 640px; max-height: calc(100vh - 24px); overflow: auto; border: 1px solid #454545; border-radius: 8px; background: #252525; padding: 0; color: #ececec; box-shadow: 0 18px 42px rgba(17, 22, 40, .3); opacity: 0; pointer-events: none; text-transform: none; transform: translateY(-6px) scale(.98); transition: opacity .18s ease, transform .18s ease; }
+.date-range-popover[hidden] { display: none; }.date-range-presets { display: grid; align-content: start; gap: 3px; border-right: 1px solid #4a4a4a; padding: 10px 8px; }.date-range-presets button { border: 0; border-radius: 5px; background: transparent; padding: 8px 11px; color: #eeeeee; text-align: left; font: 700 12px/1.2 Bahnschrift, "Aptos", "Segoe UI", sans-serif; cursor: pointer; }.date-range-presets button:hover, .date-range-presets button:focus-visible, .date-range-presets button.active { background: #4b4b4b; color: #fff; outline: 0; }
+.date-range-popover.is-open { opacity: 1; pointer-events: auto; transform: translateY(0) scale(1); }.date-range-popover.is-closing { opacity: 0; pointer-events: none; transform: translateY(-6px) scale(.98); }
+.date-range-calendar-panel { min-width: 0; padding: 11px 13px 13px; }.date-range-calendar-header { display: grid; grid-template-columns: 30px 1fr 30px; align-items: center; }.date-range-calendar-header h3 { margin: 0; color: #fff; font-size: 13px; text-align: center; }.date-range-calendar-header button { width: 28px; height: 28px; border: 0; border-radius: 50%; background: transparent; color: #c8c8c8; font-size: 24px; line-height: 1; cursor: pointer; }.date-range-calendar-header button:last-child { justify-self: end; }.date-range-calendar-header button:hover, .date-range-calendar-header button:focus-visible { background: #454545; color: #fff; outline: 0; }.date-range-help { min-height: 16px; margin: 4px 0 9px; color: #aeb1ba; font-size: 10px; text-align: center; }
+.date-range-calendars { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }.date-range-calendar h4 { margin: 0 0 8px; color: #e9e9e9; font-size: 12px; text-align: center; }.date-range-weekdays, .date-range-days { display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; }.date-range-weekdays { margin-bottom: 4px; color: #a9a9a9; font-size: 10px; }.date-range-days { row-gap: 2px; }.date-range-days > span { min-height: 28px; }.date-range-days button { min-width: 28px; height: 28px; border: 0; border-radius: 50%; background: transparent; color: #dedede; font: 700 12px/1 Bahnschrift, "Aptos", "Segoe UI", sans-serif; cursor: pointer; }.date-range-days button:hover, .date-range-days button:focus-visible { background: #5a5a5a; color: #fff; outline: 0; }.date-range-days button.today { box-shadow: inset 0 0 0 1px #7ea2ff; color: #cbd7ff; }.date-range-days button.today:hover, .date-range-days button.today:focus-visible { background: #40549a; }.date-range-days button.in-range { border-radius: 0; background: #444; }.date-range-days button.selected-start, .date-range-days button.selected-end { background: #fff; color: #252525; box-shadow: 0 0 0 1px #fff; }.date-range-days button.selected-start.in-range { border-radius: 50% 0 0 50%; }.date-range-days button.selected-end.in-range { border-radius: 0 50% 50% 0; }
+.date-range-popover.selection-complete .date-range-days button.selected-start, .date-range-popover.selection-complete .date-range-days button.selected-end { animation: date-range-selection .36s ease-out both; } @keyframes date-range-selection { 0% { transform: scale(.72); box-shadow: 0 0 0 0 rgba(255,255,255,.75); } 58% { transform: scale(1.14); box-shadow: 0 0 0 8px rgba(255,255,255,0); } 100% { transform: scale(1); box-shadow: 0 0 0 1px #fff; } }
+@media (prefers-reduced-motion: reduce) { .date-range-popover { transition: none; }.date-range-popover.selection-complete .date-range-days button.selected-start, .date-range-popover.selection-complete .date-range-days button.selected-end { animation: none; } }
+@media (max-width: 760px) { .date-range-popover { position: fixed; top: 50%; right: 12px; left: 12px; grid-template-columns: 1fr; width: auto; max-height: calc(100vh - 28px); overflow-y: auto; transform: translateY(calc(-50% - 6px)) scale(.98); }.date-range-popover.is-open { transform: translateY(-50%) scale(1); }.date-range-popover.is-closing { transform: translateY(calc(-50% - 6px)) scale(.98); }.date-range-presets { grid-template-columns: repeat(3, minmax(0, 1fr)); border-right: 0; border-bottom: 1px solid #4a4a4a; }.date-range-presets button { text-align: center; font-size: 10px; }.date-range-calendars { gap: 12px; }.date-range-calendar-panel { padding: 12px; } }
+@media (max-width: 430px) { .date-range-presets { grid-template-columns: repeat(2, minmax(0, 1fr)); }.date-range-calendars { grid-template-columns: 1fr; }.date-range-calendar:last-child { display: none; } }
+
+.dashboard-data-mode-dialog { width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 40px); overflow: auto; border: 1px solid #cbd5e1; border-radius: 16px; padding: 24px; color: #243247; box-shadow: 0 20px 70px #15213b44; }
+.dashboard-data-mode-dialog::backdrop { background: #14203988; }
+.dashboard-data-mode-dialog header { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.dashboard-data-mode-dialog h2 { margin: 0; font-size: 21px; }
+.dashboard-data-mode-dialog header button { border: 0; background: transparent; color: #334155; font-size: 26px; cursor: pointer; }
+.dashboard-data-mode-dialog p { line-height: 1.6; }
+.dashboard-data-mode-dialog form, .dashboard-data-mode-dialog label { display: grid; gap: 10px; }
+.dashboard-data-mode-dialog form { gap: 18px; }
+.dashboard-data-mode-dialog select, .dashboard-data-mode-dialog input { width: 100%; min-height: 42px; padding: 8px; border: 1px solid #94a3b8; border-radius: 6px; }
+.dashboard-data-mode-dialog button[type=submit] { padding: 12px; background: #3730a3; color: white; border: 0; border-radius: 7px; cursor: pointer; }
+.dashboard-data-mode-dialog button:disabled { opacity: .55; cursor: default; }
+.data-mode-token-field { display: grid; gap: 10px; }
+.data-mode-token-entry { display: flex; gap: 8px; align-items: stretch; }
+.data-mode-token-entry input { min-width: 0; flex: 1; }
+.data-mode-token-entry button { flex: 0 0 auto; padding: 8px 14px; border: 1px solid #94a3b8; border-radius: 6px; color: #3730a3; background: #f5f3ff; font-weight: 600; cursor: pointer; }
+.data-mode-token-field small { color: #475569; font-size: 12px; line-height: 1.6; }
+.dashboard-data-mode-dialog :focus-visible, .data-mode-settings button:focus-visible { outline: 3px solid #6366f1; outline-offset: 3px; }
+
+.data-mode-settings { margin: 8px 0 24px; border: 1px solid #d8dce6; border-radius: 10px; background: #fff; overflow: hidden; }
+.data-mode-settings[hidden] { display: none; }
+.data-mode-settings-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 24px 26px 20px; }
+.data-mode-settings-heading h2 { margin: 0; color: #20283a; font-size: 23px; letter-spacing: -.02em; }
+.data-mode-settings-heading p:last-child { margin: 7px 0 0; color: #5c6780; font-size: 13px; }
+.data-mode-current { flex-shrink: 0; display: inline-flex; align-items: center; gap: 8px; border: 1px solid #ccd4ec; border-radius: 24px; padding: 8px 12px; background: #f0f3fb; color: #28358c; font-size: 12px; font-weight: 700; }
+.data-mode-current::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.data-mode-current[data-mode=live] { color: #126446; background: #edf8f2; border-color: #bddfcd; }
+.data-mode-current[data-mode=switching] { color: #885516; background: #fff7e8; border-color: #ebd5aa; }
+.data-mode-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; padding: 0 26px 24px; }
+.data-mode-option { padding: 20px; border: 1px solid #dce1e9; border-radius: 7px; background: #fafbfe; }
+.data-mode-option[data-active=true] { border-color: #28358c; box-shadow: inset 3px 0 #28358c; background: #f4f6fc; }
+.data-mode-option[data-dashboard-mode-card=live][data-active=true] { border-color: #16845e; box-shadow: inset 3px 0 #16845e; background: #f2faf6; }
+.data-mode-option-title { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.data-mode-option-title svg { width: 22px; height: 22px; fill: none; stroke: #526284; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.data-mode-option-title h3 { margin: 0; color: #20283a; font-size: 17px; }
+.data-mode-option-title span { margin-left: auto; color: #3c4863; font-size: 11px; font-weight: 700; }
+.data-mode-option p { margin: 12px 0 18px; color: #536078; font-size: 13px; line-height: 1.6; }
+.data-mode-flow { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; color: #536078; font-size: 11px; }
+.data-mode-flow span { padding: 5px 8px; border: 1px solid #dce1e9; border-radius: 4px; background: #fff; color: #34425e; font-weight: 700; }
+.data-mode-flow b { color: #73809b; }.data-mode-flow small { font-size: 11px; }
+.data-mode-settings-footer { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 17px 26px; border-top: 1px solid #e5e8ef; background: #fafbfe; }
+.data-mode-settings-footer p { max-width: 650px; margin: 0; color: #59657c; font-size: 12px; line-height: 1.6; }.data-mode-settings-footer strong { color: #303d57; }
+.data-mode-settings-footer button { display: flex; align-items: center; justify-content: center; gap: 20px; flex-shrink: 0; min-height: 42px; padding: 10px 16px; border: 1px solid #28358c; border-radius: 5px; background: #28358c; color: #fff; font-family: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+.data-mode-settings-footer button:hover { background: #1d2872; }.data-mode-settings-footer button:disabled { opacity: .6; cursor: wait; }
+@media(max-width:640px) { .data-mode-settings-heading { align-items: flex-start; flex-direction: column; padding: 20px; gap: 14px; }.data-mode-options { grid-template-columns: 1fr; padding: 0 20px 20px; gap: 12px; }.data-mode-settings-footer { align-items: stretch; flex-direction: column; padding: 16px 20px; gap: 14px; }.data-mode-option { padding: 16px; } }
+
+.ta-yield-tendency-panel .sc-yield-chart-scroll.ta-yield-fit-panel { overflow-x: hidden; }
+.ta-yield-tendency-panel .sc-yield-chart-scroll.ta-yield-fit-panel svg { width: 100% !important; min-width: 0 !important; height:auto !important; margin-inline: 0 !important; }

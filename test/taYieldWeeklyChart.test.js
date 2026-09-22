@@ -99,11 +99,20 @@ describe('TA yield tendency', () => {
 
   it('draws a separate yield column and target line for every selected series', () => {
     const app = read('public/app.js');
+    const styles = read('public/styles.css');
 
     expect(app).toContain('const multiSeriesColumnChart = !isTotalTrendScope && taYieldTrendSeries.length > 1;');
     expect(app).toContain('class="yield-column ta-yield-series-column');
     expect(app).toContain('class="target-line ta-yield-series-target"');
     expect(app).toContain('taYieldTargetFor(serie, bucket.month)');
+    expect(app).toContain('<strong>Series</strong>');
+    expect(app).toContain("stroke:${belowTarget ? '#c9443d' : series.color}");
+    expect(app).toContain('const multiSeriesColumnLabels = multiSeriesColumnChart');
+    expect(app).toContain('class="axis ta-yield-series-column-label"');
+    expect(app).toContain('class="ta-yield-series-label-swatch"');
+    expect(app).toContain('const multiSeriesColumnGap = 9;');
+    expect(app).toContain('const multiSeriesClusterWidth = Math.min(slot * .82, 84);');
+    expect(app.match(/clusterWidth \/ selectedSeriesMetrics\.length - multiSeriesColumnGap/g)).toHaveLength(2);
   });
 
   it('draws a separate stacked defect column for every selected series', () => {

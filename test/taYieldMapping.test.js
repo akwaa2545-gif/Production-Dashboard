@@ -1,15 +1,53 @@
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { chdir } from 'node:process';
 import { describe, expect, it } from 'vitest';
-import { loadTaYieldMapping, mapTaWorkbookReconciliationRows, mapTaWorkbookYieldRows, mapTaYieldLotDetails, mapTaYieldRows } from '../src/taYieldMapping.js';
+import ExcelJS from 'exceljs';
+import { loadTaWorkbookReconciliationMapping, loadTaYieldMapping, mapTaWorkbookReconciliationRows, mapTaWorkbookYieldRows, mapTaYieldLotDetails, mapTaYieldRows } from '../src/taYieldMapping.js';
 
 const mapping = new Map([
   ['0301_Sample_CV', { main: 'Inprocess Upstream' }],
   ['1815_ESR_Def', { main: 'ESR' }],
   ['1816_ESR_Def2', { main: 'ESR' }]
 ]);
+
+describe('loadTaWorkbookReconciliationMapping', () => {
+  it('reads trimmed Sheet1 descriptions and categories, including rich text, without the header or blank descriptions', async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), 'ta-reconciliation-mapping-'));
+    try {
+      const filename = path.join(tempDir, 'mapping.xlsx');
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet('Sheet1');
+      sheet.addRow(['Category', 'Description']);
+      sheet.addRow([' App ', ' Cam1 defective for GPS ']);
+      sheet.addRow([{ richText: [{ text: 'Inproc ' }, { text: 'Dw' }] }, { richText: [{ text: 'Welding ' }, { text: 'defect' }] }]);
+      sheet.addRow(['ESR', '   ']);
+      await workbook.xlsx.writeFile(filename);
+
+      expect(await loadTaWorkbookReconciliationMapping(filename)).toEqual(new Map([
+        ['Cam1 defective for GPS', 'App'],
+        ['Welding defect', 'Inproc Dw']
+      ]));
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a workbook without the required mapping sheet', async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), 'ta-reconciliation-mapping-'));
+    try {
+      const filename = path.join(tempDir, 'missing-sheet.xlsx');
+      const workbook = new ExcelJS.Workbook();
+      workbook.addWorksheet('Other');
+      await workbook.xlsx.writeFile(filename);
+
+      await expect(loadTaWorkbookReconciliationMapping(filename)).rejects.toThrow('TA workbook reference is missing Sheet1.');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('mapTaYieldRows', () => {
   it('keeps raw TA series in table rows so charts can group them independently', () => {

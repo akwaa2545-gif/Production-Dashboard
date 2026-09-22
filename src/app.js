@@ -1,6 +1,6 @@
+import { settleAll } from './settleAll.js';
 import express from 'express';
 import path from 'node:path';
-import { createHash, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import ExcelJS from 'exceljs';
 import { publicConfig, publicDataModel, publicScYieldConfig, publicTaYieldConfig, read901StagingConfig, readCellCommentConfig, readDatasetConfig, readDefectModeStagingConfig, readMtdTargetConfig, readScYieldActionConfig, readScYieldConfig, readScYieldStagingConfig, readScYieldTargetConfig, readTaYieldActionConfig, readTaYieldConfig, readTaYieldTargetConfig, readWipStagingConfig, readYieldDefectSettingConfig, readTaYieldStagingConfig } from './config.js';
@@ -24,6 +24,8 @@ import { refreshDefectModeStaging } from './defectModeStagingRefresh.js';
 import { TaYieldStagingRepository } from './taYieldStagingRepository.js';
 import { mergeTaWorkbookLots, taWorkbookBusinessKey, taYieldLateArrivalDates, taYieldRefreshPlan, thailandTapingDate } from './taYieldRefreshPlan.js';
 import { stagingIncrementalRefreshFilters } from './stagingRefreshPlan.js';
+import { registerStagingRepairRoute } from './stagingRepair.js';
+import { createDashboardDataMode, registerDashboardDataModeRoutes } from './dashboardDataMode.js';
 import { loadScYieldMapping, mapScYieldRows, mergeScYieldMapping } from './scYieldMapping.js';
 import { loadTaWorkbookReconciliationMapping, loadTaYieldMapping, mapTaWorkbookReconciliationRows, mapTaWorkbookYieldRows, mapTaYieldLotDetails, mapTaYieldMachineEvents, mapTaYieldRows } from './taYieldMapping.js';
 import { TtlCache } from './ttlCache.js';
@@ -41,42 +43,34 @@ function isCompleteCalendarMonthRange({ startDate, endDate }) {
 }
 
 function isAuthenticationError(error) {
-  return error?.code === 'ELOGIN' || /token\s+(?:is\s+)?expired|authentication|login failed|aadsts|credential/i.test(error?.message || '');
+  return error?.name === 'AuthenticationRequiredError' || error?.code === 'ELOGIN' || /token\s+(?:is\s+)?expired|authentication|login failed|aadsts|credential/i.test(error?.message || '');
+}
+
+function isQueryTimeout(error) {
+  return error?.code === 'ETIMEOUT' && error?.name !== 'ConnectionError'
+    && !/failed to connect|connection.*timed out/i.test(error?.message || '');
+}
+
+function databaseFailure(error) {
+  const number = Number(error?.number ?? error?.originalError?.info?.number);
+  if ([229, 230, 297, 916, 4060].includes(number) || /(?:select |execute )?permission (?:was )?denied|not able to access the database/i.test(error?.message || '')) {
+    return { status: 503, code: 'DATABASE_PERMISSION_DENIED', error: 'The signed-in account cannot access the required MES data. Ask the database administrator to grant access.' };
+  }
+  if ([207, 208].includes(number) || /invalid (?:object|column) name/i.test(error?.message || '')) {
+    return { status: 503, code: 'DATABASE_QUERY_INVALID', error: 'A configured MES view or column is unavailable. Check the server MES query configuration.' };
+  }
+  if (isQueryTimeout(error)) return { status: 503, code: 'DATABASE_QUERY_TIMEOUT', error: 'The MES query took too long. Try a shorter date range or narrower filters.' };
+  return undefined;
 }
 
 function isConnectionError(error) {
-  const connectionCodes = new Set(['ESOCKET', 'ETIMEOUT', 'ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND']);
-  return connectionCodes.has(error?.code) || /failed to connect|connection.*timed out|etimedout|econnrefused|enotfound|socket.*closed/i.test(error?.message || '');
+  if (isQueryTimeout(error)) return false;
+  const connectionCodes = new Set(['ESOCKET', 'ETIMEOUT', 'ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'ECONNCLOSED', 'ENOTOPEN']);
+  return connectionCodes.has(error?.code) || /failed to connect|connection.*(?:timed out|closed)|etimedout|econnrefused|enotfound|socket.*closed/i.test(error?.message || '');
 }
 
 function validDate(value) {
   return typeof value === 'string' && datePattern.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
-}
-
-function validCalendarDate(value) {
-  if (!validDate(value)) return false;
-  return new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value;
-}
-
-function validated901RepairRange(value, today) {
-  const startDate = value?.startDate;
-  const endDate = value?.endDate;
-  if (!validCalendarDate(startDate) || !validCalendarDate(endDate)) return { error: 'Provide valid startDate and endDate values in YYYY-MM-DD format.' };
-  if (startDate > endDate) return { error: 'startDate must be on or before endDate.' };
-  if (endDate > today) return { error: '901 staging repair cannot include a future date.' };
-  const days = (Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86400000 + 1;
-  if (days > 7) return { error: '901 staging repair cannot exceed 7 days.' };
-  return { filters: { startDate, endDate } };
-}
-
-function authorized901Repair(request, configuredToken) {
-  const token = String(configuredToken || '');
-  if (token.length < 32) return { configured: false, authorized: false };
-  const authorization = String(request.get('authorization') || '');
-  const suppliedToken = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
-  const expectedDigest = createHash('sha256').update(token).digest();
-  const suppliedDigest = createHash('sha256').update(suppliedToken).digest();
-  return { configured: true, authorized: Boolean(suppliedToken) && timingSafeEqual(expectedDigest, suppliedDigest) };
 }
 
 function thailandCalendarDate(value) {
@@ -264,7 +258,7 @@ async function taYieldDataTableWorkbook(rows, filters) {
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
-export function createApp({ environment = process.env, repository, scYieldRepository, taYieldRepository, mtdTargetRepository, scYieldTargetRepository, taYieldTargetRepository, scYieldActionRepository, taYieldActionRepository, cellCommentRepository, staging901Repository, stagingWipRepository, scYieldStagingRepository, taYieldStagingRepository, defectModeStagingRepository, yieldDefectSettingRepository, refresh901StagingOperation = refresh901Staging, cache } = {}) {
+export function createApp({ environment = process.env, repository, scYieldRepository, taYieldRepository, mtdTargetRepository, scYieldTargetRepository, taYieldTargetRepository, scYieldActionRepository, taYieldActionRepository, cellCommentRepository, staging901Repository, stagingWipRepository, scYieldStagingRepository, taYieldStagingRepository, defectModeStagingRepository, yieldDefectSettingRepository, refresh901StagingOperation = refresh901Staging, refreshWipStagingOperation = refreshWipStaging, cache } = {}) {
   const configs = { closed: readDatasetConfig(environment, 'closed'), lot: readDatasetConfig(environment, 'lot') };
   const scYieldConfig = readScYieldConfig(environment);
   const taYieldConfig = readTaYieldConfig(environment);
@@ -290,12 +284,22 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   const scYieldTargets = scYieldTargetRepository || (scYieldTargetConfig.ready ? new ScYieldTargetRepository(scYieldTargetConfig) : undefined);
   const taYieldTargets = taYieldTargetRepository || (taYieldTargetConfig.ready ? new TaYieldTargetRepository(taYieldTargetConfig) : undefined);
   const comments = cellCommentRepository || (commentConfig.ready ? new CellCommentRepository(commentConfig) : undefined);
-  const staging901 = staging901Repository || (staging901Config.enabled && staging901Config.ready ? new Staging901Repository(staging901Config) : undefined);
-  const stagingWip = stagingWipRepository || (stagingWipConfig.enabled && stagingWipConfig.ready ? new StagingWipRepository(stagingWipConfig) : undefined);
-  const scYieldStaging = scYieldStagingRepository || (scYieldStagingConfig.enabled && scYieldStagingConfig.ready ? new ScYieldStagingRepository(scYieldStagingConfig) : undefined);
+  let staging901 = staging901Repository || (staging901Config.enabled && staging901Config.ready ? new Staging901Repository(staging901Config) : undefined);
+  let stagingWip = stagingWipRepository || (stagingWipConfig.enabled && stagingWipConfig.ready ? new StagingWipRepository(stagingWipConfig) : undefined);
+  let scYieldStaging = scYieldStagingRepository || (scYieldStagingConfig.enabled && scYieldStagingConfig.ready ? new ScYieldStagingRepository(scYieldStagingConfig) : undefined);
   const yieldDefectSettings = yieldDefectSettingRepository || (yieldDefectSettingConfig.ready ? new YieldDefectSettingRepository(yieldDefectSettingConfig) : undefined);
-  const defectModesStaging = defectModeStagingRepository || (defectModeStagingConfig.enabled && defectModeStagingConfig.ready ? new DefectModeStagingRepository(defectModeStagingConfig) : undefined);
-  const taYieldStaging = taYieldStagingRepository || (taYieldStagingConfig.enabled && taYieldStagingConfig.ready ? new TaYieldStagingRepository(taYieldStagingConfig) : undefined);
+  let defectModesStaging = defectModeStagingRepository || (defectModeStagingConfig.enabled && defectModeStagingConfig.ready ? new DefectModeStagingRepository(defectModeStagingConfig) : undefined);
+  let taYieldStaging = taYieldStagingRepository || (taYieldStagingConfig.enabled && taYieldStagingConfig.ready ? new TaYieldStagingRepository(taYieldStagingConfig) : undefined);
+  const configuredStaging = Object.freeze({ staging901, stagingWip, scYieldStaging, defectModesStaging, taYieldStaging });
+  function applyDataMode(mode) {
+    const active = mode === 'staging' ? configuredStaging : {};
+    ({ staging901, stagingWip, scYieldStaging, defectModesStaging, taYieldStaging } = active);
+  }
+  const dataMode = createDashboardDataMode({
+    initialMode: environment.DASHBOARD_DATA_MODE || 'staging',
+    onChange: (mode) => { responseCache.clear(); applyDataMode(mode); }
+  });
+  applyDataMode(dataMode.status().mode);
   const taYieldActions = taYieldActionRepository || (taYieldActionConfig.ready ? new TaYieldActionRepository(taYieldActionConfig) : undefined);
   const scYieldActions = scYieldActionRepository || (scYieldActionConfig.ready ? new ScYieldActionRepository(scYieldActionConfig) : undefined);
   let completion901Pipeline = { status: 'IDLE', stage: 'Waiting for the next scheduled refresh.', updatedAt: new Date().toISOString(), startedAt: undefined, completedAt: undefined, logs: [] };
@@ -304,6 +308,12 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     completion901Pipeline = { ...completion901Pipeline, ...extra, status, stage, updatedAt: entry.at, logs: [entry, ...completion901Pipeline.logs].slice(0, 20) };
     console.log(`901 staging: ${stage}`);
   };
+  let wipPipeline = { status: 'IDLE', stage: 'Waiting for the next scheduled refresh.', updatedAt: new Date().toISOString(), logs: [] };
+  const updateWipPipeline = (status, stage, extra = {}) => {
+    const entry = { at: new Date().toISOString(), status, stage };
+    wipPipeline = { ...wipPipeline, ...extra, status, stage, updatedAt: entry.at, logs: [entry, ...wipPipeline.logs].slice(0, 20) };
+    console.log(`WIP staging: ${stage}`);
+  };
   let taYieldQa = { status: 'NOT_RUN' };
   let taYieldPipeline = { status: 'IDLE', stage: 'Waiting for the next scheduled refresh.', updatedAt: new Date().toISOString(), startedAt: undefined, completedAt: undefined, logs: [] };
   const updateTaYieldPipeline = (status, stage, extra = {}) => {
@@ -311,7 +321,15 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     taYieldPipeline = { ...taYieldPipeline, ...extra, status, stage, updatedAt: entry.at, logs: [entry, ...taYieldPipeline.logs].slice(0, 20) };
     console.log(`TA Yield staging: ${stage}`);
   };
-  const responseCache = cache || new TtlCache({ maxEntries: Math.min(Math.max(Number(environment.DASHBOARD_CACHE_MAX_ENTRIES) || 500, 10), 2000) });
+  const storedResponseCache = cache || new TtlCache({ maxEntries: Math.min(Math.max(Number(environment.DASHBOARD_CACHE_MAX_ENTRIES) || 500, 10), 2000) });
+  const responseCache = {
+    getOrSet: (key, ttlMs, loader, refreshBeforeMs) => dataMode.track(async () => dataMode.isLive()
+      ? { value: await loader(), status: 'BYPASS' }
+      : storedResponseCache.getOrSet(key, ttlMs, loader, refreshBeforeMs)),
+    getStale: (key) => dataMode.isLive() ? undefined : storedResponseCache.getStale(key),
+    clear: () => storedResponseCache.clear(),
+    invalidate: (prefix) => storedResponseCache.invalidate(prefix)
+  };
   let defectModeCacheWarmTimer;
   async function cachedDefectModes(refreshBeforeMs = 0) {
     if (!repositories.has('ta-yield')) repositories.set('ta-yield', taYieldRepository || new TaYieldRepository(taYieldConfig));
@@ -327,45 +345,61 @@ export function createApp({ environment = process.env, repository, scYieldReposi
       console.error(`Defect mode MES query failed for ${key}: ${error.message}`);
       return { value: [], status: 'ERROR', error: error.message };
     });
-    return Promise.all([
+    return settleAll([
       load('defect-modes:ta', () => repositories.get('ta-yield').getDefectModes()),
       scYieldConfig.ready ? load('defect-modes:sc', () => repositories.get('yield').getDefectModes(scModeFilters)) : Promise.resolve({ value: [], status: 'DISABLED' })
     ]);
   }
   function scheduleDefectModeCacheWarmup(reset = false) {
+    if (!dataMode.canStartBackgroundWork()) return;
     if (defectModeCacheWarmTimer && !reset) return;
     clearTimeout(defectModeCacheWarmTimer);
     defectModeCacheWarmTimer = setTimeout(async () => {
       defectModeCacheWarmTimer = undefined;
-      try { await cachedDefectModes(40000); } catch (error) { console.warn(`Defect mode cache warm-up skipped: ${error.message}`); }
+      try { await dataMode.runBackground(() => cachedDefectModes(40000)); } catch (error) { console.warn(`Defect mode cache warm-up skipped: ${error.message}`); }
       scheduleDefectModeCacheWarmup();
     }, 20000);
     defectModeCacheWarmTimer.unref?.();
   }
   async function configuredScYieldMapping() {
     scYieldMapping ||= loadScYieldMapping(scYieldConfig.mappingFile);
-    const [base, overrides] = await Promise.all([scYieldMapping, yieldDefectSettings ? yieldDefectSettings.list() : []]);
+    const [base, overrides] = await settleAll([scYieldMapping, yieldDefectSettings ? yieldDefectSettings.list() : []]);
     return mergeScYieldMapping(base, overrides);
   }
-  async function configuredTaYieldMapping() { taYieldMapping ||= loadTaYieldMapping(taYieldConfig.mappingFile); const [base, overrides] = await Promise.all([taYieldMapping, yieldDefectSettings ? yieldDefectSettings.list() : []]); const byMode = new Map(overrides.filter((item) => item.dataset === 'TA').map((item) => [item.mode.toUpperCase(), item])); const configure = (entries) => new Map([...entries].map(([code, value]) => { const override = byMode.get(code.toUpperCase()); return [code, override ? { ...value, main: override.group, included: override.included } : value]; })); return { neo: configure(base.neo), gps: configure(base.gps) }; }
+  async function configuredTaYieldMapping() { taYieldMapping ||= loadTaYieldMapping(taYieldConfig.mappingFile); const [base, overrides] = await settleAll([taYieldMapping, yieldDefectSettings ? yieldDefectSettings.list() : []]); const byMode = new Map(overrides.filter((item) => item.dataset === 'TA').map((item) => [item.mode.toUpperCase(), item])); const configure = (entries) => new Map([...entries].map(([code, value]) => { const override = byMode.get(code.toUpperCase()); return [code, override ? { ...value, main: override.group, included: override.included } : value]; })); return { neo: configure(base.neo), gps: configure(base.gps) }; }
   async function taMachineDefectViews() { taYieldMachineDefectViews ||= loadTaYieldMapping(taYieldConfig.mappingFile).then((mapping) => { const entries = [...mapping.neo.entries(), ...mapping.gps.entries()]; return { codes: [...new Set(entries.map(([code]) => code))].sort(), categories: [...new Set(entries.map(([, entry]) => entry.category).filter(Boolean))].sort() }; }); return taYieldMachineDefectViews; }
   const app = express();
   app.use(express.json({ limit: '8kb' }));
-  app.use(express.static(path.join(here, '../public'), { setHeaders: (response) => response.set('Cache-Control', 'no-store') }));
+  app.use((request, response, next) => {
+    if (request.path.toLowerCase().startsWith('/api/')) {
+      const state = dataMode.status();
+      response.set('X-Dashboard-Data-Mode', state.mode);
+      response.set('X-Dashboard-Data-Revision', String(state.revision));
+      response.set('Cache-Control', 'no-store');
+    }
+    next();
+  });
+  app.use(dataMode.middleware);
+  registerDashboardDataModeRoutes(app, { controller: dataMode, environment });
+  app.use(express.static(path.join(here, '../public'), { setHeaders: (response) => response.set({
+    'Cache-Control': 'no-store',
+    'Content-Security-Policy': "frame-ancestors 'self'",
+    'X-Frame-Options': 'SAMEORIGIN'
+  }) }));
   app.get('/api/health', (_request, response) => response.json({ success: true, data: { status: 'ok', ...(environment.DEPLOY_REVISION ? { revision: environment.DEPLOY_REVISION } : {}) } }));
   app.get('/api/defect-settings', async (request, response) => {
     try {
-      if (!defectModesStaging) return response.status(503).json({ success: false, error: 'Defect-mode staging is not configured.' });
-      const [stagedTaModes, stagedScModes] = await Promise.all([defectModesStaging.getModes('TA'), defectModesStaging.getModes('SC')]);
-      const stagedModes = [...stagedTaModes.map((item) => ({ ...item, dataset: 'TA' })), ...stagedScModes.map((item) => ({ ...item, dataset: 'SC' }))];
-      const [scMappings, taMappings, overrides, [taModes, scModes]] = await Promise.all([
+      if (!defectModesStaging && !dataMode.isLive()) return response.status(503).json({ success: false, error: 'Defect-mode staging is not configured.' });
+      const loadedModes = dataMode.isLive() ? await cachedDefectModes() : await settleAll([
+        defectModesStaging.getModes('TA').then((value) => ({ value, status: 'STAGED' })),
+        defectModesStaging.getModes('SC').then((value) => ({ value, status: 'STAGED' }))
+      ]);
+      if (loadedModes.some((result) => result.status === 'ERROR')) throw new Error('MES defect modes are unavailable.');
+      const [scMappings, taMappings, overrides, [taModes, scModes]] = await settleAll([
         configuredScYieldMapping().catch(() => new Map()),
         configuredTaYieldMapping().catch(() => ({ neo: new Map(), gps: new Map() })),
         yieldDefectSettings ? yieldDefectSettings.list() : [],
-        Promise.resolve([
-          { value: stagedModes.filter((item) => item.dataset === 'TA').map((item) => ({ mode: item.mode, description: item.description })), status: 'STAGED' },
-          { value: stagedModes.filter((item) => item.dataset === 'SC').map((item) => ({ mode: item.mode, description: item.description })), status: 'STAGED' }
-        ])
+        Promise.resolve(loadedModes)
       ]);
       const mesTaModes = taModes.value; const mesScModes = scModes.value;
       const override = new Map(overrides.map((item) => [`${item.dataset}|${item.mode.toUpperCase()}`, item]));
@@ -393,8 +427,9 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     } finally { defectModeStagingSyncInProgress = false; }
   };
   app.post('/api/defect-settings/sync', async (_request, response) => {
+    if (!dataMode.canStartBackgroundWork()) return response.status(409).json({ success: false, error: 'Staging is paused while live MES mode is selected.' });
     if (defectModeStagingSyncInProgress) return response.status(409).json({ success: false, error: 'Defect-mode staging sync is already running.' });
-    try { await app.refreshDefectModeStaging(); const [ta, sc] = await Promise.all([defectModesStaging.getModes('TA'), defectModesStaging.getModes('SC')]); response.json({ success: true, data: { ta: ta.map((item) => ({ source: item.mode, description: item.description })), sc } }); } catch (error) { response.status(503).json({ success: false, error: `Defect-mode staging sync failed: ${error.message}` }); }
+    try { await app.refreshDefectModeStaging(); const [ta, sc] = await settleAll([defectModesStaging.getModes('TA'), defectModesStaging.getModes('SC')]); response.json({ success: true, data: { ta: ta.map((item) => ({ source: item.mode, description: item.description })), sc } }); } catch (error) { response.status(503).json({ success: false, error: `Defect-mode staging sync failed: ${error.message}` }); }
   });
   app.put('/api/defect-settings', async (request, response) => {
     const dataset = request.body?.dataset; const mode = typeof request.body?.mode === 'string' ? request.body.mode.trim() : ''; const group = typeof request.body?.group === 'string' ? request.body.group.trim() : ''; const included = request.body?.included;
@@ -406,11 +441,18 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const intervalMs = Math.max(Number(environment.DASHBOARD_901_STAGING_INTERVAL_MS) || 300000, 60000);
     const wipIntervalMs = Math.max(Number(environment.DASHBOARD_WIP_STAGING_INTERVAL_MS) || 300000, 60000);
     const loadActivity = async (repository, method = 'getActivity', table, missingTableError = 'Staging table is not installed.', timeoutError = 'Staging database is unreachable.') => { try { return await repository[method](table); } catch (error) { const missingTable = error?.number === 208 || /invalid object name/i.test(String(error?.message || '')); const timedOut = error?.code === 'ETIMEOUT' || error?.number === 'ETIMEOUT'; return { unavailable: true, error: missingTable ? missingTableError : timedOut ? timeoutError : 'Staging database is unreachable.' }; } };
-    const [completion, wip, scYield, taWorkbook, taMachine, taMonthlySummary] = await Promise.all([staging901 ? loadActivity(staging901) : undefined, stagingWip ? loadActivity(stagingWip) : undefined, scYieldStaging ? loadActivity(scYieldStaging) : undefined, taYieldStaging ? loadActivity(taYieldStaging) : undefined, taYieldStaging ? loadActivity(taYieldStaging, 'getMachineActivity', undefined, 'Normalized Machine staging tables are not installed. Run npm run migrate:ta-yield-machine-rows.', 'Machine staging refresh is still in progress. Check again shortly.') : undefined, taYieldStaging ? loadActivity(taYieldStaging, 'getMonthlySummaryActivity') : undefined]);
+    const [completion, wip, scYield, taWorkbook, taMachine, taMonthlySummary] = await settleAll([staging901 ? loadActivity(staging901) : undefined, stagingWip ? loadActivity(stagingWip) : undefined, scYieldStaging ? loadActivity(scYieldStaging) : undefined, taYieldStaging ? loadActivity(taYieldStaging) : undefined, taYieldStaging ? loadActivity(taYieldStaging, 'getMachineActivity', undefined, 'Normalized Machine staging tables are not installed. Run npm run migrate:ta-yield-machine-rows.', 'Machine staging refresh is still in progress. Check again shortly.') : undefined, taYieldStaging ? loadActivity(taYieldStaging, 'getMonthlySummaryActivity') : undefined]);
     const row = (name, table, source, activity, enabled, interval, extra = {}) => ({ name, table, source, enabled, intervalMs: interval, activityAvailable: Boolean(activity && !activity.unavailable), activityError: activity?.error, rowCount: Number(activity?.rowCount || 0), firstDataDate: activity?.firstDataDate, lastDataDate: activity?.lastDataDate, lastRefreshedAt: activity?.lastRefreshedAt, ...extra });
     const wipProcessActivity = wip?.unavailable ? wip : wip ? { rowCount: wip.processRowCount, lastRefreshedAt: wip.processLastRefreshedAt, firstDataDate: wip.firstDataDate, lastDataDate: wip.lastDataDate } : undefined;
     const status = [row('Completion 901', staging901Config.table, 'MES Closed Batch → staging', completion, Boolean(staging901), intervalMs), row('WIP daily quantity', stagingWipConfig.table, 'MES Lot Complete Log → staging', wip, Boolean(stagingWip), wipIntervalMs), row('WIP process chart', stagingWipConfig.processTable, 'MES Lot Complete Log → staging', wipProcessActivity, Boolean(stagingWip), wipIntervalMs), row('SC Yield', scYieldStagingConfig.table, 'MES normalized SC Yield input/defect rows → staging', scYield, Boolean(scYieldStaging), Math.max(Number(environment.DASHBOARD_SC_YIELD_STAGING_INTERVAL_MS) || 300000, 60000), { plan: 'Monthly input and defect snapshots preserve the direct MES row shape before mapping.' }), row('TA Yield DataTable', taYieldStagingConfig.workbookTable, 'MES workbook reconciliation → staging', taWorkbook, Boolean(taYieldStaging), wipIntervalMs, { plan: 'Workbook rows retain the Excel reference conditions before mapping.' }), row('TA Yield Machine events', taYieldStagingConfig.machineRowTable, 'MES normalized machine events → staging', taMachine, Boolean(taYieldStaging), wipIntervalMs, { plan: 'Anodization, Welding, and EI events joined to normalized TA lot defects.' }), row('TA Yield Monthly summary', taYieldStagingConfig.monthlySummaryTable, 'TA workbook yield aggregates → staging', taMonthlySummary, Boolean(taYieldStaging), wipIntervalMs, { plan: 'Monthly yield and defect aggregates for all parts and individual part numbers.' })];
-    response.json({ success: true, data: status, checkedAt: new Date().toISOString(), pipelines: { completion901: completion901Pipeline, taYield: taYieldPipeline } });
+    const configuredTables = new Set([
+      configuredStaging.staging901 && staging901Config.table,
+      configuredStaging.stagingWip && stagingWipConfig.table,
+      configuredStaging.stagingWip && stagingWipConfig.processTable,
+      configuredStaging.scYieldStaging && scYieldStagingConfig.table,
+      ...(configuredStaging.taYieldStaging ? [taYieldStagingConfig.workbookTable, taYieldStagingConfig.machineRowTable, taYieldStagingConfig.monthlySummaryTable] : [])
+    ].filter(Boolean));
+    response.json({ success: true, data: status.map((item) => ({ ...item, configured: configuredTables.has(item.table), paused: !dataMode.canStartBackgroundWork() })), dataMode: dataMode.status(), checkedAt: new Date().toISOString(), pipelines: { completion901: completion901Pipeline, wip: wipPipeline, taYield: taYieldPipeline } });
   });
 
   function contextFor(request, response) {
@@ -469,38 +511,39 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     } finally { stagingRefreshInProgress = false; }
   };
 
-  app.post('/api/staging/901-repair', (request, response) => {
-    const operator = authorized901Repair(request, environment.DASHBOARD_901_REPAIR_TOKEN);
-    if (!operator.configured) return response.status(503).json({ success: false, error: '901 staging repair operator authorization is not configured.' });
-    if (!operator.authorized) return response.status(401).json({ success: false, code: 'OPERATOR_AUTH_REQUIRED', error: 'Operator authorization required.' });
-    const requestOrigin = request.get('origin');
-    const repairPort = Number(environment.PORT || 3000);
-    const allowedOrigins = (environment.DASHBOARD_901_REPAIR_ALLOWED_ORIGINS || `http://localhost:${repairPort},http://127.0.0.1:${repairPort},http://[::1]:${repairPort}`).split(',').map((value) => value.trim()).filter(Boolean);
-    if (!requestOrigin || !allowedOrigins.includes(requestOrigin)) return response.status(403).json({ success: false, error: 'Cross-origin staging repair is not allowed.' });
-    const normalizedRemoteAddress = String(request.socket.remoteAddress || '').replace(/^::ffff:/, '');
-    const allowedAddresses = (environment.DASHBOARD_901_REPAIR_ALLOWED_IPS || '127.0.0.1,::1').split(',').map((value) => value.trim()).filter(Boolean);
-    if (!allowedAddresses.includes(normalizedRemoteAddress) && !allowedAddresses.includes(request.socket.remoteAddress)) return response.status(403).json({ success: false, error: 'This computer is not authorized to repair 901 staging.' });
-    const validation = validated901RepairRange(request.body, currentThailandMonthFilters().endDate);
-    if (validation.error) return response.status(400).json({ success: false, error: validation.error });
-    if (!staging901) return response.status(503).json({ success: false, error: '901 staging is not configured.' });
-    if (stagingRefreshInProgress) return response.status(409).json({ success: false, error: '901 staging repair is already running.' });
-    const filters = validation.filters;
-    void app.repair901Staging(filters).catch(() => {});
-    return response.status(202).json({ success: true, data: { status: 'RUNNING', ...filters } });
+  registerStagingRepairRoute(app, {
+    dataset: '901', label: '901', environment, today: () => currentThailandMonthFilters().endDate,
+    enabled: () => Boolean(staging901), busy: () => stagingRefreshInProgress, repair: (filters) => app.repair901Staging(filters)
   });
 
   let wipStagingRefreshInProgress = false;
-  app.refreshWipStaging = async () => {
+  async function runWipStaging(requestedFilters) {
     if (!stagingWip || wipStagingRefreshInProgress) return { status: 'SKIPPED' };
     wipStagingRefreshInProgress = true;
+    const isRepair = Boolean(requestedFilters);
+    updateWipPipeline('RUNNING', 'Preparing WIP daily quantity and process chart refresh.', { startDate: requestedFilters?.startDate, endDate: requestedFilters?.endDate, startedAt: new Date().toISOString(), completedAt: undefined, result: undefined });
     try {
       if (!repositories.has('lot')) repositories.set('lot', repository || new SqlRepository(configs.lot));
-      const filters = await stagingIncrementalRefreshFilters(stagingWip, currentThailandMonthFilters());
-      const result = await refreshWipStaging({ source: repositories.get('lot'), target: stagingWip, targetConfig: stagingWipConfig, ...filters });
+      const filters = requestedFilters || await stagingIncrementalRefreshFilters(stagingWip, currentThailandMonthFilters());
+      const scope = `${filters.startDate} to ${filters.endDate}`;
+      updateWipPipeline('RUNNING', `${isRepair ? 'Repairing' : 'Refreshing'} WIP daily quantities and process charts for ${scope}.`, filters);
+      const source = isRepair ? repository || new SqlRepository({ ...configs.lot, requestTimeout: Math.max(configs.lot.requestTimeout, 900000) }) : repositories.get('lot');
+      const result = await refreshWipStagingOperation({ source, target: stagingWip, targetConfig: stagingWipConfig, ...filters });
       responseCache.invalidate('lot:');
-      return { status: 'REFRESHED', ...result };
+      updateWipPipeline('SUCCEEDED', `${isRepair ? 'Restore/repair' : 'Scheduled refresh'} completed for ${scope}.`, { completedAt: new Date().toISOString(), result });
+      return { status: isRepair ? 'REPAIRED' : 'REFRESHED', ...result };
+    } catch (error) {
+      console.error(`WIP staging ${isRepair ? 'repair' : 'refresh'} failed:`, error.message);
+      updateWipPipeline('FAILED', `${isRepair ? 'Restore/repair' : 'Scheduled refresh'} failed. Check the server log for details.`, { completedAt: new Date().toISOString() });
+      throw error;
     } finally { wipStagingRefreshInProgress = false; }
-  };
+  }
+  app.refreshWipStaging = () => runWipStaging();
+  app.repairWipStaging = (filters) => runWipStaging(filters);
+  registerStagingRepairRoute(app, {
+    dataset: 'wip', label: 'WIP', environment, today: () => currentThailandMonthFilters().endDate,
+    enabled: () => Boolean(stagingWip), busy: () => wipStagingRefreshInProgress, repair: (filters) => app.repairWipStaging(filters)
+  });
   let scYieldStagingRefreshInProgress = false;
   app.refreshScYieldStaging = async (requestedFilters = currentThailandMonthFilters()) => {
     if (!scYieldStaging || scYieldStagingRefreshInProgress) return { status: 'SKIPPED' };
@@ -508,8 +551,8 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     try {
       if (!repositories.has('yield')) repositories.set('yield', scYieldRepository || new ScYieldRepository(scYieldConfig));
       const source = repositories.get('yield');
-      const [monthly, weekly] = await Promise.all([source.getYieldRows(requestedFilters), source.getYieldRows(requestedFilters, 'week')]);
-      await Promise.all([scYieldStaging.replaceYieldRows(monthly, requestedFilters, 'month'), scYieldStaging.replaceYieldRows(weekly, requestedFilters, 'week')]);
+      const [monthly, weekly] = await settleAll([source.getYieldRows(requestedFilters), source.getYieldRows(requestedFilters, 'week')]);
+      await settleAll([scYieldStaging.replaceYieldRows(monthly, requestedFilters, 'month'), scYieldStaging.replaceYieldRows(weekly, requestedFilters, 'week')]);
       responseCache.clear();
       return { status: 'REFRESHED', inputRows: monthly.inputs.length, defectRows: monthly.defects.length, ...requestedFilters };
     } finally { scYieldStagingRefreshInProgress = false; }
@@ -563,7 +606,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     updateTaYieldPipeline('RUNNING', `Writing ${monthlySummary.length} monthly summary rows for ${scope}.`);
     await taYieldStaging.replaceMonthlySummary(monthlySummary, filters);
     updateTaYieldPipeline('RUNNING', `Loading machine events for ${scope}.`);
-    const machineEvents = (await Promise.all(['%Anodization%', '%Welding%', '%EI%'].map((processPattern) => source.getMachineEvents(filters, { lotNumbers: workbookLots.map((lot) => lot.lotNo), processPattern })))).flat();
+    const machineEvents = (await settleAll(['%Anodization%', '%Welding%', '%EI%'].map((processPattern) => source.getMachineEvents(filters, { lotNumbers: workbookLots.map((lot) => lot.lotNo), processPattern })))).flat();
     updateTaYieldPipeline('RUNNING', `Writing ${machineEvents.length} machine events for ${scope}.`);
     await taYieldStaging.replaceMachineRows(machineEvents, workbookLots, filters);
     updateTaYieldPipeline('RUNNING', `Publishing ${workbookLots.length} workbook rows for ${scope}.`);
@@ -610,7 +653,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
       updateTaYieldPipeline('RUNNING', `Writing ${monthlySummary.length} merged monthly summary rows.`);
       await taYieldStaging.replaceMonthlySummary(monthlySummary, fullFilters);
       updateTaYieldPipeline('RUNNING', `Loading machine events for ${freshLots.length} resumed lots.`);
-      const machineEvents = (await Promise.all(['%Anodization%', '%Welding%', '%EI%'].map((processPattern) => source.getMachineEvents(resumeFilters, { lotNumbers: freshLots.map((lot) => lot.lotNo), processPattern, timeoutMs: requestTimeout })))).flat();
+      const machineEvents = (await settleAll(['%Anodization%', '%Welding%', '%EI%'].map((processPattern) => source.getMachineEvents(resumeFilters, { lotNumbers: freshLots.map((lot) => lot.lotNo), processPattern, timeoutMs: requestTimeout })))).flat();
       await taYieldStaging.replaceMachineRowsForLots(machineEvents, freshLots, fullFilters, { lotNumbersToRemove: previousRefreshedLots.map((lot) => lot.lotNo) });
       updateTaYieldPipeline('RUNNING', `Publishing ${mergedLots.length} merged workbook rows for ${fullFilters.startDate} to ${fullFilters.endDate}.`);
       await taYieldStaging.replaceWorkbookRows(mergedLots, fullFilters);
@@ -684,23 +727,27 @@ export function createApp({ environment = process.env, repository, scYieldReposi
       const warmQuantity = async (dataset, product) => {
         const config = configs[dataset];
         if (!config?.ready) return;
-        if (!repositories.has(dataset)) repositories.set(dataset, repository || new SqlRepository(config));
+        const staging = dataset === 'closed' ? staging901 : stagingWip;
+        if (!staging && !repositories.has(dataset)) repositories.set(dataset, repository || new SqlRepository(config));
+        const source = staging || repositories.get(dataset);
         const scopedFilters = { ...filters, ...(product ? { product } : {}) };
-        await responseCache.getOrSet(`${dataset}:quantity:${JSON.stringify(scopedFilters)}`, 300000, () => repositories.get(dataset).getQuantity(scopedFilters), 30000);
+        await responseCache.getOrSet(`${dataset}:quantity:${JSON.stringify(scopedFilters)}`, 300000, () => source.getQuantity(scopedFilters), 30000);
       };
       await warmQuantity('closed', 'NEO');
       await warmQuantity('closed', 'SC');
       await warmQuantity('lot', 'NEO');
       await warmQuantity('lot', 'SC');
       if (scYieldConfig.ready) {
-        if (!repositories.has('yield')) repositories.set('yield', scYieldRepository || new ScYieldRepository(scYieldConfig));
+        if (!scYieldStaging && !repositories.has('yield')) repositories.set('yield', scYieldRepository || new ScYieldRepository(scYieldConfig));
+        const source = scYieldStaging || repositories.get('yield');
         scYieldMapping ||= loadScYieldMapping(scYieldConfig.mappingFile);
-        await responseCache.getOrSet(`yield:summary:${JSON.stringify(filters)}`, 300000, async () => mapScYieldRows(await repositories.get('yield').getYieldRows(filters), await configuredScYieldMapping()), 30000);
-        await responseCache.getOrSet(`yield:weekly:${JSON.stringify(filters)}`, 300000, async () => mapScYieldRows(await repositories.get('yield').getYieldRows(filters, 'week'), await configuredScYieldMapping()), 30000);
+        await responseCache.getOrSet(`yield:summary:${JSON.stringify(filters)}`, 300000, async () => mapScYieldRows(await source.getYieldRows(filters), await configuredScYieldMapping()), 30000);
+        await responseCache.getOrSet(`yield:weekly:${JSON.stringify(filters)}`, 300000, async () => mapScYieldRows(await source.getYieldRows(filters, 'week'), await configuredScYieldMapping()), 30000);
       }
       if (taYieldConfig.ready) {
-        if (!repositories.has('ta-yield')) repositories.set('ta-yield', taYieldRepository || new TaYieldRepository(taYieldConfig));
-        await responseCache.getOrSet(`ta-yield:rows:${JSON.stringify(filters)}`, 300000, () => repositories.get('ta-yield').getYieldRows(filters), 30000);
+        if (!taYieldStaging && !repositories.has('ta-yield')) repositories.set('ta-yield', taYieldRepository || new TaYieldRepository(taYieldConfig));
+        const source = taYieldStaging || repositories.get('ta-yield');
+        await responseCache.getOrSet(`ta-yield:rows:${JSON.stringify(filters)}`, 300000, () => source.getYieldRows(filters), 30000);
       }
       return { status: 'WARMED', filters };
     } finally {
@@ -709,7 +756,24 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   };
 
   function databaseFor(config) {
-    return [...repositories.values()].find((database) => database.config === config || database === repository);
+    const dataset = config === taYieldConfig ? 'ta-yield' : config === scYieldConfig ? 'yield'
+      : Object.keys(configs).find((name) => configs[name] === config);
+    return repositories.get(dataset);
+  }
+
+  const connectionRecoveries = new Map();
+  const authenticationRequests = new Map();
+  const authenticationFailures = new Map();
+  const authenticationKey = (config) => JSON.stringify([config.server, config.database, config.auth, config.tenantId || 'common']);
+
+  async function recoverDatabaseConnection(database, config, generation) {
+    const key = JSON.stringify([authenticationKey(config), config.requestTimeout]);
+    if (!connectionRecoveries.has(key)) {
+      const recovery = Promise.resolve().then(() => generation === undefined ? database.resetConnection() : database.resetConnection(generation));
+      connectionRecoveries.set(key, recovery);
+      recovery.finally(() => { if (connectionRecoveries.get(key) === recovery) connectionRecoveries.delete(key); }).catch(() => undefined);
+    }
+    await connectionRecoveries.get(key);
   }
 
   function dashboardDatabase(context, filters = {}) {
@@ -771,24 +835,30 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   app.patch('/api/comments/:id', (request, response) => { const id = Number(request.params.id); const commentText = typeof request.body?.commentText === 'string' ? request.body.commentText.trim() : ''; if (!Number.isInteger(id) || id < 1 || !commentText || commentText.length > 1000) return response.status(400).json({ success: false, error: 'Provide a valid comment update.' }); return useCommentStorage(() => comments.update(id, commentText), response); });
   app.delete('/api/comments/:id', (request, response) => { const id = Number(request.params.id); if (!Number.isInteger(id) || id < 1) return response.status(400).json({ success: false, error: 'Provide a valid comment id.' }); return useCommentStorage(async () => { await comments.remove(id); return { removed: true }; }, response); });
 
-  async function useDatabase(action, response, config, allowMetadata = false, cacheEntry, source) {
+  function useDatabase(action, response, config, allowMetadata = false, cacheEntry, source) {
+    // Hold the source binding through connection recovery, even after the client disconnects.
+    return dataMode.track(() => useDatabaseRequest(action, response, config, allowMetadata, cacheEntry, source));
+  }
+
+  async function useDatabaseRequest(action, response, config, allowMetadata = false, cacheEntry, source) {
     if (!config.ready && !allowMetadata) return response.status(503).json({ success: false, error: 'Database configuration is incomplete. Check the server environment.' });
-    const load = async () => cacheEntry ? responseCache.getOrSet(cacheEntry.key, cacheEntry.ttlMs, action) : { value: await action(), status: 'BYPASS' };
+    const database = databaseFor(config);
+    const generation = database?.getConnectionGeneration?.();
+    const load = async () => cacheEntry ? responseCache.getOrSet(cacheEntry.key, cacheEntry.ttlMs, action) : { value: await dataMode.track(action), status: 'BYPASS' };
     try {
       const result = await load();
       response.set('X-Dashboard-Cache', result.status);
-      if (cacheEntry) response.set('Cache-Control', `private, max-age=${Math.floor(cacheEntry.ttlMs / 1000)}`);
+      if (cacheEntry && !dataMode.isLive()) response.set('Cache-Control', `private, max-age=${Math.floor(cacheEntry.ttlMs / 1000)}`);
       return response.json({ success: true, data: result.value });
     } catch (error) {
       console.error('Database request failed:', error.message);
-      if (isConnectionError(error)) {
-        const database = databaseFor(config);
+      if (!databaseFailure(error) && (isConnectionError(error) || (isAuthenticationError(error) && error?.name !== 'AuthenticationRequiredError'))) {
         if (database?.resetConnection) {
           try {
-            await database.resetConnection();
+            await recoverDatabaseConnection(database, config, generation);
             const result = await load();
             response.set('X-Dashboard-Cache', result.status);
-            if (cacheEntry) response.set('Cache-Control', `private, max-age=${Math.floor(cacheEntry.ttlMs / 1000)}`);
+            if (cacheEntry && !dataMode.isLive()) response.set('Cache-Control', `private, max-age=${Math.floor(cacheEntry.ttlMs / 1000)}`);
             return response.json({ success: true, data: result.value });
           } catch (retryError) {
             console.error('Database retry failed:', retryError.message);
@@ -796,6 +866,8 @@ export function createApp({ environment = process.env, repository, scYieldReposi
           }
         }
       }
+      const failure = databaseFailure(error);
+      if (failure) return response.status(failure.status).json({ success: false, code: failure.code, error: failure.error });
       if (isAuthenticationError(error)) {
         return response.status(401).json({ success: false, code: 'AUTH_REQUIRED', error: 'Microsoft Entra sign-in is required to refresh database access.' });
       }
@@ -851,7 +923,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const cached = await responseCache.getOrSet(taYieldDashboardCacheKey(filters, period), 300000, async () => {
       const stagingReady = taYieldStaging && (typeof taYieldStaging.hasWorkbookCoverage !== 'function' || await taYieldStaging.hasWorkbookCoverage(filters).catch(() => false));
       if (stagingReady && period === 'month' && typeof taYieldStaging.getMonthlySummary === 'function' && isCompleteCalendarMonthRange(filters) && !filters.pn && !filters.serie) {
-        const [summary, partNumbers] = await Promise.all([taYieldStaging.getMonthlySummary(filters).catch(() => []), taYieldStaging.getMonthlyPartNumbers(filters).catch(() => [])]);
+        const [summary, partNumbers] = await settleAll([taYieldStaging.getMonthlySummary(filters).catch(() => []), taYieldStaging.getMonthlyPartNumbers(filters).catch(() => [])]);
         if (summary.length) { const grouped = new Map(); summary.forEach((row) => { const key = `${row.month}|${row.line}`; const current = grouped.get(key) || { month: row.month, line: row.line, input: row.input, finalGood: row.finalGood, groups: [], partNumbers }; current.groups.push({ group: row.group, quantity: row.defect }); grouped.set(key, current); }); return [...grouped.values()].map((row) => ({ ...row, defect: row.groups.reduce((sum, group) => sum + group.quantity, 0), yield: row.input ? row.finalGood / row.input * 100 : undefined })); }
       }
       const { rows, mapping } = await sharedTaWorkbookYieldRows(context, filters);
@@ -866,7 +938,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const filters = { startDate: historyStart, endDate: today.endDate, product: 'NEO' };
     if (!await taYieldStaging.hasWorkbookCoverage(filters)) return { status: 'WAITING_FOR_STAGING', filters };
     const context = { database: repositories.get('ta-yield') || taYieldRepository || new TaYieldRepository(taYieldConfig) };
-    await Promise.all(['month', 'week'].map((period) => sharedTaYieldDashboardResult(context, filters, period)));
+    await settleAll(['month', 'week'].map((period) => sharedTaYieldDashboardResult(context, filters, period)));
     return { status: 'WARMED', filters };
   };
 
@@ -921,13 +993,26 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   app.get('/api/auth/login', async (_request, response) => {
     const context = contextFor(_request, response); if (!context) return undefined;
     if (!context.config.metadataReady) return response.status(503).json({ success: false, error: 'Database connection configuration is incomplete. Check the server environment.' });
+    const key = authenticationKey(context.config);
+    const recentFailure = authenticationFailures.get(key);
+    if (recentFailure?.retryAt > Date.now()) return response.status(recentFailure.status).json(recentFailure.body);
     try {
-      await context.database.authenticate();
+      if (!authenticationRequests.has(key)) {
+        const authentication = dataMode.track(() => context.database.authenticate());
+        authenticationRequests.set(key, authentication);
+        authentication.finally(() => { if (authenticationRequests.get(key) === authentication) authenticationRequests.delete(key); }).catch(() => undefined);
+      }
+      await authenticationRequests.get(key);
+      authenticationFailures.delete(key);
       responseCache.clear();
       return response.json({ success: true, data: { authenticated: true } });
     } catch (error) {
       console.error('Interactive sign-in failed:', error.message);
-      return response.status(401).json({ success: false, code: 'AUTH_REQUIRED', error: 'Microsoft Entra sign-in could not be completed.' });
+      const failure = databaseFailure(error);
+      const status = failure?.status || (isConnectionError(error) ? 503 : 401);
+      const body = { success: false, code: failure?.code || (status === 503 ? 'DATABASE_UNREACHABLE' : 'AUTH_REQUIRED'), error: failure?.error || (status === 503 ? 'MES could not be reached after sign-in. Check the server network or VPN connection.' : 'Microsoft Entra sign-in could not be completed. Wait a moment, then use Sign in to MES to retry.') };
+      authenticationFailures.set(key, { status, body, retryAt: Date.now() + 30000 });
+      return response.status(status).json(body);
     }
   });
   app.get('/api/quantity', (request, response) => {
@@ -942,7 +1027,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const context = contextFor(request, response); if (!context) return undefined;
     if (context.dataset !== 'yield') return response.status(400).json({ success: false, error: 'SC Yield is available for the SC Yield data source only.' });
     return useDatabase(async () => {
-      const [mapping, rows] = await Promise.all([configuredScYieldMapping(), scYieldRows(context, validation.filters)]);
+      const [mapping, rows] = await settleAll([configuredScYieldMapping(), scYieldRows(context, validation.filters)]);
       return mapScYieldRows(rows, mapping);
     }, response, context.config, false, { key: `${context.dataset}:summary:${JSON.stringify(validation.filters)}`, ttlMs: 120000 });
   });
@@ -951,7 +1036,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     if (validation.error) return response.status(400).json({ success: false, error: validation.error });
     const context = contextFor(request, response); if (!context) return undefined;
     if (context.dataset !== 'yield') return response.status(400).json({ success: false, error: 'SC Yield is available for the SC Yield data source only.' });
-    return useDatabase(async () => { const [mapping, rows] = await Promise.all([configuredScYieldMapping(), scYieldRows(context, validation.filters, 'week')]); return mapScYieldRows(rows, mapping); }, response, context.config, false, { key: `${context.dataset}:weekly:${JSON.stringify(validation.filters)}`, ttlMs: 120000 });
+    return useDatabase(async () => { const [mapping, rows] = await settleAll([configuredScYieldMapping(), scYieldRows(context, validation.filters, 'week')]); return mapScYieldRows(rows, mapping); }, response, context.config, false, { key: `${context.dataset}:weekly:${JSON.stringify(validation.filters)}`, ttlMs: 120000 });
   });
   app.get('/api/sc-yield-tendency', (request, response) => {
     const validation = validatedFilters(request.query);
@@ -962,7 +1047,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     if (context.dataset !== 'yield') return response.status(400).json({ success: false, error: 'SC Yield is available for the SC Yield data source only.' });
     const trendFilters = { startDate: validation.filters.startDate, endDate: validation.filters.endDate, ...(validation.filters.serie ? { serie: validation.filters.serie } : {}) };
     return useDatabase(async () => {
-      const [mapping, rows] = await Promise.all([configuredScYieldMapping(), scYieldRows(context, trendFilters, interval)]);
+      const [mapping, rows] = await settleAll([configuredScYieldMapping(), scYieldRows(context, trendFilters, interval)]);
       return mapScYieldRows(rows, mapping);
     }, response, context.config, false, { key: `${context.dataset}:tendency:${interval}:${JSON.stringify(trendFilters)}`, ttlMs: 120000 });
   });
@@ -989,7 +1074,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   app.get('/api/ta-yield-lots', (request, response) => {
     const validation = validatedFilters(request.query); if (validation.error) return response.status(400).json({ success: false, error: validation.error }); const context = contextFor(request, response); if (!context) return undefined;
     if (context.dataset !== 'ta-yield') return response.status(400).json({ success: false, error: 'TA Yield lot detail is available for the TA Yield data source only.' });
-    return useDatabase(async () => { const [maps, rows] = await Promise.all([configuredTaYieldMapping(), sharedTaYieldRows(context, validation.filters)]); return mapTaYieldLotDetails(rows, maps); }, response, context.config, false, undefined, context.dataset);
+    return useDatabase(async () => { const [maps, rows] = await settleAll([configuredTaYieldMapping(), sharedTaYieldRows(context, validation.filters)]); return mapTaYieldLotDetails(rows, maps); }, response, context.config, false, undefined, context.dataset);
   });
   app.get('/api/ta-yield-machine-options', (request, response) => {
     const validation = validatedTaMachineQuery(request.query); if (validation.error) return response.status(400).json({ success: false, error: validation.error }); const context = contextFor(request, response); if (!context) return undefined;
@@ -1002,7 +1087,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const validation = validatedTaMachineQuery(request.query, { requireMachine: true, requireDefect: true }); if (validation.error) return response.status(400).json({ success: false, error: validation.error }); const context = contextFor(request, response); if (!context) return undefined;
     if (context.dataset !== 'ta-yield') return response.status(400).json({ success: false, error: 'TA Machine analysis is available for the TA Yield data source only.' });
     return useDatabase(async () => {
-      const [mapping, machineData] = await Promise.all([configuredTaYieldMapping(), sharedTaMachineAnalysis(context, validation.filters, { processPattern: validation.processPattern, machine: validation.machine })]);
+      const [mapping, machineData] = await settleAll([configuredTaYieldMapping(), sharedTaMachineAnalysis(context, validation.filters, { processPattern: validation.processPattern, machine: validation.machine })]);
       const { lots, events } = machineData;
       const eventCounts = events.reduce((counts, event) => ({ ...counts, [event.machineName]: Number(counts[event.machineName] || 0) + 1 }), {});
       if (validation.defectType === 'code') {
@@ -1144,5 +1229,16 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const action = context.dataset === 'lot' ? () => context.database.getSeriesLinkDiagnostics() : () => context.database.getBlankSeriesDiagnostics();
     return useDatabase(action, response, context.config, false, { key: `${context.dataset}:series-diagnostics`, ttlMs: 300000 });
   });
+  // Every entry point is gated, including manual repair, history, QA, and warmers.
+  // Existing work is counted until it finishes before repository bindings change.
+  for (const name of [
+    'refreshDefectModeStaging', 'refresh901Staging', 'repair901Staging',
+    'refreshWipStaging', 'repairWipStaging', 'refreshScYieldStaging', 'refreshScYieldStagingHistory',
+    'refreshTaYieldStaging', 'refreshTaYieldStagingResume', 'refreshTaYieldStagingDay',
+    'refreshTaYieldStagingHistory', 'runTaYieldStagingQa', 'warmCurrentMonthCaches', 'warmTaYieldDashboard'
+  ]) {
+    const operation = app[name];
+    app[name] = (...args) => dataMode.runBackground(() => operation(...args));
+  }
   return app;
 }

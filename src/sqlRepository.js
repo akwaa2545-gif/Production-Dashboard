@@ -1,3 +1,4 @@
+import { settleAll } from './settleAll.js';
 import sql from 'mssql';
 import { InteractiveBrowserCredential, useIdentityPlugin } from '@azure/identity';
 import { cachePersistencePlugin } from '@azure/identity-cache-persistence';
@@ -8,6 +9,9 @@ const OPTION_LIMIT = 1000;
 const tokenCache = new Map();
 const tokenRequests = new Map();
 const credentialCache = new Map();
+const credentialOperations = new Map();
+const interactiveTokenRequests = new Map();
+const authenticationRequests = new Map();
 const connectionPools = new Map();
 const connectionRequests = new Map();
 const connectionGenerations = new Map();
@@ -170,34 +174,92 @@ function addFilterForKey(request, config, key, value, clauses) {
   addFilter(request, columns[key] && `source.${columns[key]}`, value, key, clauses);
 }
 
-function authenticationSuccessPage(appUrl) {
-  const redirectUrl = JSON.stringify(appUrl);
-  return `<!doctype html><html><head><meta http-equiv="refresh" content="1;url=${appUrl}" /></head><body><p>Sign-in complete. Returning to the dashboard...</p><script>window.location.replace(${redirectUrl});</script></body></html>`;
+function authenticationSuccessPage() {
+  return '<!doctype html><html><head><title>Sign-in complete</title></head><body><p>Sign-in complete. You can close this window and return to your original dashboard tab.</p></body></html>';
+}
+
+function isPersistentCacheLockError(error) {
+  const seen = new Set();
+  for (let current = error; current && !seen.has(current); current = current.cause) {
+    seen.add(current);
+    if (current.errorCode === 'CrossPlatformLockError' || current.name === 'CrossPlatformLockError'
+      || /\bCrossPlatformLockError\b/.test(current.message || '')) return true;
+  }
+  return false;
+}
+
+function createCredentialState(tenantId, persistent) {
+  return {
+    persistent,
+    credential: new InteractiveBrowserCredential({
+      tenantId,
+      disableAutomaticAuthentication: true,
+      browserCustomizationOptions: { successMessage: authenticationSuccessPage() },
+      ...(persistent ? { tokenCachePersistenceOptions: { enabled: true, name: `onemes-quantity-dashboard-${tenantId || 'common'}` } } : {})
+    })
+  };
+}
+
+function withCredential(tenantId, persistent, operation) {
+  const key = tenantId || 'common';
+  // Serialize silent renewal and explicit sign-in: both access the same SDK cache.
+  const previous = credentialOperations.get(key) || Promise.resolve();
+  const request = previous.catch(() => undefined).then(async () => {
+    const state = credentialCache.get(key) || createCredentialState(tenantId, persistent);
+    credentialCache.set(key, state);
+    try {
+      return await operation(state.credential);
+    } catch (error) {
+      if (!state.persistent || !isPersistentCacheLockError(error)) throw error;
+      const fallback = createCredentialState(tenantId, false);
+      credentialCache.set(key, fallback);
+      tokenCache.delete(key);
+      console.warn('MES token cache is locked. Using an in-memory sign-in session until the server restarts; cache files were left unchanged.');
+      return operation(fallback.credential);
+    }
+  });
+  credentialOperations.set(key, request);
+  request.finally(() => {
+    if (credentialOperations.get(key) === request) credentialOperations.delete(key);
+  }).catch(() => undefined);
+  return request;
+}
+
+function rememberAccessToken(key, token) {
+  if (!token) throw new Error('No Microsoft Entra access token was returned.');
+  tokenCache.set(key, { token: token.token, expiresOnTimestamp: token.expiresOnTimestamp || Date.now() + 300000 });
+  return token.token;
 }
 
 async function getAccessToken(tenantId, appUrl, tokenCachePersistence, forceRefresh = false) {
   const key = tenantId || 'common';
   const cached = tokenCache.get(key);
   if (!forceRefresh && cached && cached.expiresOnTimestamp > Date.now() + 120000) return cached.token;
-  // A sign-in is interactive, so all callers for one tenant must share the
-  // same in-flight request. A forced refresh bypasses only the cached token.
+  // Ordinary requests only renew silently; browser sign-in is an explicit action.
   if (tokenRequests.has(key)) return tokenRequests.get(key);
-  const request = (async () => {
-    let credential = credentialCache.get(key);
-    if (!credential) {
-      credential = new InteractiveBrowserCredential({
-        tenantId,
-        browserCustomizationOptions: { successMessage: authenticationSuccessPage(appUrl) },
-        ...(tokenCachePersistence ? { tokenCachePersistenceOptions: { enabled: true, name: `onemes-quantity-dashboard-${key}` } } : {})
-      });
-      credentialCache.set(key, credential);
-    }
+  const request = withCredential(tenantId, tokenCachePersistence, async (credential) => {
     const token = await credential.getToken('https://database.windows.net//.default');
-    if (!token) throw new Error('No Microsoft Entra access token was returned.');
-    tokenCache.set(key, { token: token.token, expiresOnTimestamp: token.expiresOnTimestamp || Date.now() + 300000 });
-    return token.token;
-  })().finally(() => tokenRequests.delete(key));
+    return rememberAccessToken(key, token);
+  }).finally(() => tokenRequests.delete(key));
   tokenRequests.set(key, request);
+  return request;
+}
+
+async function authenticateTenant(config) {
+  const key = config.tenantId || 'common';
+  if (interactiveTokenRequests.has(key)) return interactiveTokenRequests.get(key);
+  const request = (async () => {
+    try {
+      await getAccessToken(config.tenantId, config.appUrl, config.tokenCachePersistence === true);
+    } catch (error) {
+      if (error.name !== 'AuthenticationRequiredError') throw error;
+      await withCredential(config.tenantId, config.tokenCachePersistence === true, async (credential) => {
+        await credential.authenticate('https://database.windows.net//.default');
+        rememberAccessToken(key, await credential.getToken('https://database.windows.net//.default'));
+      });
+    }
+  })().finally(() => interactiveTokenRequests.delete(key));
+  interactiveTokenRequests.set(key, request);
   return request;
 }
 
@@ -230,18 +292,20 @@ async function getSharedPool(config, forceRefresh = false) {
   }
 
   const key = connectionKey(config);
-  if (forceRefresh) await closeSharedPool(key);
+  const pending = connectionRequests.get(key);
+  if (pending?.generation === connectionGeneration(key)) return pending.promise;
   const existing = connectionPools.get(key);
   const refreshNeeded = Boolean(existing && (connectionExpiresAt.get(key) || 0) <= Date.now() + connectionRefreshBufferMs);
-  if (existing && !refreshNeeded) return { key, pool: existing, generation: connectionGeneration(key) };
-  if (existing) await closeSharedPool(key);
-  const requestGeneration = connectionGeneration(key);
-  const pending = connectionRequests.get(key);
-  if (pending?.generation === requestGeneration) return pending.promise;
+  if (existing && existing.connected !== false && !refreshNeeded && !forceRefresh) return { key, pool: existing, generation: connectionGeneration(key) };
 
+  // Remove the old pool synchronously, then publish the replacement request before
+  // awaiting its close so every report shares the same renewal.
+  const closing = existing ? closeSharedPool(key) : Promise.resolve();
+  const requestGeneration = connectionGeneration(key);
   const request = (async () => {
     let pool;
     try {
+      await closing;
       const token = await getAccessToken(config.tenantId, config.appUrl, config.tokenCachePersistence === true, forceRefresh || refreshNeeded);
       pool = new sql.ConnectionPool({
         server: config.server,
@@ -256,6 +320,7 @@ async function getSharedPool(config, forceRefresh = false) {
       await pool.connect();
       if (requestGeneration !== connectionGeneration(key)) {
         await pool.close();
+        if (connectionRequests.get(key)?.promise === request) connectionRequests.delete(key);
         return getSharedPool(config);
       }
       connectionPools.set(key, pool);
@@ -285,7 +350,9 @@ export class SqlRepository {
     const key = connectionKey(this.config);
     const generation = connectionGeneration(key);
     const isInjectedTestPool = this.pool && this.poolGeneration === undefined && !connectionPools.has(key);
-    if (!forceRefresh && (isInjectedTestPool || (this.pool && this.poolGeneration === generation && connectionPools.get(key) === this.pool))) {
+    const isFreshSharedPool = this.pool && this.pool.connected !== false && this.poolGeneration === generation
+      && connectionPools.get(key) === this.pool && connectionExpiresAt.get(key) > Date.now() + connectionRefreshBufferMs;
+    if (!forceRefresh && (isInjectedTestPool || isFreshSharedPool)) {
       return this.pool;
     }
     const connection = await getSharedPool(this.config, forceRefresh);
@@ -295,14 +362,35 @@ export class SqlRepository {
   }
 
   async authenticate() {
-    await this.resetConnection();
-    await this.getPool();
+    const key = connectionKey(this.config);
+    if (authenticationRequests.has(key)) return authenticationRequests.get(key);
+    const request = (async () => {
+      try {
+        await this.getPool();
+      } catch (error) {
+        if (error.name !== 'AuthenticationRequiredError') throw error;
+        await authenticateTenant(this.config);
+        await this.getPool();
+      }
+    })().finally(() => authenticationRequests.delete(key));
+    authenticationRequests.set(key, request);
+    return request;
   }
 
-  async resetConnection() {
+  getConnectionGeneration() {
+    return connectionGeneration(connectionKey(this.config));
+  }
+
+  async resetConnection(expectedGeneration) {
+    const key = connectionKey(this.config);
+    if (expectedGeneration !== undefined && expectedGeneration !== connectionGeneration(key)) return;
+    const localPool = this.pool;
     this.pool = undefined;
     this.poolGeneration = undefined;
-    await closeSharedPool(connectionKey(this.config));
+    // A failed query may finish after a sibling has already recovered the pool.
+    if (localPool && connectionPools.has(key) && connectionPools.get(key) !== localPool) return;
+    if (!connectionPools.has(key) && !connectionRequests.has(key)) return;
+    await closeSharedPool(key);
   }
 
   async getColumns() {
@@ -402,7 +490,7 @@ export class SqlRepository {
       case: ['process', 'serie'],
       pn: ['process', 'serie', 'case']
     };
-    const entries = await Promise.all(Object.entries(columns).map(async ([key, column]) => {
+    const entries = await settleAll(Object.entries(columns).map(async ([key, column]) => {
       if (key === 'serie' && hasSeriesLookup(this.config)) return [key, await this.getSeriesOptions(pool, filters.product)];
       if (!column) return [key, []];
       const request = pool.request();

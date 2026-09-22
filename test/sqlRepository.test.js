@@ -23,7 +23,29 @@ function mockPool(recordsets) {
 }
 
 describe('SqlRepository', () => {
-  it('reconnects after an authentication error without forcing a new interactive token', async () => {
+  it('waits for sibling option queries before reporting a failed query', async () => {
+    const repository = new SqlRepository(config);
+    const failure = new Error('Options query failed');
+    let finishSibling;
+    const sibling = new Promise((resolve) => { finishSibling = resolve; });
+    let call = 0;
+    repository.getPool = async () => ({ request: () => ({
+      input() { return this; },
+      query() {
+        call += 1;
+        return call === 1 ? Promise.reject(failure) : call === 2 ? sibling : Promise.resolve({ recordset: [] });
+      }
+    }) });
+    let completed = false;
+    const result = repository.getOptions().catch((error) => { completed = true; return error; });
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(completed).toBe(false);
+    } finally { finishSibling({ recordset: [] }); }
+    expect(await result).toBe(failure);
+  });
+
+  it('reuses a valid connection when checking authentication', async () => {
     const repository = new SqlRepository(config);
     const calls = [];
     repository.resetConnection = async () => { calls.push('reset'); };
@@ -31,7 +53,7 @@ describe('SqlRepository', () => {
 
     await repository.authenticate();
 
-    expect(calls).toEqual(['reset', undefined]);
+    expect(calls).toEqual([undefined]);
   });
 
   it('parameterizes quantity filters while allowlisting configured identifiers', async () => {

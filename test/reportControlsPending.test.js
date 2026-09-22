@@ -4,6 +4,40 @@ import { describe, expect, it } from 'vitest';
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
 describe('Report controls pending state', () => {
+  it('provides one date-range picker that supports presets and a same-day selection', () => {
+    const html = read('public/index.html');
+    const app = read('public/app.js');
+
+    expect(html).toContain('id="reportDateRangeTrigger"');
+    expect(html).toContain('id="reportDateRangePopover"');
+    expect(html).toContain('data-date-range-preset="month-to-date"');
+    expect(html).toContain('class="serie-field" hidden aria-hidden="true"');
+    expect(read('public/styles.css')).toContain('.filter-toolbar .serie-field { display: none !important; }');
+    expect(app).toContain('function setReportDateRange(');
+    expect(app).toContain('function renderReportDateRangeCalendar(');
+    expect(app).toContain('function applyReportDateRangePreset(');
+    expect(app).toContain('function positionReportDateRangePicker(');
+    expect(app).toContain('function scheduleReportDateRangeClose(');
+    expect(app).toContain('function previewReportDateRange(');
+    expect(app).toContain('const reportDateRangeAnimationDurationMs = 180;');
+    expect(app).toContain("addEventListener('pointerover', (event) => { const date = event.target.closest('[data-date-range-date]')");
+    expect(app).toContain("button.setAttribute('aria-current', 'date')");
+    expect(app).toContain("byId('reportDateRangePopover').addEventListener('click', (event) => { event.stopPropagation();");
+    expect(app).toContain("window.addEventListener('resize', () => { if (!byId('reportDateRangePopover').hidden) positionReportDateRangePicker(); });");
+  });
+
+  it('calculates inclusive preset ranges for the custom picker', () => {
+    const app = read('public/app.js');
+    const start = app.indexOf('function reportDateFromValue(');
+    const end = app.indexOf('async function latestTaYieldStagingDate', start);
+    const dateRangeHelpers = new Function(`${app.slice(start, end)}\nreturn { formatDateRange, reportDateRangeForPreset };`)();
+
+    expect(dateRangeHelpers.reportDateRangeForPreset('last-7-days', '2026-09-21')).toEqual({ startDate: '2026-09-15', endDate: '2026-09-21' });
+    expect(dateRangeHelpers.reportDateRangeForPreset('month-to-date', '2026-09-21')).toEqual({ startDate: '2026-09-01', endDate: '2026-09-21' });
+    expect(dateRangeHelpers.reportDateRangeForPreset('year-to-date', '2026-09-21')).toEqual({ startDate: '2026-01-01', endDate: '2026-09-21' });
+    expect(dateRangeHelpers.formatDateRange('2026-09-21', '2026-09-21')).toContain('Sep 21, 2026');
+  });
+
   it('notifies users when selected report filters have not been applied', () => {
     const html = read('public/index.html');
     const app = read('public/app.js');

@@ -6,7 +6,7 @@
     <title>TOKIN Production Dashboard</title>
     <link rel="icon" type="image/png" href="/assets/tokin-icon.png?v=1" />
     <link rel="apple-touch-icon" href="/assets/tokin-icon.png?v=1" />
-    <link rel="stylesheet" href="/styles.css?v=20260907-sc-input-ratio-toggle-3" />
+  <link rel="stylesheet" href="/styles.css?v=20260921-series-label-swatches-16" />
   </head>
   <body>
     <main class="dashboard">
@@ -15,18 +15,69 @@
         <div class="header-controls"><div class="process-field"><span>Product</span><div class="process-buttons"><button type="button" class="process-option" data-product="NEO">NEO</button><button type="button" class="process-option" data-product="SC">SC</button></div><input id="product" type="hidden" value="" /></div><label class="source-control"><span class="source-control-label">Data source</span><select id="dataSource" aria-label="Data source"><optgroup label="Production reports"><option value="closed">901 — Closed Batch</option><option value="lot">WIP — Lot Complete Log</option></optgroup><optgroup label="Yield analysis"><option value="yield">SC Yield — Complete Action</option><option value="ta-yield">TA Yield</option></optgroup></select><small>Choose the dashboard to analyze</small></label></div>
       </header>
 
+      <dialog id="dashboardDataModeDialog" class="dashboard-data-mode-dialog" aria-labelledby="dashboardDataModeTitle" aria-describedby="dashboardDataModeDescription">
+        <header><h2 id="dashboardDataModeTitle">Dashboard data mode</h2><button id="dashboardDataModeClose" type="button" aria-label="Close data mode dialog">×</button></header>
+        <p id="dashboardDataModeDescription">Live MES pauses all background staging. Each Apply reads fresh MES data and may take longer. Current queries and refreshes finish before the switch.</p>
+        <p id="dashboardDataModeHelp">Applies to all browsers until the server restarts.</p>
+        <form id="dashboardDataModeForm">
+          <label for="dashboardDataModeSelection">Data mode<select id="dashboardDataModeSelection"><option value="staging">Staging — scheduled refreshes</option><option value="live">Live MES — query directly</option></select></label>
+          <div class="data-mode-token-field"><label for="dashboardDataModeToken">Data mode operator token</label><div class="data-mode-token-entry"><input id="dashboardDataModeToken" type="password" autocomplete="off" aria-describedby="dashboardDataModeTokenHelp" required /><button id="dashboardDataModeAutofill" type="button" disabled>Auto fill</button></div><small id="dashboardDataModeTokenHelp">Checking whether local token auto fill is available…</small></div>
+          <p id="dashboardDataModeDialogStatus" role="status" aria-live="polite"></p>
+          <button id="dashboardDataModeApply" type="submit" disabled>Apply for all browsers</button>
+        </form>
+      </dialog>
+
       <nav class="app-tabs" aria-label="Dashboard views"><button type="button" class="app-tab active" data-view="dashboard" aria-pressed="true">Production dashboard</button><button id="taYieldMachineTab" type="button" class="app-tab" data-view="ta-yield-machine" aria-pressed="false" hidden>Machine</button><button id="taDataTableTab" type="button" class="app-tab" data-view="ta-data-table" aria-pressed="false" hidden>DataTable</button><button type="button" class="app-tab" data-view="parameters" aria-pressed="false">MTD Parameter setting</button><button id="scYieldLogTab" type="button" class="app-tab" data-view="sc-yield-log" aria-pressed="false" hidden>Calculation log</button><button id="taYieldLogTab" type="button" class="app-tab" data-view="ta-yield-log" aria-pressed="false" hidden>Calculation log</button><button id="defectSettingsTab" type="button" class="app-tab" data-view="defects" aria-pressed="false" hidden>Defect settings</button><button id="stagingStatusTab" type="button" class="app-tab" data-view="staging" aria-pressed="false" hidden>Staging status</button><button type="button" class="app-tab" data-view="comments" aria-pressed="false">Comment log</button><button type="button" class="app-tab" data-view="model" aria-pressed="false">Data model</button></nav>
+
+      <section id="dashboardDataModeSettings" class="data-mode-settings" hidden aria-labelledby="dataModeSettingsTitle">
+        <header class="data-mode-settings-heading">
+          <div><p class="section-kicker">Shared dashboard setting</p><h2 id="dataModeSettingsTitle">Dashboard data mode</h2><p>One setting for everyone using this dashboard server.</p></div>
+          <span id="dashboardDataModeStatus" class="data-mode-current" role="status" aria-live="polite">Checking current mode&hellip;</span>
+        </header>
+        <div class="data-mode-options">
+          <article class="data-mode-option" data-dashboard-mode-card="staging">
+            <div class="data-mode-option-title"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 4 16 4 16 0V5M4 12v7c0 4 16 4 16 0v-7"/></svg><h3>Staging</h3><span data-mode-active-label hidden>Current mode</span></div>
+            <p>Reads saved staging data for faster reports. Scheduled jobs keep staging updated.</p>
+            <div class="data-mode-flow" aria-label="MES to staging to dashboard"><span>MES</span><b aria-hidden="true">&rarr;</b><span>Staging</span><b aria-hidden="true">&rarr;</b><span>Dashboard</span></div>
+          </article>
+          <article class="data-mode-option" data-dashboard-mode-card="live">
+            <div class="data-mode-option-title"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 2-9 12h7l-1 8 10-12h-7z"/></svg><h3>Live MES</h3><span data-mode-active-label hidden>Current mode</span></div>
+            <p>Queries MES on each Apply. No staging reads or writes; background staging stays paused.</p>
+            <div class="data-mode-flow" aria-label="MES directly to dashboard"><span>MES</span><b aria-hidden="true">&rarr;</b><span>Dashboard</span><small>Direct query</small></div>
+          </article>
+        </div>
+        <footer class="data-mode-settings-footer"><p><strong>Applies to all users.</strong> The selection stays active until this server restarts. Live queries may take longer.</p><button id="dashboardDataModeOpen" type="button" aria-haspopup="dialog" aria-controls="dashboardDataModeDialog">Change data mode <span aria-hidden="true">&nearr;</span></button></footer>
+      </section>
 
       <div id="dashboardView">
 
       <section id="reportControls" class="filter-toolbar" aria-label="Report filters" aria-busy="false">
         <div id="reportLoading" class="report-loading" hidden><span class="loading-spinner" aria-hidden="true"></span><span>Updating report controls</span></div>
-        <div class="filter-title"><span>Report controls</span><small>Select a production scope</small><p id="reportPendingNotice" class="report-pending-notice" role="status" hidden>Filters changed. Click Apply to update the report.</p></div>
+        <div class="filter-title"><span>Report controls</span><small>Select a production scope</small><div id="dashboardSourceIndicator" class="dashboard-source-indicator" data-mode="checking" role="status" aria-live="polite" aria-atomic="true">Source: <span id="dashboardSourceLabel">Checking source&hellip;</span><span id="dashboardSourceDescription" hidden>Confirming the server's current data mode.</span></div><p id="reportPendingNotice" class="report-pending-notice" role="status" hidden>Filters changed. Click Apply to update the report.</p></div>
         <div class="filters">
-          <label>Start date<input id="startDate" type="date" /></label>
-          <label>End date<input id="endDate" type="date" /></label>
+          <div class="date-range-field">
+            <span class="date-range-label">Report dates</span>
+            <button id="reportDateRangeTrigger" class="date-range-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="reportDateRangePopover">Select dates</button>
+            <input id="startDate" type="date" tabindex="-1" aria-hidden="true" />
+            <input id="endDate" type="date" tabindex="-1" aria-hidden="true" />
+            <section id="reportDateRangePopover" class="date-range-popover" hidden role="dialog" aria-modal="false" aria-labelledby="reportDateRangeTitle">
+              <aside class="date-range-presets" aria-label="Quick date ranges">
+                <button type="button" data-date-range-preset="last-7-days">Last 7 days</button>
+                <button type="button" data-date-range-preset="last-30-days">Last 30 days</button>
+                <button type="button" data-date-range-preset="month-to-date">Month to date</button>
+                <button type="button" data-date-range-preset="last-3-months">Last 3 months</button>
+                <button type="button" data-date-range-preset="year-to-date">Year to date</button>
+                <button type="button" data-date-range-preset="last-12-months">Last 12 months</button>
+              </aside>
+              <div class="date-range-calendar-panel">
+                <header class="date-range-calendar-header"><button id="reportDateRangePrevious" type="button" aria-label="Show previous month">&#8249;</button><h3 id="reportDateRangeTitle">Select report dates</h3><button id="reportDateRangeNext" type="button" aria-label="Show next month">&#8250;</button></header>
+                <p id="reportDateRangeHelp" class="date-range-help">Choose one day, or choose a start date and an end date.</p>
+                <div id="reportDateRangeCalendars" class="date-range-calendars"></div>
+              </div>
+            </section>
+          </div>
           <label id="lotProcessField" hidden>Operation<select id="processSelect"><option value="">All operations</option></select><input id="process" type="hidden" value="" /></label>
-          <label class="serie-field">Serie<select id="serie" multiple hidden aria-label="Selected series"></select><div class="serie-picker"><button id="serieTrigger" type="button" aria-expanded="false" aria-controls="serieMenu">All series</button><div id="serieMenu" class="serie-menu" hidden><div id="serieOptions"></div></div></div></label>
+          <label class="serie-field" hidden aria-hidden="true">Serie<select id="serie" multiple hidden aria-label="Selected series"></select><div class="serie-picker"><button id="serieTrigger" type="button" aria-expanded="false" aria-controls="serieMenu">All series</button><div id="serieMenu" class="serie-menu" hidden><div id="serieOptions"></div></div></div></label>
           <label>Case<select id="case"><option value="">All cases</option></select></label>
           <label class="pn-field">PN<div class="pn-picker"><div id="pnSelected" class="pn-selected" aria-label="Selected part numbers"></div><input id="pn" type="search" placeholder="All part numbers - search" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="pnMenu" /><div id="pnMenu" class="pn-menu" role="listbox" hidden><div id="pnOptions"></div><button id="pnLoadMore" type="button">Load more</button></div></div></label>
           <button id="apply" type="button">Apply</button>
@@ -71,6 +122,6 @@
     </main>
     <div id="parameterEditModal" class="parameter-edit-modal" hidden role="dialog" aria-modal="true" aria-labelledby="parameterEditTitle"><form id="parameterEditForm" class="parameter-edit-dialog" novalidate><header><div><p class="section-kicker">MTD parameter</p><h2 id="parameterEditTitle">Edit monthly plan</h2></div><button id="parameterEditClose" type="button" class="parameter-modal-close" aria-label="Close edit dialog">x</button></header><dl class="parameter-edit-scope"><div><dt>Product</dt><dd id="parameterEditProduct"></dd></div><div><dt>Serie</dt><dd id="parameterEditSerie"></dd></div><div><dt>Period</dt><dd id="parameterEditPeriod"></dd></div></dl><label>Monthly plan<input id="parameterEditTarget" type="number" min="0" step="any" inputmode="decimal" required /></label><label>Working day<input id="parameterEditWorkingDay" type="number" min="0.01" step="any" inputmode="decimal" required /></label><p id="parameterEditStatus" class="parameter-status" role="status"></p><footer><button id="parameterEditCancel" type="button" class="parameter-modal-cancel">Cancel</button><button type="submit">Save changes</button></footer></form></div>
     <div id="mtdChartModal" class="mtd-chart-modal" hidden role="dialog" aria-modal="true" aria-labelledby="mtdChartModalTitle"><section class="mtd-chart-dialog"><header><div><p class="section-kicker">Month to date</p><h2 id="mtdChartModalTitle">MTD target vs result</h2></div><button id="mtdChartModalClose" type="button" class="parameter-modal-close" aria-label="Close enlarged MTD chart">x</button></header><div id="mtdChartExpanded" class="mtd-chart mtd-chart-expanded"></div></section></div>
-    <script src="/app.js?v=20260907-sc-input-ratio-toggle-3"></script>
+  <script src="/app.js?v=20260921-series-label-swatches-14"></script>
   </body>
 </html>

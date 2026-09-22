@@ -295,6 +295,13 @@ let latestOperationTransitions = [];
 let operationTransitionRequestKey = '';
 let reportLoadingCount = 0;
 let appliedReportControlSnapshot = '';
+let reportDateRangeViewMonth = '';
+let reportDateRangeDraftStart = '';
+let reportDateRangePreviewEnd = '';
+let reportDateRangeCloseTimer;
+let reportDateRangeAnimationTimer;
+const reportDateRangeCloseDelayMs = 360;
+const reportDateRangeAnimationDurationMs = 180;
 function reportControlSnapshot() { return JSON.stringify({ dataset: selectedDataset(), product: byId('product').value, startDate: byId('startDate').value, endDate: byId('endDate').value, process: byId('process').value, series: [...selectedSeries()].sort(), case: byId('case').value, partNumbers: [...selectedPartNumbers()].sort() }); }
 function updateReportPendingNotice() { const notice = byId('reportPendingNotice'); const pending = Boolean(appliedReportControlSnapshot) && reportControlSnapshot() !== appliedReportControlSnapshot; notice.hidden = !pending; byId('apply').classList.toggle('has-pending-changes', pending); }
 function markReportControlsApplied() { appliedReportControlSnapshot = reportControlSnapshot(); updateReportPendingNotice(); }
@@ -321,7 +328,7 @@ function setStatus(message, loading = false) {
   status.className = loading ? 'status loading' : 'status';
 }
 
-function setReportControlsLoading(loading) { reportLoadingCount = Math.max(0, reportLoadingCount + (loading ? 1 : -1)); const active = reportLoadingCount > 0; const toolbar = byId('reportControls'); byId('reportLoading').hidden = !active; toolbar.setAttribute('aria-busy', String(active)); const scTrendControlIds = ['scYieldTrendSeries', 'scYieldInterval', 'scYieldTrendChartType']; scTrendControlIds.forEach((id) => { const control = byId(id); if (control) control.disabled = active; }); if (active) { ['startDate', 'endDate', 'processSelect', 'serie', 'serieTrigger', 'case', 'pn', 'apply', 'dataSource'].forEach((id) => { byId(id).disabled = true; }); document.querySelectorAll('.process-option').forEach((button) => { button.disabled = true; }); return; } const filters = currentConfig.filters || {}; byId('startDate').disabled = false; byId('endDate').disabled = false; byId('dataSource').disabled = false; byId('apply').disabled = false; document.querySelectorAll('.process-option').forEach((button) => { button.disabled = false; }); byId('processSelect').disabled = selectedDataset() !== 'lot' || filters.process === false; byId('serie').disabled = filters.serie === false; byId('serieTrigger').disabled = filters.serie === false; byId('case').disabled = filters.case === false; byId('pn').disabled = filters.pn === false; }
+function setReportControlsLoading(loading) { reportLoadingCount = Math.max(0, reportLoadingCount + (loading ? 1 : -1)); const active = reportLoadingCount > 0; const toolbar = byId('reportControls'); byId('reportLoading').hidden = !active; toolbar.setAttribute('aria-busy', String(active)); const scTrendControlIds = ['scYieldTrendSeries', 'scYieldInterval', 'scYieldTrendChartType']; scTrendControlIds.forEach((id) => { const control = byId(id); if (control) control.disabled = active; }); if (active) { ['startDate', 'endDate', 'reportDateRangeTrigger', 'processSelect', 'serie', 'serieTrigger', 'case', 'pn', 'apply', 'dataSource'].forEach((id) => { byId(id).disabled = true; }); closeReportDateRangePicker(false); document.querySelectorAll('.process-option').forEach((button) => { button.disabled = true; }); return; } const filters = currentConfig.filters || {}; byId('startDate').disabled = false; byId('endDate').disabled = false; byId('reportDateRangeTrigger').disabled = false; byId('dataSource').disabled = false; byId('apply').disabled = false; document.querySelectorAll('.process-option').forEach((button) => { button.disabled = false; }); byId('processSelect').disabled = selectedDataset() !== 'lot' || filters.process === false; byId('serie').disabled = filters.serie === false; byId('serieTrigger').disabled = filters.serie === false; byId('case').disabled = filters.case === false; byId('pn').disabled = filters.pn === false; }
 
 function selectedSeries() { return [...byId('serie').selectedOptions].map((option) => option.value); }
 function updateSerieTrigger() { const selected = selectedSeries(); byId('serieTrigger').textContent = selected.length ? (selected.length === 1 ? selected[0] : `${selected.length} series selected`) : 'All series'; }
@@ -337,7 +344,25 @@ function targetRecords(settings) { return Object.entries(settings).flatMap(([pro
 async function loadTargetSettings(migrateLocal = false) { if (!targetStorageRemote) { targetSettings = localTargetSettings(); return; } const stored = await request('/api/mtd-targets'); if (migrateLocal) { const existing = new Set(stored.map((target) => `${target.product}|${target.serie}|${target.period}`)); const missing = targetRecords(localTargetSettings()).filter((target) => !existing.has(`${target.product}|${target.serie}|${target.period}`)); await Promise.all(missing.map((target) => request('/api/mtd-targets', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(target) }))); if (missing.length) return loadTargetSettings(false); } targetSettings = targetSettingsFromRecords(stored); }
 function selectedReportingPeriod() { const start = byId('startDate').value; const end = byId('endDate').value; if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || start.slice(0, 7) !== end.slice(0, 7)) return ''; return start.slice(0, 7); }
 function bangkokToday() { const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date()).reduce((result, part) => ({ ...result, [part.type]: part.value }), {}); return `${parts.year}-${parts.month}-${parts.day}`; }
-async function latestTaYieldStagingDate(todayString) { try { const rows = await request('/api/staging-status'); const stagingRows = rows.data || rows; const value = stagingRows.find((row) => row.name === 'TA Yield DataTable')?.lastDataDate; const latestDate = typeof value === 'string' ? value.slice(0, 10) : ''; return /^\d{4}-\d{2}-\d{2}$/.test(latestDate) && latestDate < todayString ? latestDate : todayString; } catch { return todayString; } }
+function reportDateFromValue(value) { return /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00Z`) : undefined; }
+function reportDateValue(date) { return date.toISOString().slice(0, 10); }
+function reportMonthValue(date) { return reportDateValue(date).slice(0, 7); }
+function reportMonthOffset(month, offset) { const [year, monthNumber] = month.split('-').map(Number); return reportMonthValue(new Date(Date.UTC(year, monthNumber - 1 + offset, 1))); }
+function reportDateOffset(value, offset) { const date = reportDateFromValue(value); date.setUTCDate(date.getUTCDate() + offset); return reportDateValue(date); }
+function formatReportDate(value) { const date = reportDateFromValue(value); return date ? new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(date) : 'Select dates'; }
+function formatDateRange(startDate, endDate) { if (!startDate || !endDate) return 'Select dates'; if (startDate === endDate) return formatReportDate(startDate); const start = reportDateFromValue(startDate); const end = reportDateFromValue(endDate); const sameYear = start.getUTCFullYear() === end.getUTCFullYear(); const sameMonth = sameYear && start.getUTCMonth() === end.getUTCMonth(); const startFormat = sameMonth ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: sameYear ? undefined : 'numeric' }; const endFormat = { month: 'short', day: 'numeric', year: 'numeric' }; return `${new Intl.DateTimeFormat(undefined, { ...startFormat, timeZone: 'UTC' }).format(start)} – ${new Intl.DateTimeFormat(undefined, { ...endFormat, timeZone: 'UTC' }).format(end)}`; }
+function reportDateRangeForPreset(preset, today = bangkokToday()) { const date = reportDateFromValue(today); const year = date.getUTCFullYear(); const month = date.getUTCMonth(); const firstOfMonth = reportDateValue(new Date(Date.UTC(year, month, 1))); if (preset === 'last-7-days') return { startDate: reportDateOffset(today, -6), endDate: today }; if (preset === 'last-30-days') return { startDate: reportDateOffset(today, -29), endDate: today }; if (preset === 'month-to-date') return { startDate: firstOfMonth, endDate: today }; if (preset === 'last-3-months') return { startDate: reportDateValue(new Date(Date.UTC(year, month - 2, 1))), endDate: today }; if (preset === 'year-to-date') return { startDate: `${year}-01-01`, endDate: today }; return { startDate: reportDateValue(new Date(Date.UTC(year, month - 11, 1))), endDate: today }; }
+function syncReportDateRangePicker() { const trigger = byId('reportDateRangeTrigger'); if (!trigger) return; const startDate = byId('startDate').value; const endDate = byId('endDate').value; trigger.textContent = formatDateRange(startDate, endDate); trigger.setAttribute('aria-label', `Report dates: ${formatDateRange(startDate, endDate)}`); document.querySelectorAll('[data-date-range-preset]').forEach((button) => { const range = reportDateRangeForPreset(button.dataset.dateRangePreset); button.classList.toggle('active', range.startDate === startDate && range.endDate === endDate); }); }
+function renderReportDateRangeCalendar() { const holder = byId('reportDateRangeCalendars'); if (!holder) return; const startDate = byId('startDate').value; const endDate = byId('endDate').value; const today = bangkokToday(); if (!/^\d{4}-\d{2}$/.test(reportDateRangeViewMonth)) reportDateRangeViewMonth = reportMonthOffset((endDate || today).slice(0, 7), -1); const previewEnd = reportDateRangePreviewEnd || reportDateRangeDraftStart; const selectedStart = reportDateRangeDraftStart ? [reportDateRangeDraftStart, previewEnd].sort()[0] : startDate; const selectedEnd = reportDateRangeDraftStart ? [reportDateRangeDraftStart, previewEnd].sort()[1] : endDate; const months = [reportDateRangeViewMonth, reportMonthOffset(reportDateRangeViewMonth, 1)]; holder.replaceChildren(...months.map((month) => { const [year, monthNumber] = month.split('-').map(Number); const firstDay = new Date(Date.UTC(year, monthNumber - 1, 1)); const lastDay = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate(); const calendar = document.createElement('section'); calendar.className = 'date-range-calendar'; const title = document.createElement('h4'); title.textContent = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(firstDay); const weekdays = document.createElement('div'); weekdays.className = 'date-range-weekdays'; ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].forEach((day) => { const label = document.createElement('span'); label.textContent = day; weekdays.append(label); }); const days = document.createElement('div'); days.className = 'date-range-days'; for (let index = 0; index < firstDay.getUTCDay(); index += 1) { const blank = document.createElement('span'); blank.setAttribute('aria-hidden', 'true'); days.append(blank); } for (let day = 1; day <= lastDay; day += 1) { const value = `${month}-${String(day).padStart(2, '0')}`; const button = document.createElement('button'); button.type = 'button'; button.dataset.dateRangeDate = value; button.textContent = String(day); button.setAttribute('aria-label', formatReportDate(value)); if (value === today) button.setAttribute('aria-current', 'date'); button.classList.toggle('today', value === today); button.classList.toggle('selected-start', value === selectedStart); button.classList.toggle('selected-end', value === selectedEnd); button.classList.toggle('in-range', value > selectedStart && value < selectedEnd); days.append(button); } calendar.append(title, weekdays, days); return calendar; })); }
+function positionReportDateRangePicker() { const popover = byId('reportDateRangePopover'); const trigger = byId('reportDateRangeTrigger'); if (!popover || !trigger) return; if (window.matchMedia('(max-width: 760px)').matches) { ['position', 'top', 'right', 'left'].forEach((property) => popover.style.removeProperty(property)); return; } const padding = 12; const triggerBounds = trigger.getBoundingClientRect(); const popoverWidth = Math.min(popover.offsetWidth || 640, window.innerWidth - padding * 2); const popoverHeight = Math.min(popover.offsetHeight || 0, window.innerHeight - padding * 2); const left = Math.max(padding, Math.min(triggerBounds.right - popoverWidth, window.innerWidth - popoverWidth - padding)); const top = Math.max(padding, Math.min(triggerBounds.bottom + 9, window.innerHeight - popoverHeight - padding)); popover.style.position = 'fixed'; popover.style.top = `${top}px`; popover.style.right = 'auto'; popover.style.left = `${left}px`; }
+function openReportDateRangePicker() { const popover = byId('reportDateRangePopover'); if (reportDateRangeAnimationTimer) { window.clearTimeout(reportDateRangeAnimationTimer); reportDateRangeAnimationTimer = undefined; } if (popover.hidden) { const endDate = byId('endDate').value || bangkokToday(); reportDateRangeViewMonth = reportMonthOffset(endDate.slice(0, 7), -1); reportDateRangeDraftStart = ''; reportDateRangePreviewEnd = ''; popover.hidden = false; renderReportDateRangeCalendar(); } positionReportDateRangePicker(); popover.classList.remove('is-closing'); window.requestAnimationFrame(() => popover.classList.add('is-open')); byId('reportDateRangeTrigger').setAttribute('aria-expanded', 'true'); }
+function closeReportDateRangePicker(returnFocus = false) { if (reportDateRangeCloseTimer) { window.clearTimeout(reportDateRangeCloseTimer); reportDateRangeCloseTimer = undefined; } const popover = byId('reportDateRangePopover'); if (!popover || popover.hidden) return; popover.classList.remove('selection-complete', 'is-open'); popover.classList.add('is-closing'); reportDateRangeDraftStart = ''; reportDateRangePreviewEnd = ''; byId('reportDateRangeTrigger').setAttribute('aria-expanded', 'false'); if (returnFocus) byId('reportDateRangeTrigger').focus(); if (reportDateRangeAnimationTimer) window.clearTimeout(reportDateRangeAnimationTimer); reportDateRangeAnimationTimer = window.setTimeout(() => { popover.hidden = true; popover.classList.remove('is-closing'); reportDateRangeAnimationTimer = undefined; }, reportDateRangeAnimationDurationMs); }
+function scheduleReportDateRangeClose() { const popover = byId('reportDateRangePopover'); popover.classList.add('selection-complete'); if (reportDateRangeCloseTimer) window.clearTimeout(reportDateRangeCloseTimer); reportDateRangeCloseTimer = window.setTimeout(() => closeReportDateRangePicker(true), reportDateRangeCloseDelayMs); }
+function setReportDateRange(startDate, endDate, { close = false, focusDate = '' } = {}) { if (!reportDateFromValue(startDate) || !reportDateFromValue(endDate)) return; const range = startDate <= endDate ? { startDate, endDate } : { startDate: endDate, endDate: startDate }; byId('startDate').value = range.startDate; byId('endDate').value = range.endDate; syncReportDateRangePicker(); renderReportDateRangeCalendar(); updateReportPendingNotice(); if (close) { scheduleReportDateRangeClose(); return; } if (focusDate) byId('reportDateRangeCalendars').querySelector(`[data-date-range-date="${focusDate}"]`)?.focus(); }
+function selectReportDate(value) { if (!reportDateRangeDraftStart) { reportDateRangeDraftStart = value; setReportDateRange(value, value, { focusDate: value }); byId('reportDateRangeHelp').textContent = 'Choose an end date, or choose the same day again.'; return; } setReportDateRange(reportDateRangeDraftStart, value, { close: true }); }
+function previewReportDateRange(value) { if (!reportDateRangeDraftStart || reportDateRangePreviewEnd === value) return; reportDateRangePreviewEnd = value; renderReportDateRangeCalendar(); }
+function applyReportDateRangePreset(preset) { const range = reportDateRangeForPreset(preset); setReportDateRange(range.startDate, range.endDate, { close: true }); }
+async function latestTaYieldStagingDate(todayString) { if (typeof checkDashboardDataMode === 'function' && (await checkDashboardDataMode()).mode === 'live') return todayString; try { const rows = await request('/api/staging-status'); const stagingRows = rows.data || rows; const value = stagingRows.find((row) => row.name === 'TA Yield DataTable')?.lastDataDate; const latestDate = typeof value === 'string' ? value.slice(0, 10) : ''; return /^\d{4}-\d{2}-\d{2}$/.test(latestDate) && latestDate < todayString ? latestDate : todayString; } catch { return todayString; } }
 function bangkokDate(value) { const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(value)).reduce((result, part) => ({ ...result, [part.type]: part.value }), {}); return `${parts.year}-${parts.month}-${parts.day}`; }
 function selectedDateAxisDates(data) { const start = byId('startDate').value; const end = byId('endDate').value; if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || start > end) return [...new Set(data.map((row) => row.bucketDate))]; const dates = []; const cursor = new Date(`${start}T00:00:00Z`); const last = new Date(`${end}T00:00:00Z`); while (cursor <= last) { dates.push(cursor.toISOString().slice(0, 10)); cursor.setUTCDate(cursor.getUTCDate() + 1); } return dates; }
 function resolveInProgressReportingDate() { const today = bangkokToday(); return byId('startDate').value <= today && byId('endDate').value === today ? today : ''; }
@@ -408,7 +433,7 @@ async function renderTaYieldMachineView() { const view = ensureTaYieldMachineVie
   byId('taMachineApply').insertAdjacentHTML('afterend', '<p id="taMachinePendingNotice" class="ta-machine-pending-notice" role="status" hidden>Filters changed. Click Analyze all machines to update the analysis.</p>');
   const loadLotFilters = async () => { const options = await request('/api/options?dataset=ta-yield'); const setOptions = (id, values, selected, label) => { const control = byId(id); control.innerHTML = `<option value="">${label}</option>${values.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join('')}`; control.value = values.includes(selected) ? selected : ''; }; setOptions('taMachineSerie', options.serie || [], serie, 'All series'); setOptions('taMachinePartNumber', options.pn || [], pn, 'All part numbers'); }; const loadOptions = async () => { if (!byId('taMachineProcess').value) return; byId('taMachineDefect').disabled = true; byId('taMachineDefect').innerHTML = '<option>Loading defect views…</option>'; byId('taMachineApply').disabled = true; const params = new URLSearchParams({ dataset: 'ta-yield', startDate: byId('startDate').value, endDate: byId('endDate').value, process: byId('taMachineProcess').value }); const data = await request(`/api/ta-yield-machine-options?${params}`); byId('taMachineDefect').disabled = false; byId('taMachineApply').disabled = false; byId('taMachineDefect').innerHTML = `<option value="">Select defect view</option><optgroup label="Disposition code">${data.codes.map((value) => `<option value="code|${escapeHtml(value)}">${escapeHtml(value)}</option>`).join('')}</optgroup><optgroup label="Yield Category">${data.categories.map((value) => `<option value="category|${escapeHtml(value)}">${escapeHtml(value)}</option>`).join('')}</optgroup>`; byId('taMachineDefect').value = defectType && defect ? `${defectType}|${defect}` : ''; }; loadLotFilters().catch((error) => { byId('taMachineLink').textContent = error.message; });
   const analyze = async () => { const selectedProcess = byId('taMachineProcess').value; const selectedMachine = '__ALL__'; const [selectedDefectType, selectedDefect] = byId('taMachineDefect').value.split('|'); taYieldMachineState = { process: selectedProcess, machine: selectedMachine, defectType: selectedDefectType || '', defect: selectedDefect || '' }; if (!selectedProcess || !selectedDefect) { byId('taMachineChart').innerHTML = '<p class="sc-yield-empty">Select a process and defect view before analyzing.</p>'; return; } byId('taMachineApply').disabled = true; byId('taMachineApply').textContent = 'Loading…'; byId('taMachineChart').innerHTML = '<p class="sc-yield-empty">Loading Machine analysis…</p>'; const params = new URLSearchParams({ dataset: 'ta-yield', startDate: byId('taMachineStartDate').value, endDate: byId('taMachineEndDate').value, process: selectedProcess, machine: selectedMachine, defectType: selectedDefectType, defect: selectedDefect }); try { const data = await request(`/api/ta-yield-machine?${params}`); byId('taMachineLink').textContent = selectedDefectType === 'category' ? `Linked disposition codes: ${data.linkedModes.join(', ') || 'None'}` : ''; byId('taMachineChart').innerHTML = data.rows.length ? machineDateBars(data.rows) : '<p class="sc-yield-empty">No matching TA Yield defects were found for this selection.</p>'; } catch (error) { byId('taMachineChart').innerHTML = `<p class="sc-yield-empty">${escapeHtml(error.message)}</p>`; } finally { byId('taMachineApply').disabled = false; byId('taMachineApply').textContent = 'Analyze all machines'; } };
-  byId('taMachineStartDate').addEventListener('change', (event) => { byId('startDate').value = event.target.value; renderTaYieldMachineView(); }); byId('taMachineEndDate').addEventListener('change', (event) => { byId('endDate').value = event.target.value; renderTaYieldMachineView(); });
+  byId('taMachineStartDate').addEventListener('change', (event) => { setReportDateRange(event.target.value, byId('endDate').value); renderTaYieldMachineView(); }); byId('taMachineEndDate').addEventListener('change', (event) => { setReportDateRange(byId('startDate').value, event.target.value); renderTaYieldMachineView(); });
   byId('taMachineProcess').addEventListener('change', async (event) => { taYieldMachineState = { process: event.target.value, machine: '__ALL__', defectType: '', defect: '' }; await renderTaYieldMachineView(); });
   byId('taMachineSerie').addEventListener('change', (event) => { taYieldMachineState = { ...taYieldMachineState, serie: event.target.value }; }); byId('taMachinePartNumber').addEventListener('change', (event) => { taYieldMachineState = { ...taYieldMachineState, pn: event.target.value }; }); byId('taMachineDefect').addEventListener('change', (event) => { const [type, value] = event.target.value.split('|'); taYieldMachineState = { ...taYieldMachineState, defectType: type || '', defect: value || '' }; }); byId('taMachineApply').addEventListener('click', analyze);
   byId('taMachineApply').addEventListener('click', () => { if (byId('taMachineProcess').value && byId('taMachineDefect').value) markTaYieldMachineControlsApplied(); });
@@ -438,7 +463,7 @@ function rememberStaging901RepairRange(root = document) {
   };
 }
 function openStagingConsole() { if (!stagingConsoleDialog) { stagingConsoleDialog = document.createElement('dialog'); stagingConsoleDialog.id = 'stagingConsoleDialog'; stagingConsoleDialog.className = 'staging-console-dialog'; stagingConsoleDialog.innerHTML = '<form method="dialog"><button type="submit" aria-label="Close activity console">×</button></form><p class="section-kicker">Pipeline activity</p><h2></h2><ol></ol>'; document.body.append(stagingConsoleDialog); } return stagingConsoleDialog; }
-async function showStagingPipelineConsole(name) { const dialog = openStagingConsole(); const title = dialog.querySelector('h2'); const list = dialog.querySelector('ol'); title.textContent = `${name} activity`; list.innerHTML = '<li>Loading current activity…</li>'; dialog.showModal(); try { const response = await request('/api/staging-status'); const rows = response.data || response; const pipeline = response.pipelines?.taYield; const row = rows.find((item) => item.name === name); const events = name === 'TA Yield DataTable' && pipeline?.logs?.length ? pipeline.logs.map((item) => ({ at: item.at, status: item.status, stage: item.stage })) : [{ at: row?.lastRefreshedAt, status: stagingHealth(row || { enabled: false }), stage: row?.activityError || `Source: ${row?.source || 'Not available'}` }, { at: row?.lastRefreshedAt, status: 'coverage', stage: row?.firstDataDate ? `Coverage: ${String(row.firstDataDate).slice(0, 10)} → ${String(row.lastDataDate).slice(0, 10)}` : 'No refresh data recorded.' }, { at: row?.lastRefreshedAt, status: 'schedule', stage: row?.enabled ? `Scheduled every ${Math.round(row.intervalMs / 60000)} minutes.` : 'Pipeline is disabled.' }]; list.innerHTML = events.map((item) => `<li class="${escapeHtml(String(item.status).toLowerCase())}"><time>${escapeHtml(stagingTime(item.at))}</time><b>${escapeHtml(item.status)}</b><span>${escapeHtml(item.stage)}</span></li>`).join(''); } catch (error) { list.innerHTML = `<li class="failed"><span>${escapeHtml(error.message)}</span></li>`; } }
+async function showStagingPipelineConsole(name) { const dialog = openStagingConsole(); const title = dialog.querySelector('h2'); const list = dialog.querySelector('ol'); title.textContent = `${name} activity`; list.innerHTML = '<li>Loading current activity…</li>'; dialog.showModal(); try { const response = await request('/api/staging-status'); const rows = response.data || response; const pipeline = name.startsWith('WIP ') ? response.pipelines?.wip : response.pipelines?.taYield; const row = rows.find((item) => item.name === name); const events = (name === 'TA Yield DataTable' || name.startsWith('WIP ')) && pipeline?.logs?.length ? pipeline.logs.map((item) => ({ at: item.at, status: item.status, stage: item.stage })) : [{ at: row?.lastRefreshedAt, status: stagingHealth(row || { enabled: false }), stage: row?.activityError || `Source: ${row?.source || 'Not available'}` }, { at: row?.lastRefreshedAt, status: 'coverage', stage: row?.firstDataDate ? `Coverage: ${String(row.firstDataDate).slice(0, 10)} → ${String(row.lastDataDate).slice(0, 10)}` : 'No refresh data recorded.' }, { at: row?.lastRefreshedAt, status: 'schedule', stage: row?.enabled ? `Scheduled every ${Math.round(row.intervalMs / 60000)} minutes.` : 'Pipeline is disabled.' }]; list.innerHTML = events.map((item) => `<li class="${escapeHtml(String(item.status).toLowerCase())}"><time>${escapeHtml(stagingTime(item.at))}</time><b>${escapeHtml(item.status)}</b><span>${escapeHtml(item.stage)}</span></li>`).join(''); } catch (error) { list.innerHTML = `<li class="failed"><span>${escapeHtml(error.message)}</span></li>`; } }
 const stagingActivityButtonObserver = new MutationObserver(() => { const view = byId('stagingStatusView'); if (!view || view.hidden) return; view.querySelectorAll('.staging-pipeline-card:not([data-console-ready])').forEach((card) => { const name = card.querySelector('h3')?.textContent; if (!name) return; card.dataset.consoleReady = 'true'; const button = document.createElement('button'); button.type = 'button'; button.className = 'staging-activity-button'; button.dataset.stagingPipeline = name; button.setAttribute('aria-label', `Open ${name} activity console`); button.title = 'Open activity console'; button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM7 9l3 3-3 3m5 0h5"/></svg>'; card.firstElementChild?.append(button); }); });
 stagingActivityButtonObserver.observe(document.body, { childList: true, subtree: true });
 document.addEventListener('click', (event) => { const button = event.target.closest('[data-staging-pipeline]'); if (button) showStagingPipelineConsole(button.dataset.stagingPipeline); });
@@ -463,6 +488,7 @@ const staging901RepairObserver = new MutationObserver(() => {
   repair.className = 'staging-901-repair';
   repair.innerHTML = `<div><strong>901 restore / repair</strong><small>Reload late MES arrivals and replace only this date range.</small></div><form data-staging-901-repair><label>From<input name="startDate" type="date" value="${escapeHtml(repairStartDate)}" required></label><label>To<input name="endDate" type="date" value="${escapeHtml(repairEndDate)}" required></label><label>Operator token<input name="operatorToken" type="password" autocomplete="off" required></label><button type="submit" ${completion901?.status === 'RUNNING' ? 'disabled' : ''}>${completion901?.status === 'RUNNING' ? 'Repair running…' : 'Restore / Repair'}</button><p role="status" aria-live="polite">${completion901?.status === 'RUNNING' ? escapeHtml(completion901.stage || 'Repair is running.') : ''}</p></form>`;
   card.append(repair);
+  if (typeof renderDashboardDataMode === 'function') renderDashboardDataMode();
 });
 staging901RepairObserver.observe(document.body, { childList: true, subtree: true });
 document.addEventListener('input', (event) => {
@@ -475,6 +501,7 @@ document.addEventListener('submit', async (event) => {
   const form = event.target.closest('[data-staging-901-repair]');
   if (!form) return;
   event.preventDefault();
+  if (typeof dashboardStagingPaused === 'function' && dashboardStagingPaused()) { form.querySelector('[role="status"]').textContent = 'Staging repairs are paused during Live MES or a mode switch.'; return; }
   const startDate = form.elements.startDate.value;
   const endDate = form.elements.endDate.value;
   const operatorToken = form.elements.operatorToken.value;
@@ -497,10 +524,106 @@ document.addEventListener('submit', async (event) => {
     button.disabled = false;
   }
 });
+let stagingWipRepairRange = { startDate: '', endDate: '' };
+let stagingWipRepairSubmitting = false;
+let stagingWipCompletedAt;
+function isWipCacheRequest(url) {
+  return new URLSearchParams(url.split('?')[1] || '').get('dataset') === 'lot';
+}
+function invalidateCompletedWipRepairCache(pipeline) {
+  if (pipeline?.status !== 'SUCCEEDED' || !pipeline.completedAt || pipeline.completedAt === stagingWipCompletedAt) return;
+  stagingWipCompletedAt = pipeline.completedAt;
+  for (const url of clientResponseCache.keys()) {
+    if (isWipCacheRequest(url)) clientResponseCache.delete(url);
+  }
+}
+function rememberStagingWipRepairRange(root = document) {
+  const form = root.matches?.('[data-staging-wip-repair]') ? root : root.querySelector?.('[data-staging-wip-repair]');
+  if (form) stagingWipRepairRange = { startDate: form.elements.startDate.value, endDate: form.elements.endDate.value };
+}
+function stagingWipRepairMarkup(pipeline) {
+  const selectedDate = byId('endDate')?.value || bangkokToday();
+  const startDate = stagingWipRepairRange.startDate || selectedDate;
+  const endDate = stagingWipRepairRange.endDate || selectedDate;
+  const running = stagingWipRepairSubmitting || pipeline?.status === 'RUNNING';
+  return `<div><strong>WIP restore / repair</strong><small>Reload daily quantities and process charts from MES for up to 7 days.</small></div><form data-staging-wip-repair><label>From<input name="startDate" type="date" max="${bangkokToday()}" value="${escapeHtml(startDate)}" required></label><label>To<input name="endDate" type="date" max="${bangkokToday()}" value="${escapeHtml(endDate)}" required></label><label>Operator token<input name="operatorToken" type="password" autocomplete="off" required></label><button type="submit" ${running ? 'disabled' : ''}>${running ? 'Repair running…' : 'Restore / Repair'}</button><p role="status" aria-live="polite">${running ? escapeHtml(pipeline?.stage || 'Repair is running.') : ''}</p></form>`;
+}
+function stagingWipProgressMarkup(pipeline) {
+  const range = pipeline?.startDate && pipeline?.endDate ? `Range: ${pipeline.startDate} to ${pipeline.endDate}` : 'Daily quantities and process charts';
+  return `<div><span class="staging-state ${escapeHtml(String(pipeline?.status || 'idle').toLowerCase())}">${escapeHtml(pipeline?.status || 'IDLE')}</span><h3>WIP refresh</h3><p>${escapeHtml(pipeline?.stage || 'Waiting for the next scheduled refresh.')}</p><p>${escapeHtml(range)}</p></div><dl><div><dt>Started</dt><dd>${escapeHtml(stagingTime(pipeline?.startedAt))}</dd></div><div><dt>Completed</dt><dd>${escapeHtml(stagingTime(pipeline?.completedAt))}</dd></div></dl>`;
+}
+const stagingWipRepairObserver = new MutationObserver((records) => {
+  records.forEach((record) => record.removedNodes.forEach((node) => {
+    if (node.nodeType === Node.ELEMENT_NODE) rememberStagingWipRepairRange(node);
+  }));
+  const view = byId('stagingStatusView');
+  const monitor = view?.querySelector('.staging-monitor');
+  if (!monitor || view.hidden) return;
+  const pipeline = stagingMonitorPayload?.pipelines?.wip;
+  if (!monitor.querySelector('.staging-wip-run')) {
+    const panel = document.createElement('section');
+    panel.className = 'staging-ta-run staging-wip-run';
+    panel.setAttribute('aria-live', 'polite');
+    panel.innerHTML = stagingWipProgressMarkup(pipeline);
+    monitor.querySelector('.staging-ta-run')?.insertAdjacentElement('beforebegin', panel);
+  }
+  const card = [...monitor.querySelectorAll('.staging-pipeline-card')].find((item) => item.querySelector('h3')?.textContent === 'WIP daily quantity');
+  if (!card || card.querySelector('[data-staging-wip-repair]')) return;
+  const repair = document.createElement('section');
+  repair.className = 'staging-901-repair staging-wip-repair';
+  repair.innerHTML = stagingWipRepairMarkup(pipeline);
+  card.append(repair);
+  if (typeof renderDashboardDataMode === 'function') renderDashboardDataMode();
+});
+stagingWipRepairObserver.observe(document.body, { childList: true, subtree: true });
+document.addEventListener('input', (event) => {
+  const form = event.target.closest('[data-staging-wip-repair]');
+  if (!form || event.target.name === 'operatorToken') return;
+  event.target.setAttribute('value', event.target.value);
+  rememberStagingWipRepairRange(form);
+});
+function stagingWipRepairRangeError(startDate, endDate) {
+  const validDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+  if (!validDate(startDate) || !validDate(endDate) || startDate > endDate) return 'Choose a valid date range.';
+  if (endDate > bangkokToday()) return 'Repair dates cannot be in the future.';
+  if ((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86400000 + 1 > 7) return 'Repair range cannot exceed 7 days.';
+  return '';
+}
+document.addEventListener('submit', async (event) => {
+  const form = event.target.closest('[data-staging-wip-repair]');
+  if (!form) return;
+  event.preventDefault();
+  const status = form.querySelector('[role="status"]');
+  const button = form.querySelector('button[type="submit"]');
+  if ((typeof dashboardStagingPaused === 'function' && dashboardStagingPaused()) || button.disabled || stagingWipRepairSubmitting || stagingMonitorPayload?.pipelines?.wip?.status === 'RUNNING') return;
+  if (typeof dashboardStagingPaused === 'function' && dashboardStagingPaused()) { status.textContent = 'Staging repairs are paused during Live MES or a mode switch.'; return; }
+  const startDate = form.elements.startDate.value;
+  const endDate = form.elements.endDate.value;
+  const operatorToken = form.elements.operatorToken.value;
+  rememberStagingWipRepairRange(form);
+  const error = stagingWipRepairRangeError(startDate, endDate);
+  if (error) { status.textContent = error; return; }
+  if (!operatorToken) { status.textContent = 'Enter the operator token.'; return; }
+  if (!window.confirm(`Restore WIP daily quantities and process charts from live MES for ${startDate} to ${endDate}?`)) return;
+  stagingWipRepairSubmitting = true;
+  button.disabled = true;
+  form.elements.operatorToken.value = '';
+  status.textContent = 'Starting repair…';
+  try {
+    await request('/api/staging/wip-repair', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${operatorToken}` }, body: JSON.stringify({ startDate, endDate }) });
+    status.textContent = 'Repair started. Progress updates automatically.';
+    setTimeout(() => renderStagingStatus().catch(() => {}), 500);
+  } catch (error) {
+    status.textContent = error.message;
+    button.disabled = false;
+  } finally {
+    stagingWipRepairSubmitting = false;
+  }
+});
 const stagingTime = (value) => value ? new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'medium', timeZone: 'Asia/Bangkok' }).format(new Date(value)) : 'No refresh recorded';
 const isCurrentTaStagingCoverage = (row) => String(row?.name || '').startsWith('TA Yield') && typeof row?.lastDataDate === 'string' && row.lastDataDate.slice(0, 10) >= bangkokToday();
-const stagingHealth = (row, now = Date.now()) => !row.enabled ? 'disabled' : row.activityError ? 'failed' : !row.activityAvailable || !row.lastRefreshedAt ? 'waiting' : isCurrentTaStagingCoverage(row) ? 'healthy' : now - new Date(row.lastRefreshedAt).getTime() > row.intervalMs * 2 ? 'stale' : 'healthy';
-async function renderStagingStatus() { const view = ensureUtilityView('stagingStatusView'); clearTimeout(stagingMonitorTimer); const response = await request('/api/staging-status'); const rows = response.data || response; const pipeline = response.pipelines?.taYield; const health = rows.map((row) => stagingHealth(row)); const counts = ['healthy', 'stale', 'failed', 'waiting'].map((state) => ({ state, count: health.filter((item) => item === state).length })); const rowCard = (row, index) => { const state = health[index]; return `<article class="staging-pipeline-card ${state}"><div><span class="staging-state ${state}">${state}</span><h3>${escapeHtml(row.name)}</h3><p>${escapeHtml(row.source)}</p></div><dl><div><dt>Last refresh</dt><dd>${escapeHtml(stagingTime(row.lastRefreshedAt))}</dd></div><div><dt>Coverage</dt><dd>${escapeHtml(row.firstDataDate ? `${String(row.firstDataDate).slice(0, 10)} → ${String(row.lastDataDate).slice(0, 10)}` : 'Waiting for data')}</dd></div><div><dt>Rows</dt><dd>${row.activityAvailable ? format.format(row.rowCount || 0) : '—'}</dd></div><div><dt>Schedule</dt><dd>Every ${Math.round(row.intervalMs / 60000)} min</dd></div></dl>${row.activityError ? `<p class="staging-error">${escapeHtml(row.activityError)}</p>` : ''}</article>`; }; const logs = (pipeline?.logs || []).map((log) => `<li class="${String(log.status || '').toLowerCase()}"><time>${escapeHtml(stagingTime(log.at))}</time><b>${escapeHtml(log.status)}</b><span>${escapeHtml(log.stage)}</span></li>`).join('') || '<li class="idle"><span>No TA Yield refresh events recorded since this server started.</span></li>'; view.innerHTML = `<section class="staging-monitor" aria-labelledby="stagingMonitorTitle"><header class="staging-monitor-heading"><div><p class="section-kicker">Operations monitor</p><h2 id="stagingMonitorTitle">Staging pipeline control room</h2><p>Live freshness, coverage, and TA Yield refresh progress. Updated every 10 seconds while this tab is open.</p></div><div class="staging-live" role="status"><i></i>Live · checked ${escapeHtml(stagingTime(response.checkedAt))}</div></header><div class="staging-kpis">${counts.map(({ state, count }) => `<article class="${state}"><b>${count}</b><span>${state}</span></article>`).join('')}<article class="ta-run ${String(pipeline?.status || 'IDLE').toLowerCase()}"><b>${escapeHtml(pipeline?.status || 'IDLE')}</b><span>TA Yield pipeline</span></article></div><section class="staging-ta-run" aria-live="polite"><div><span class="staging-state ${String(pipeline?.status || 'idle').toLowerCase()}">${escapeHtml(pipeline?.status || 'IDLE')}</span><h3>TA Yield refresh</h3><p>${escapeHtml(pipeline?.stage || 'Waiting for the next scheduled refresh.')}</p></div><dl><div><dt>Started</dt><dd>${escapeHtml(stagingTime(pipeline?.startedAt))}</dd></div><div><dt>Completed</dt><dd>${escapeHtml(stagingTime(pipeline?.completedAt))}</dd></div></dl></section><div class="staging-pipeline-grid">${rows.map(rowCard).join('')}</div><section class="staging-log"><header><h3>TA Yield live activity</h3><span>Latest ${pipeline?.logs?.length || 0} events</span></header><ol>${logs}</ol></section></section>`; stagingMonitorTimer = setTimeout(() => { if (!view.hidden) renderStagingStatus().catch((error) => { view.querySelector('.staging-live').textContent = `Monitoring paused: ${error.message}`; }); }, 10000); }
+const stagingHealth = (row, now = Date.now()) => row.paused ? 'paused' : !row.enabled ? 'disabled' : row.activityError ? 'failed' : !row.activityAvailable || !row.lastRefreshedAt ? 'waiting' : isCurrentTaStagingCoverage(row) ? 'healthy' : now - new Date(row.lastRefreshedAt).getTime() > row.intervalMs * 2 ? 'stale' : 'healthy';
+async function renderStagingStatus() { const view = ensureUtilityView('stagingStatusView'); clearTimeout(stagingMonitorTimer); const response = await request('/api/staging-status'); const rows = response.data || response; const pipeline = response.pipelines?.taYield; const health = rows.map((row) => stagingHealth(row)); const counts = ['healthy', 'stale', 'failed', 'waiting'].map((state) => ({ state, count: health.filter((item) => item === state).length })); const rowCard = (row, index) => { const state = health[index]; return `<article class="staging-pipeline-card ${state}"><div><span class="staging-state ${state}">${state}</span><h3>${escapeHtml(row.name)}</h3><p>${escapeHtml(row.source)}</p></div><dl><div><dt>Last refresh</dt><dd>${escapeHtml(stagingTime(row.lastRefreshedAt))}</dd></div><div><dt>Coverage</dt><dd>${escapeHtml(row.firstDataDate ? `${String(row.firstDataDate).slice(0, 10)} → ${String(row.lastDataDate).slice(0, 10)}` : 'Waiting for data')}</dd></div><div><dt>Rows</dt><dd>${row.activityAvailable ? format.format(row.rowCount || 0) : '—'}</dd></div><div><dt>Schedule</dt><dd>${row.paused ? 'Paused' : `Every ${Math.round(row.intervalMs / 60000)} min`}</dd></div></dl>${row.activityError ? `<p class="staging-error">${escapeHtml(row.activityError)}</p>` : ''}</article>`; }; const logs = (pipeline?.logs || []).map((log) => `<li class="${String(log.status || '').toLowerCase()}"><time>${escapeHtml(stagingTime(log.at))}</time><b>${escapeHtml(log.status)}</b><span>${escapeHtml(log.stage)}</span></li>`).join('') || '<li class="idle"><span>No TA Yield refresh events recorded since this server started.</span></li>'; view.innerHTML = `<section class="staging-monitor" aria-labelledby="stagingMonitorTitle"><header class="staging-monitor-heading"><div><p class="section-kicker">Operations monitor</p><h2 id="stagingMonitorTitle">Staging pipeline control room</h2><p>Live freshness, coverage, and TA Yield refresh progress. Updated every 10 seconds while this tab is open.</p></div><div class="staging-live" role="status"><i></i>Live · checked ${escapeHtml(stagingTime(response.checkedAt))}</div></header><div class="staging-kpis">${counts.map(({ state, count }) => `<article class="${state}"><b>${count}</b><span>${state}</span></article>`).join('')}<article class="ta-run ${String(pipeline?.status || 'IDLE').toLowerCase()}"><b>${escapeHtml(pipeline?.status || 'IDLE')}</b><span>TA Yield pipeline</span></article></div><section class="staging-ta-run" aria-live="polite"><div><span class="staging-state ${String(pipeline?.status || 'idle').toLowerCase()}">${escapeHtml(pipeline?.status || 'IDLE')}</span><h3>TA Yield refresh</h3><p>${escapeHtml(pipeline?.stage || 'Waiting for the next scheduled refresh.')}</p></div><dl><div><dt>Started</dt><dd>${escapeHtml(stagingTime(pipeline?.startedAt))}</dd></div><div><dt>Completed</dt><dd>${escapeHtml(stagingTime(pipeline?.completedAt))}</dd></div></dl></section><div class="staging-pipeline-grid">${rows.map(rowCard).join('')}</div><section class="staging-log"><header><h3>TA Yield live activity</h3><span>Latest ${pipeline?.logs?.length || 0} events</span></header><ol>${logs}</ol></section></section>`; stagingMonitorTimer = setTimeout(() => { if (!view.hidden) renderStagingStatus().catch((error) => { view.querySelector('.staging-live').textContent = `Monitoring paused: ${error.message}`; }); }, 10000); }
 const renderStagingStatusBase = renderStagingStatus;
 renderStagingStatus = async function renderStagingStatusWithRetry() { try { return await renderStagingStatusBase(); } catch (error) { const view = ensureUtilityView('stagingStatusView'); clearTimeout(stagingMonitorTimer); stagingMonitorTimer = setTimeout(() => { if (!view.hidden) renderStagingStatus().catch(() => {}); }, 30000); throw error; } };
 function stagingPipelineBlueprint(name, source) { const shared = [{ label: 'MES source', detail: source || 'Source query', kind: 'source' }, { label: 'Lookup', detail: 'Part, series & process', kind: 'lookup' }, { label: 'Normalize', detail: 'Map to dashboard schema', kind: 'transform' }]; const flows = { 'Completion 901': [...shared, { label: 'Daily rollup', detail: 'Closed batch totals', kind: 'transform' }, { label: 'Stage table', detail: 'Dashboard901Daily', kind: 'destination' }, { label: 'Validate', detail: 'Date & row coverage', kind: 'validate' }], 'WIP daily quantity': [...shared, { label: 'Daily rollup', detail: 'Lot complete quantity', kind: 'transform' }, { label: 'Stage table', detail: 'DashboardWipDaily', kind: 'destination' }, { label: 'Validate', detail: 'Date & row coverage', kind: 'validate' }], 'WIP process chart': [...shared, { label: 'Process rollup', detail: 'Daily process totals', kind: 'transform' }, { label: 'Stage table', detail: 'DashboardWipProcessDaily', kind: 'destination' }, { label: 'Validate', detail: 'Date & row coverage', kind: 'validate' }], 'SC Yield': [...shared, { label: 'Yield mapping', detail: 'Input & defect rows', kind: 'transform' }, { label: 'Stage table', detail: 'DashboardScYieldInputDaily', kind: 'destination' }, { label: 'Validate', detail: 'Monthly snapshots', kind: 'validate' }], 'TA Yield DataTable': [...shared, { label: 'Workbook reconcile', detail: 'Final lots & yield fields', kind: 'transform' }, { label: 'Stage table', detail: 'DashboardTaYieldWorkbook', kind: 'destination' }, { label: 'Validate', detail: 'Workbook date coverage', kind: 'validate' }], 'TA Yield Machine events': [...shared, { label: 'Event join', detail: 'Machine & TA lot defects', kind: 'transform' }, { label: 'Stage table', detail: 'DashboardTaYieldMachineEventRow', kind: 'destination' }, { label: 'Validate', detail: 'Process event coverage', kind: 'validate' }], 'TA Yield Monthly summary': [...shared, { label: 'Monthly aggregate', detail: 'Yield & defect totals', kind: 'transform' }, { label: 'Stage table', detail: 'DashboardTaYieldMonthlySummary', kind: 'destination' }, { label: 'Validate', detail: 'Month coverage', kind: 'validate' }] }; return flows[name] || [...shared, { label: 'Stage table', detail: name, kind: 'destination' }, { label: 'Validate', detail: 'Freshness & coverage', kind: 'validate' }]; }
@@ -509,7 +632,7 @@ function setStagingMonitorTab(view, tab) { view.querySelectorAll('[data-staging-
 const renderStagingStatusWithTabs = renderStagingStatus;
 renderStagingStatus = async function renderStagingStatusWithPipelineMap() { await renderStagingStatusWithTabs(); const view = ensureUtilityView('stagingStatusView'); const monitor = view.querySelector('.staging-monitor'); if (!monitor || monitor.dataset.pipelineTabsReady) return; const status = await request('/api/staging-status'); const rows = status.data || status; const overview = monitor.outerHTML; monitor.dataset.pipelineTabsReady = 'true'; view.innerHTML = `<div class="staging-monitor-tabs" role="tablist" aria-label="Staging views"><button type="button" role="tab" aria-selected="true" class="active" data-staging-monitor-tab="overview">Overview</button><button type="button" role="tab" aria-selected="false" data-staging-monitor-tab="map">Pipeline map</button></div><div data-staging-monitor-panel="overview">${overview}</div><div data-staging-monitor-panel="map" hidden>${renderStagingPipelineMap(rows)}</div>`; };
 document.addEventListener('click', (event) => { const tab = event.target.closest('[data-staging-monitor-tab]'); if (tab) setStagingMonitorTab(ensureUtilityView('stagingStatusView'), tab.dataset.stagingMonitorTab); });
-function showView(view) { saveDashboardNavigation(view); const parameters = view === 'parameters'; const comments = view === 'comments'; const model = view === 'model'; const defects = view === 'defects'; const staging = view === 'staging'; const dataTable = view === 'ta-data-table'; const taMachine = view === 'ta-yield-machine'; const scCalculationLog = view === 'sc-yield-log'; const taCalculationLog = view === 'ta-yield-log'; const calculationLog = scCalculationLog || taCalculationLog; const scYieldParameters = parameters && currentConfig.dataset === 'yield'; const scLogView = ensureScYieldLogView(); const taLogView = ensureTaYieldLogView(); const machineView = ensureTaYieldMachineView(); const defectView = ensureUtilityView('defectSettingsView'); const stagingView = ensureUtilityView('stagingStatusView'); const dataTableView = byId('taDataTableView'); byId('dashboardView').hidden = parameters || comments || model || calculationLog || defects || staging || dataTable || taMachine; dataTableView.hidden = !dataTable; machineView.hidden = !taMachine; byId('parameterView').hidden = !parameters || scYieldParameters; byId('scYieldParameterView').hidden = !scYieldParameters; scLogView.hidden = !scCalculationLog; taLogView.hidden = !taCalculationLog; defectView.hidden = !defects; stagingView.hidden = !staging; byId('commentView').hidden = !comments; byId('dataModelView').hidden = !model; document.querySelectorAll('.app-tab').forEach((button) => { const active = button.dataset.view === view; button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active)); }); if (taMachine) renderTaYieldMachineView(); if (dataTable) ensureTaWorkbookVerificationView().loadRows().catch((error) => { byId('taWorkbookRows').innerHTML = `<tr><td colspan="6">${escapeHtml(error.message)}</td></tr>`; }); if (defects) renderDefectSettings().catch((error) => { defectView.textContent = error.message; }); if (staging) renderStagingStatus().catch((error) => { stagingView.textContent = error.message; }); if (parameters) { if (scYieldParameters) renderScYieldTargetParameters(latestScYieldData).catch((error) => { byId('scYieldTargetStatus').className = 'parameter-status'; byId('scYieldTargetStatus').textContent = error.message; }); else if (currentConfig.dataset === 'ta-yield') renderTaYieldTargetParameters().catch((error) => setStatus(error.message)); else { if (!byId('parameterProduct').value && byId('product').value) byId('parameterProduct').value = byId('product').value; loadParameterSeries(); renderSavedParameters(); } } if (scCalculationLog) renderScYieldCalculationLog(); if (taCalculationLog) renderTaYieldCalculationLog(); if (comments) loadCommentLog(); if (model) renderDataModel(currentConfig.dataModels); }
+function showView(view) { saveDashboardNavigation(view); const parameters = view === 'parameters'; const comments = view === 'comments'; const model = view === 'model'; const defects = view === 'defects'; const staging = view === 'staging'; const dataTable = view === 'ta-data-table'; const taMachine = view === 'ta-yield-machine'; const scCalculationLog = view === 'sc-yield-log'; const taCalculationLog = view === 'ta-yield-log'; const calculationLog = scCalculationLog || taCalculationLog; const scYieldParameters = parameters && currentConfig.dataset === 'yield'; const scLogView = ensureScYieldLogView(); const taLogView = ensureTaYieldLogView(); const machineView = ensureTaYieldMachineView(); const defectView = ensureUtilityView('defectSettingsView'); const stagingView = ensureUtilityView('stagingStatusView'); const dataTableView = byId('taDataTableView'); byId('dashboardView').hidden = parameters || comments || model || calculationLog || defects || staging || dataTable || taMachine; dataTableView.hidden = !dataTable; machineView.hidden = !taMachine; byId('parameterView').hidden = !parameters || scYieldParameters; byId('scYieldParameterView').hidden = !scYieldParameters; scLogView.hidden = !scCalculationLog; taLogView.hidden = !taCalculationLog; defectView.hidden = !defects; stagingView.hidden = !staging; const modeSettings = byId('dashboardDataModeSettings'); if (modeSettings) modeSettings.hidden = !staging; byId('commentView').hidden = !comments; byId('dataModelView').hidden = !model; document.querySelectorAll('.app-tab').forEach((button) => { const active = button.dataset.view === view; button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active)); }); if (taMachine) renderTaYieldMachineView(); if (dataTable) ensureTaWorkbookVerificationView().loadRows().catch((error) => { byId('taWorkbookRows').innerHTML = `<tr><td colspan="6">${escapeHtml(error.message)}</td></tr>`; }); if (defects) renderDefectSettings().catch((error) => { defectView.textContent = error.message; }); if (staging) renderStagingStatus().catch((error) => { stagingView.textContent = error.message; }); if (parameters) { if (scYieldParameters) renderScYieldTargetParameters(latestScYieldData).catch((error) => { byId('scYieldTargetStatus').className = 'parameter-status'; byId('scYieldTargetStatus').textContent = error.message; }); else if (currentConfig.dataset === 'ta-yield') renderTaYieldTargetParameters().catch((error) => setStatus(error.message)); else { if (!byId('parameterProduct').value && byId('product').value) byId('parameterProduct').value = byId('product').value; loadParameterSeries(); renderSavedParameters(); } } if (scCalculationLog) renderScYieldCalculationLog(); if (taCalculationLog) renderTaYieldCalculationLog(); if (comments) loadCommentLog(); if (model) renderDataModel(currentConfig.dataModels); }
 
 function populateOptions(options, selected = {}) {
   const placeholders = { process: 'All processes', serie: 'All series', case: 'All cases' };
@@ -1060,13 +1183,6 @@ function renderScYieldTendencyCharts(rows = latestScYieldTendencyData, focusTarg
   bindTaYieldTrendTooltips(holder);
 }
 
-async function refreshDatabaseAuthentication() {
-  setStatus('Microsoft Entra sign-in is required. Complete the browser sign-in to continue.', true);
-  const response = await fetch(`/api/auth/login?dataset=${selectedDataset()}`);
-  const payload = await readApiPayload(response, '/api/auth/login');
-  if (!response.ok || !payload.success) throw new Error(payload.error || 'Microsoft Entra sign-in failed.');
-}
-
 async function readApiPayload(response, url) {
   const responseText = await response.text();
   try { return JSON.parse(responseText); } catch { throw new Error(`The dashboard server returned a non-JSON response for ${url}. Restart the dashboard server and refresh the browser.`); }
@@ -1190,11 +1306,13 @@ function renderTaYieldTendencyCharts(rows = latestTaYieldTendencyData, groupRows
   const dailyColumnCount = taYieldInterval === 'day' ? Math.max(31, buckets.length) : buckets.length;
   const width = Math.max(taYieldInterval === 'day' ? 760 : 860, dailyColumnCount * (taYieldInterval === 'day' ? 50 : 86) + 116); const height = 250; const left = 54; const right = 54; const top = 30; const bottom = 48; const base = height - bottom; const plotHeight = base - top; const slot = (width - left - right) / buckets.length; const label = (value) => taYieldInterval === 'day' ? value.slice(5) : taYieldInterval === 'week' ? value.slice(-3) : value.slice(5);
   const taYieldDayChartViewportStyle = taYieldInterval === 'day' ? ` style="width:min(100%, ${31 * 50 + 116}px)"` : '';
+  const taYieldFitsPanel = taYieldInterval !== 'day' && buckets.length <= 12;
+  const taYieldTrendChartClass = `sc-yield-chart-scroll${taYieldFitsPanel ? ' ta-yield-fit-panel' : ''}`;
   const taYieldChartSvgStyle = ` style="width:clamp(${width}px, 100%, 1280px); min-width:${width}px; max-width:none; margin-inline:auto"`;
   const targetsByBucket = new Map(buckets.map((row) => { if (isTotalTrendScope) return [row.month, taYieldTargetFor('Total', row.month)]; return [row.month, taYieldTrendSeries.length === 1 ? taYieldTargetFor(taYieldTrendSeries[0], row.month) : undefined]; }));
   const multiSeriesColumnChart = !isTotalTrendScope && taYieldTrendSeries.length > 1;
   const selectedSeriesMetrics = multiSeriesColumnChart ? taYieldTrendSeries.map((serie, seriesIndex) => ({ serie, label: shortTaSeries(serie), color: chartColors[seriesIndex % chartColors.length], values: buckets.map((bucket) => { const matches = trendRows.filter((row) => row.line === serie && row.month === bucket.month); const input = matches.reduce((total, row) => total + Number(row.input || 0), 0); const defectGroups = matches.reduce((result, row) => (row.groups || []).reduce((next, group) => ({ ...next, [group.group]: (next[group.group] || 0) + Number(group.quantity || 0) }), result), {}); return { input, groups: defectGroups, yield: input ? matches.reduce((total, row) => total + Number(row.finalGood || 0), 0) / input * 100 : undefined, target: taYieldTargetFor(serie, bucket.month) }; }) })) : [];
-  const valuesForScale = [...buckets.map((row) => row.yield), ...targetsByBucket.values(), ...selectedSeriesMetrics.flatMap((series) => series.values.flatMap((point) => [point.yield, point.target]))].filter(Number.isFinite); let minimum = Math.max(0, Math.floor((Math.min(...valuesForScale) - .5) * 2) / 2); let maximum = Math.min(100, Math.ceil((Math.max(...valuesForScale) + .5) * 2) / 2); if (maximum - minimum < 1) { minimum = Math.max(0, minimum - .5); maximum = Math.min(100, maximum + .5); }
+  const valuesForScale = [...buckets.map((row) => row.yield), ...targetsByBucket.values(), ...selectedSeriesMetrics.flatMap((series) => series.values.flatMap((point) => [point.yield, point.target]))].filter(Number.isFinite); const multiSeriesColumnGap = 9; const multiSeriesClusterWidth = Math.min(slot * .82, 84); let minimum = Math.max(0, Math.floor((Math.min(...valuesForScale) - .5) * 2) / 2); let maximum = Math.min(100, Math.ceil((Math.max(...valuesForScale) + .5) * 2) / 2); if (maximum - minimum < 1) { minimum = Math.max(0, minimum - .5); maximum = Math.min(100, maximum + .5); }
   const yieldY = (value) => base - (value - minimum) / (maximum - minimum) * plotHeight; const x = (index) => left + index * slot + slot / 2;
   const yieldGrid = [0, .5, 1].map((ratio) => { const y = base - plotHeight * ratio; return `<line class="gridline" x1="${left}" y1="${y}" x2="${width - right}" y2="${y}"/><text class="axis" x="${left - 8}" y="${y + 4}" text-anchor="end">${(minimum + (maximum - minimum) * ratio).toFixed(1)}%</text>`; }).join('');
   const targetPoints = taYieldTargetSegments(buckets.map((row) => targetsByBucket.get(row.month)), x, yieldY).map((points) => `<polyline class="target-line" points="${points}"/>`).join(''); const targetDots = buckets.map((row, index) => Number.isFinite(targetsByBucket.get(row.month)) ? `<circle class="target-point" cx="${x(index)}" cy="${yieldY(targetsByBucket.get(row.month))}" r="3"><title>${escapeHtml(row.month)}: target ${targetsByBucket.get(row.month).toFixed(2)}%</title></circle>` : '').join(''); const labels = buckets.map((row, index) => `<text class="axis" x="${x(index)}" y="${base + 22}" text-anchor="middle">${escapeHtml(label(row.month))}</text>`).join('');
@@ -1203,25 +1321,26 @@ function renderTaYieldTendencyCharts(rows = latestTaYieldTendencyData, groupRows
     const widthValue = Math.min(48, slot * .62); const heightValue = base - yieldY(row.yield); const target = targetsByBucket.get(row.month); const belowTarget = Number.isFinite(target) && row.yield < target;
     return `<rect class="yield-column${belowTarget ? ' below-target' : ''}" x="${x(index) - widthValue / 2}" y="${yieldY(row.yield)}" width="${widthValue}" height="${heightValue}"><title>${escapeHtml(row.month)}: yield ${row.yield.toFixed(2)}%${Number.isFinite(target) ? `; target ${target.toFixed(2)}%` : '; no saved target'}</title></rect><text class="ta-yield-column-value" x="${x(index)}" y="${Math.max(top + 12, yieldY(row.yield) - 7)}" text-anchor="middle">${row.yield.toFixed(2)}%</text>`;
   }).join('');
-  const multiSeriesYieldColumns = selectedSeriesMetrics.map((series, seriesIndex) => buckets.map((bucket, bucketIndex) => { const point = series.values[bucketIndex]; if (!Number.isFinite(point.yield)) return ''; const clusterWidth = Math.min(slot * .82, 56); const widthValue = Math.max(5, Math.min(18, clusterWidth / selectedSeriesMetrics.length - 3)); const columnX = x(bucketIndex) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length; const belowTarget = Number.isFinite(point.target) && point.yield < point.target; const color = belowTarget ? '#c9443d' : series.color; return `<rect class="yield-column ta-yield-series-column${belowTarget ? ' below-target' : ''}" style="fill:${color};stroke:${color}" x="${columnX - widthValue / 2}" y="${yieldY(point.yield)}" width="${widthValue}" height="${base - yieldY(point.yield)}"><title>${escapeHtml(bucket.month)} | ${escapeHtml(series.label)}: yield ${point.yield.toFixed(2)}%${Number.isFinite(point.target) ? `; target ${point.target.toFixed(2)}%` : '; no saved target'}</title></rect><text class="ta-yield-column-value" x="${columnX}" y="${Math.max(top + 12, yieldY(point.yield) - 7)}" text-anchor="middle">${point.yield.toFixed(2)}%</text>`; }).join('')).join('');
-  const multiSeriesTargets = selectedSeriesMetrics.map((series, seriesIndex) => { const clusterWidth = Math.min(slot * .82, 56); const points = taYieldTargetSegments(series.values.map((point) => point.target), (index) => x(index) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length, yieldY).map((segment) => `<polyline class="target-line ta-yield-series-target" style="stroke:${series.color}" points="${segment}"/>`).join(''); const dots = series.values.map((point, bucketIndex) => { if (!Number.isFinite(point.target)) return ''; const pointX = x(bucketIndex) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length; return `<circle class="target-point" style="fill:${series.color}" cx="${pointX}" cy="${yieldY(point.target)}" r="3"><title>${escapeHtml(buckets[bucketIndex].month)} | ${escapeHtml(series.label)}: target ${point.target.toFixed(2)}%</title></circle>`; }).join(''); return `${points}${dots}`; }).join('');
+  const multiSeriesColumnLabels = multiSeriesColumnChart && taYieldInterval !== 'day' ? selectedSeriesMetrics.map((series, seriesIndex) => series.values.map((point, bucketIndex) => { if (!Number.isFinite(point.yield)) return ''; const columnX = x(bucketIndex) - multiSeriesClusterWidth / 2 + (seriesIndex + .5) * multiSeriesClusterWidth / selectedSeriesMetrics.length; const seriesLabel = series.label.replace(/^.*\s/, ''); const labelStart = columnX - (seriesLabel.length * 4.5 + 11) / 2; return `<circle class="ta-yield-series-label-swatch" cx="${labelStart + 3}" cy="${base + 39}" r="3" fill="${series.color}"/><text class="axis ta-yield-series-column-label" x="${labelStart + 9}" y="${base + 42}" text-anchor="start">${escapeHtml(seriesLabel)}</text>`; }).join('')).join('') : '';
+  const multiSeriesYieldColumns = selectedSeriesMetrics.map((series, seriesIndex) => buckets.map((bucket, bucketIndex) => { const point = series.values[bucketIndex]; if (!Number.isFinite(point.yield)) return ''; const clusterWidth = multiSeriesClusterWidth; const widthValue = Math.max(4, Math.min(18, clusterWidth / selectedSeriesMetrics.length - multiSeriesColumnGap)); const columnX = x(bucketIndex) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length; const belowTarget = Number.isFinite(point.target) && point.yield < point.target; return `<rect class="yield-column ta-yield-series-column${belowTarget ? ' below-target' : ''}" style="fill:${series.color};stroke:${belowTarget ? '#c9443d' : series.color};stroke-width:${belowTarget ? 2.5 : 1}" x="${columnX - widthValue / 2}" y="${yieldY(point.yield)}" width="${widthValue}" height="${base - yieldY(point.yield)}"><title>${escapeHtml(bucket.month)} | ${escapeHtml(series.label)}: yield ${point.yield.toFixed(2)}%${Number.isFinite(point.target) ? `; target ${point.target.toFixed(2)}%` : '; no saved target'}</title></rect><text class="ta-yield-column-value" x="${columnX}" y="${Math.max(top + 12, yieldY(point.yield) - 7)}" text-anchor="middle">${point.yield.toFixed(2)}%</text>`; }).join('')).join('');
+  const multiSeriesTargets = selectedSeriesMetrics.map((series, seriesIndex) => { const clusterWidth = Math.min(slot * .82, 84); const points = taYieldTargetSegments(series.values.map((point) => point.target), (index) => x(index) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length, yieldY).map((segment) => `<polyline class="target-line ta-yield-series-target" style="stroke:${series.color}" points="${segment}"/>`).join(''); const dots = series.values.map((point, bucketIndex) => { if (!Number.isFinite(point.target)) return ''; const pointX = x(bucketIndex) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length; return `<circle class="target-point" style="fill:${series.color}" cx="${pointX}" cy="${yieldY(point.target)}" r="3"><title>${escapeHtml(buckets[bucketIndex].month)} | ${escapeHtml(series.label)}: target ${point.target.toFixed(2)}%</title></circle>`; }).join(''); return `${points}${dots}`; }).join('');
   const yieldVisual = multiSeriesColumnChart ? multiSeriesYieldColumns : yieldColumns;
   const targetVisual = multiSeriesColumnChart ? multiSeriesTargets : `${targetPoints}${targetDots}`;
-  const yieldLegend = multiSeriesColumnChart ? selectedSeriesMetrics.map((series) => `<span><i style="background:${series.color}"></i>${escapeHtml(series.label)} yield</span>`).join('') : '<span><i class="yield-column-key"></i>Yield column</span>';
+  const yieldLegend = multiSeriesColumnChart ? `<strong>Series</strong>${selectedSeriesMetrics.map((series) => `<span><i style="background:${series.color}"></i>${escapeHtml(series.label)} yield</span>`).join('')}` : '<span><i class="yield-column-key"></i>Yield column</span>';
   const targetLegend = multiSeriesColumnChart ? selectedSeriesMetrics.filter((series) => series.values.some((point) => Number.isFinite(point.target))).map((series) => `<span><i class="target-line-key" style="background:${series.color}"></i>${escapeHtml(series.label)} target</span>`).join('') : targetPoints ? '<span><i class="target-line-key"></i>Target</span>' : '';
-  byId('taYieldYieldChart').innerHTML = `<div class="sc-yield-legend">${yieldLegend}${targetLegend}</div><div class="sc-yield-chart-scroll"${taYieldDayChartViewportStyle}><svg${taYieldChartSvgStyle} viewBox="0 0 ${width} ${height}" role="img" aria-label="TA ${escapeHtml(taYieldTrendSeriesScope(taYieldTrendSeries).toLowerCase())} yield by ${taYieldInterval}"><text class="axis axis-title" x="${left}" y="18">%Yield</text>${yieldGrid}<line x1="${left}" y1="${base}" x2="${width - right}" y2="${base}" stroke="#b8c7bf"/>${yieldVisual}${targetVisual}${labels}</svg></div>`;
+  byId('taYieldYieldChart').innerHTML = `<div class="sc-yield-legend">${yieldLegend}${targetLegend}</div><div class="${taYieldTrendChartClass}"${taYieldDayChartViewportStyle}><svg${taYieldChartSvgStyle} viewBox="0 0 ${width} ${height}" role="img" aria-label="TA ${escapeHtml(taYieldTrendSeriesScope(taYieldTrendSeries).toLowerCase())} yield by ${taYieldInterval}"><text class="axis axis-title" x="${left}" y="18">%Yield</text>${yieldGrid}<line x1="${left}" y1="${base}" x2="${width - right}" y2="${base}" stroke="#b8c7bf"/>${yieldVisual}${targetVisual}${labels}${multiSeriesColumnLabels}</svg></div>`;
   if (taYieldTrendChartType === 'multi-line') renderTaYieldMultiSeriesChart(trendRows, buckets, targetsByBucket, label, isTotalTrendScope || taYieldTrendSeries.length > 1, `${isTotalTrendScope ? 'Total' : taYieldTrendSeries.length === 1 ? shortTaSeries(taYieldTrendSeries[0]) : 'Combined'} Target`, isTotalTrendScope ? 'Total Yield' : 'Combined Yield');
   const displayedDefectRates = buckets.map((row) => groups.reduce((total, group) => total + Math.max(0, row.input ? (row.groups[group] || 0) / row.input * 100 : 0), 0)); const multiSeriesDefectRates = selectedSeriesMetrics.flatMap((series) => series.values.map((point) => groups.reduce((total, group) => total + Math.max(0, point.input ? (point.groups[group] || 0) / point.input * 100 : 0), 0))); const defectMaximum = Math.max(1, Math.ceil(Math.max(...(multiSeriesColumnChart ? multiSeriesDefectRates : displayedDefectRates)) * 10) / 10); const defectGrid = [0, .5, 1].map((ratio) => { const y = base - plotHeight * ratio; return `<line class="gridline" x1="${left}" y1="${y}" x2="${width - right}" y2="${y}"/><text class="axis" x="${left - 8}" y="${y + 4}" text-anchor="end">${(defectMaximum * ratio).toFixed(1)}%</text>`; }).join('');
   const bars = buckets.map((row, index) => { const barWidth = Math.min(48, slot * .62); const barX = x(index) - barWidth / 2; let stacked = 0; return groups.map((group, groupIndex) => { const signedRate = row.input ? (row.groups[group] || 0) / row.input * 100 : 0; const rate = Math.max(0, signedRate); const barHeight = rate / defectMaximum * plotHeight; const y = base - stacked - barHeight; stacked += barHeight; return rate ? `<rect x="${barX}" y="${y}" width="${barWidth}" height="${barHeight}" fill="${chartColors[groupIndex % chartColors.length]}"><title>${escapeHtml(row.month)} | ${escapeHtml(group)}: ${signedRate.toFixed(3)}%</title></rect>` : ''; }).join(''); }).join('');
-  const multiSeriesDefectBars = multiSeriesColumnChart ? selectedSeriesMetrics.map((series, seriesIndex) => series.values.map((point, bucketIndex) => { if (!point.input) return ''; const clusterWidth = Math.min(slot * .82, 56); const barWidth = Math.max(5, Math.min(18, clusterWidth / selectedSeriesMetrics.length - 3)); const barX = x(bucketIndex) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length - barWidth / 2; let stacked = 0; const segments = groups.map((group, groupIndex) => { const signedRate = (point.groups[group] || 0) / point.input * 100; const rate = Math.max(0, signedRate); const barHeight = rate / defectMaximum * plotHeight; const y = base - stacked - barHeight; stacked += barHeight; return rate ? `<rect x="${barX}" y="${y}" width="${barWidth}" height="${barHeight}" fill="${chartColors[groupIndex % chartColors.length]}"><title>${escapeHtml(buckets[bucketIndex].month)} | ${escapeHtml(series.label)} | ${escapeHtml(group)}: ${signedRate.toFixed(3)}%</title></rect>` : ''; }).join(''); const total = groups.reduce((sum, group) => sum + Math.max(0, (point.groups[group] || 0) / point.input * 100), 0); const center = barX + barWidth / 2; return `${segments}${total ? `<text class="ta-yield-column-value" x="${center}" y="${Math.max(top + 12, base - total / defectMaximum * plotHeight - 7)}" text-anchor="middle">${total.toFixed(2)}%</text>` : ''}`; }).join('')).join('') : '';
+  const multiSeriesDefectBars = multiSeriesColumnChart ? selectedSeriesMetrics.map((series, seriesIndex) => series.values.map((point, bucketIndex) => { if (!point.input) return ''; const clusterWidth = multiSeriesClusterWidth; const barWidth = Math.max(4, Math.min(18, clusterWidth / selectedSeriesMetrics.length - multiSeriesColumnGap)); const barX = x(bucketIndex) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length - barWidth / 2; let stacked = 0; const segments = groups.map((group, groupIndex) => { const signedRate = (point.groups[group] || 0) / point.input * 100; const rate = Math.max(0, signedRate); const barHeight = rate / defectMaximum * plotHeight; const y = base - stacked - barHeight; stacked += barHeight; return rate ? `<rect x="${barX}" y="${y}" width="${barWidth}" height="${barHeight}" fill="${chartColors[groupIndex % chartColors.length]}"><title>${escapeHtml(buckets[bucketIndex].month)} | ${escapeHtml(series.label)} | ${escapeHtml(group)}: ${signedRate.toFixed(3)}%</title></rect>` : ''; }).join(''); const total = groups.reduce((sum, group) => sum + Math.max(0, (point.groups[group] || 0) / point.input * 100), 0); const center = barX + barWidth / 2; return `${segments}${total ? `<text class="ta-yield-column-value" x="${center}" y="${Math.max(top + 12, base - total / defectMaximum * plotHeight - 7)}" text-anchor="middle">${total.toFixed(2)}%</text>` : ''}`; }).join('')).join('') : '';
   const legend = groups.map((group, index) => `<span><i style="background:${chartColors[index % chartColors.length]}"></i>${escapeHtml(group)}</span>`).join('');
   const defectTotalLabels = displayedDefectRates.map((rate, index) => {
     return rate ? `<text class="ta-yield-column-value" x="${x(index)}" y="${Math.max(top + 12, base - rate / defectMaximum * plotHeight - 7)}" text-anchor="middle">${rate.toFixed(2)}%</text>` : '';
   }).join('');
   const defectVisual = multiSeriesColumnChart ? multiSeriesDefectBars : bars;
-  const defectLabels = multiSeriesColumnChart ? labels : `${defectTotalLabels}${labels}`;
+  const defectLabels = multiSeriesColumnChart ? `${labels}${multiSeriesColumnLabels}` : `${defectTotalLabels}${labels}`;
   const defectSeriesLegend = multiSeriesColumnChart ? `<span class="ta-yield-defect-series-note">Columns left to right: ${escapeHtml(selectedSeriesMetrics.map((series) => series.label).join(' · '))}</span>` : '';
-  byId('taYieldDefectChart').innerHTML = `<div class="sc-yield-legend"><strong>Mode group</strong>${legend}${defectSeriesLegend}</div><div class="sc-yield-chart-scroll"${taYieldDayChartViewportStyle}><svg${taYieldChartSvgStyle} viewBox="0 0 ${width} ${height}" role="img" aria-label="TA defect rate by ${taYieldInterval}"><text class="axis axis-title" x="${left}" y="18">%Defect</text>${defectGrid}<line x1="${left}" y1="${base}" x2="${width - right}" y2="${base}" stroke="#b8c7bf"/>${defectVisual}${defectLabels}</svg></div>`;
+  byId('taYieldDefectChart').innerHTML = `<div class="sc-yield-legend"><strong>Mode group</strong>${legend}${defectSeriesLegend}</div><div class="${taYieldTrendChartClass}"${taYieldDayChartViewportStyle}><svg${taYieldChartSvgStyle} viewBox="0 0 ${width} ${height}" role="img" aria-label="TA defect rate by ${taYieldInterval}"><text class="axis axis-title" x="${left}" y="18">%Defect</text>${defectGrid}<line x1="${left}" y1="${base}" x2="${width - right}" y2="${base}" stroke="#b8c7bf"/>${defectVisual}${defectLabels}</svg></div>`;
   holder.querySelectorAll('.ta-yield-tendency-panel').forEach((panel) => panel.insertAdjacentHTML('beforeend', '<div class="ta-yield-trend-tooltip" role="status" hidden></div>'));
   bindTaYieldTrendTooltips(holder);
   requestAnimationFrame(scrollTaYieldTendencyToLatest);
@@ -1263,7 +1382,7 @@ function ensureTaWorkbookVerificationView() {
   holder.loadRows = load;
   if (!holder.dataset.dateControlsBound) { holder.dataset.dateControlsBound = 'true'; holder.querySelector('.ta-yield-lot-filter').insertAdjacentHTML('beforebegin', '<div class="ta-yield-lot-filter"><label>Start date<input id="taWorkbookStartDate" type="date" /></label><label>End date<input id="taWorkbookEndDate" type="date" /></label><button id="taWorkbookApply" type="button">Apply DataTable</button><span id="taWorkbookDateStatus" role="status"></span></div>'); byId('taWorkbookStartDate').value = byId('startDate').value; byId('taWorkbookEndDate').value = byId('endDate').value; byId('taWorkbookApply').addEventListener('click', async () => { const button = byId('taWorkbookApply'); const status = byId('taWorkbookDateStatus'); button.disabled = true; button.textContent = 'Loading…'; status.textContent = ''; taWorkbookVisibleRows = 50; try { await load(); } catch (error) { status.textContent = error.message; } finally { button.disabled = false; button.textContent = 'Apply DataTable'; } }); }
   if (!holder.dataset.filtersBound) { holder.dataset.filtersBound = 'true'; byId('taWorkbookLine').addEventListener('change', render); byId('taWorkbookCategory').addEventListener('change', render); byId('taWorkbookSearch').addEventListener('input', render); }
-  if (!holder.dataset.exportBound) { holder.dataset.exportBound = 'true'; byId('exportTaWorkbook').addEventListener('click', async () => { const button = byId('exportTaWorkbook'); const startDate = byId('taWorkbookStartDate').value; const endDate = byId('taWorkbookEndDate').value; if (!startDate || !endDate || startDate > endDate) { byId('taWorkbookDateStatus').textContent = 'Choose a valid DataTable date range before exporting.'; return; } button.disabled = true; button.textContent = 'Exporting…'; try { const params = new URLSearchParams({ dataset: 'ta-yield', startDate, endDate }); const response = await fetch(`/api/export/ta-yield-datatable?${params}`); if (!response.ok) { const payload = await response.json().catch(() => ({})); throw new Error(payload.error || 'TA Yield DataTable export could not be created.'); } const blob = await response.blob(); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `ta-yield-datatable-${startDate}-to-${endDate}.xlsx`; document.body.append(link); link.click(); link.remove(); URL.revokeObjectURL(link.href); byId('taWorkbookDateStatus').textContent = ''; } catch (error) { byId('taWorkbookDateStatus').textContent = error.message; } finally { button.disabled = false; button.textContent = 'Export Excel'; } }); }
+  if (!holder.dataset.exportBound) { holder.dataset.exportBound = 'true'; byId('exportTaWorkbook').addEventListener('click', async () => { const button = byId('exportTaWorkbook'); const startDate = byId('taWorkbookStartDate').value; const endDate = byId('taWorkbookEndDate').value; if (!startDate || !endDate || startDate > endDate) { byId('taWorkbookDateStatus').textContent = 'Choose a valid DataTable date range before exporting.'; return; } button.disabled = true; button.textContent = 'Exporting…'; try { const params = new URLSearchParams({ dataset: 'ta-yield', startDate, endDate }); const response = await fetchDashboardExport(`/api/export/ta-yield-datatable?${params}`); if (!response.ok) { const payload = await response.json().catch(() => ({})); throw new Error(payload.error || 'TA Yield DataTable export could not be created.'); } const blob = await response.blob(); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `ta-yield-datatable-${startDate}-to-${endDate}.xlsx`; document.body.append(link); link.click(); link.remove(); URL.revokeObjectURL(link.href); byId('taWorkbookDateStatus').textContent = ''; } catch (error) { byId('taWorkbookDateStatus').textContent = error.message; } finally { button.disabled = false; button.textContent = 'Export Excel'; } }); }
   const applyWorkbookLimit = () => { const header = holder.querySelector('thead tr'); if (header && ![...header.cells].some((cell) => cell.textContent.trim() === 'ACC')) { const cell = document.createElement('th'); cell.textContent = 'ACC'; header.insertBefore(cell, header.cells[4]); [...byId('taWorkbookRows').querySelectorAll('tr')].forEach((row) => row.insertBefore(document.createElement('td'), row.cells[4])); } const rows = [...byId('taWorkbookRows').querySelectorAll('tr')]; rows.forEach((row, index) => { row.hidden = index >= taWorkbookVisibleRows; }); const loadMore = byId('taWorkbookLoadMore'); loadMore.hidden = rows.length <= taWorkbookVisibleRows; loadMore.textContent = `Load 50 more (${Math.max(rows.length - taWorkbookVisibleRows, 0)} remaining)`; };
   if (!byId('taWorkbookLoadMore')) { const loadMore = document.createElement('button'); loadMore.id = 'taWorkbookLoadMore'; loadMore.type = 'button'; holder.append(loadMore); loadMore.addEventListener('click', () => { taWorkbookVisibleRows += 50; applyWorkbookLimit(); }); }
   if (!holder.dataset.tableBound) { holder.dataset.tableBound = 'true'; new MutationObserver(applyWorkbookLimit).observe(byId('taWorkbookRows'), { childList: true }); holder.addEventListener('click', (event) => { if (!event.target.closest('.ta-workbook-date-sort')) return; taWorkbookDateDirection = taWorkbookDateDirection === 'asc' ? 'desc' : 'asc'; const rows = [...byId('taWorkbookRows').querySelectorAll('tr')].sort((left, right) => { const comparison = left.cells[3].textContent.localeCompare(right.cells[3].textContent); return taWorkbookDateDirection === 'asc' ? comparison : -comparison; }); byId('taWorkbookRows').append(...rows); const header = holder.querySelector('th:nth-child(4)'); header?.setAttribute('aria-sort', taWorkbookDateDirection === 'asc' ? 'ascending' : 'descending'); const button = header?.querySelector('.ta-workbook-date-sort'); if (button) button.setAttribute('aria-label', `Sort Taping Date ${taWorkbookDateDirection === 'asc' ? 'ascending' : 'descending'}; activate to reverse`); applyWorkbookLimit(); }); }
@@ -1425,27 +1544,339 @@ function renderTaYieldWeeklyChart(rows = latestTaYieldWeeklyData) {
   renderTaYieldWeeklyChartsBase(rows);
 }
 
+// Global dashboard data mode. Keep control reads outside request() to avoid recursion.
+let dashboardDataMode;
+let dashboardDataModeUnavailable = false;
+let dashboardDataModeCheck;
+let dashboardDataModeGeneration = 0;
+let dashboardDataModeReloadTimer;
+let dashboardDataModeSubmitting = false;
+let dashboardDataModeAutofilling = false;
+let dashboardDataModeAutofillGeneration = 0;
+let dashboardDataModeLocalToken;
+let dashboardDataModeTokenTimer;
+const isDashboardSourceRequest = (url) => /^\/api\/(?:config|options|part-numbers|quantity|mtd-quantity|chart|wip-flow|yield|operation-transitions|defect-settings|dispositions|series-diagnostics|sc-yield(?:-weekly|-tendency)?|ta-yield(?:-lots|-weekly|-tendency|-datatable|-workbook-reconciliation|-machine[^?/]*)?|export\/[^?]+)(?:\?|$)/.test(url);
+
+function dashboardStagingPaused() {
+  return Boolean(dashboardDataMode?.transitioning || dashboardDataMode?.mode === 'live');
+}
+function renderDashboardSourceIndicator() {
+  const indicator = byId('dashboardSourceIndicator');
+  if (!indicator) return;
+  const state = dashboardDataMode;
+  const modeName = (mode) => mode === 'live' ? 'Live MES' : 'Staging';
+  let mode = 'checking';
+  let label = 'Checking source…';
+  let description = "Confirming the server's current data mode.";
+  if (dashboardDataModeUnavailable) {
+    mode = 'unavailable';
+    label = 'Source unavailable';
+    description = state ? `Last confirmed: ${modeName(state.mode)}. Retrying automatically.` : 'Unable to confirm the data mode. Retrying automatically.';
+  } else if (state?.transitioning) {
+    mode = 'switching';
+    label = `Switching to ${modeName(state.requestedMode)}…`;
+    description = `Current mode: ${modeName(state.mode)}. Waiting for current work to finish.`;
+  } else if (state) {
+    mode = state.mode;
+    label = modeName(state.mode);
+    description = state.mode === 'live' ? 'Queries MES on Apply. Background staging is paused.' : 'Saved staging data. Updated by scheduled refreshes.';
+  }
+  indicator.dataset.mode = mode;
+  indicator.title = description;
+  // Avoid announcing unchanged mode text on every background check.
+  const labelElement = byId('dashboardSourceLabel');
+  const descriptionElement = byId('dashboardSourceDescription');
+  if (labelElement.textContent !== label) labelElement.textContent = label;
+  if (descriptionElement.textContent !== description) descriptionElement.textContent = description;
+}
+function renderDashboardDataMode() {
+  renderDashboardSourceIndicator();
+  const status = byId('dashboardDataModeStatus');
+  if (!status || !dashboardDataMode) return;
+  const state = dashboardDataMode;
+  status.textContent = state.transitioning ? `Switching to ${state.requestedMode === 'live' ? 'Live MES' : 'Staging'}...` : state.mode === 'live' ? 'Live MES active' : 'Staging active';
+  status.dataset.mode = state.transitioning ? 'switching' : state.mode;
+  document.querySelectorAll('[data-dashboard-mode-card]').forEach((card) => {
+    const active = card.dataset.dashboardModeCard === state.mode;
+    card.dataset.active = String(active);
+    card.querySelector('[data-mode-active-label]').hidden = !active;
+  });
+  byId('dashboardDataModeOpen').disabled = state.transitioning;
+  const busy = dashboardDataModeSubmitting || dashboardDataModeAutofilling || state.transitioning;
+  const localTokenValid = dashboardDataModeLocalToken && dashboardDataModeLocalToken.expiresAt > Date.now() && byId('dashboardDataModeToken').value === dashboardDataModeLocalToken.value;
+  byId('dashboardDataModeApply').disabled = busy || !(state.controlConfigured || localTokenValid);
+  byId('dashboardDataModeSelection').disabled = busy;
+  byId('dashboardDataModeToken').disabled = busy;
+  byId('dashboardDataModeAutofill').disabled = busy || !state.localAutofillAvailable;
+  byId('dashboardDataModeAutofill').textContent = dashboardDataModeAutofilling ? 'Filling…' : 'Auto fill';
+  byId('dashboardDataModeHelp').textContent = `Applies to all browsers until the server restarts (startup: ${state.startupMode === 'live' ? 'Live MES' : 'Staging'}).`;
+  byId('dashboardDataModeTokenHelp').textContent = state.localAutofillAvailable ? 'Auto fill creates a temporary token on this server. Use it once within 2 minutes, then it is cleared.' : 'Auto fill requires an allowed localhost connection on the server computer. Open the dashboard there, or ask your administrator for the operator token.';
+  document.querySelectorAll('[data-staging-901-repair], [data-staging-wip-repair]').forEach((form) => {
+    const button = form.querySelector('button[type="submit"]');
+    if (dashboardStagingPaused()) { button.disabled = true; button.dataset.modePaused = 'true'; form.querySelector('[role="status"]').textContent = 'Staging repairs are paused while Live MES is selected or a switch is in progress.'; }
+    else if (button.dataset.modePaused) { button.disabled = false; delete button.dataset.modePaused; }
+  });
+}
+function scheduleDashboardDataModeReload() {
+  clearTimeout(dashboardDataModeReloadTimer);
+  dashboardDataModeReloadTimer = setTimeout(async () => {
+    if (dashboardDataMode?.transitioning) return;
+    try {
+      await reloadDashboardSourceData();
+    } catch (error) { setStatus(error.message); }
+  }, 0);
+}
+function acceptDashboardDataMode(next) {
+  if (!next || !['staging', 'live'].includes(next.mode) || !Number.isFinite(next.revision)) throw new Error('The server returned an invalid dashboard data mode.');
+  const previous = dashboardDataMode;
+  const changed = previous && (previous.mode !== next.mode || previous.revision !== next.revision || previous.transitioning !== next.transitioning);
+  dashboardDataMode = { ...next };
+  dashboardDataModeUnavailable = false;
+  if (changed) {
+    dashboardDataModeGeneration += 1;
+    clientResponseCache.clear();
+    dataRequestId += 1;
+    scYieldTendencyRequestId += 1;
+    latestTaYieldLotsRequestId = 0;
+    latestTaYieldLotsUrl = '';
+    setStatus(next.transitioning ? 'Data mode is switching. Current work must finish before reports can reload.' : 'Data mode changed. Reloading the current report…', true);
+    if (!next.transitioning) scheduleDashboardDataModeReload();
+  }
+  renderDashboardDataMode();
+  return dashboardDataMode;
+}
+async function checkDashboardDataMode() {
+  if (!dashboardDataModeCheck) dashboardDataModeCheck = (async () => {
+    const response = await fetch('/api/data-mode', { cache: 'no-store' });
+    const payload = await response.json();
+    if (!response.ok || !payload.success) throw new Error(payload.error || 'Unable to check the dashboard data mode. Retry Apply.');
+    return acceptDashboardDataMode(payload.data);
+  })().catch((error) => {
+    dashboardDataModeUnavailable = true;
+    renderDashboardSourceIndicator();
+    throw error;
+  }).finally(() => { dashboardDataModeCheck = undefined; });
+  return dashboardDataModeCheck;
+}
+async function prepareDashboardSourceRequest() {
+  const state = await checkDashboardDataMode();
+  if (state.transitioning) throw new Error('Data mode is switching. Please wait for current work to finish.');
+  return { generation: dashboardDataModeGeneration, mode: state.mode, revision: state.revision };
+}
+function assertDashboardSourceResponse(response, stamp) {
+  const mode = response.headers.get('X-Dashboard-Data-Mode');
+  const revision = response.headers.get('X-Dashboard-Data-Revision');
+  if (stamp.generation !== dashboardDataModeGeneration || (mode && mode !== stamp.mode) || (revision !== null && revision !== undefined && Number(revision) !== stamp.revision)) {
+    checkDashboardDataMode().catch((error) => setStatus(error.message));
+    throw new Error('Dashboard data mode changed. Reloading the report; please retry if needed.');
+  }
+}
+async function fetchDashboardExport(url) {
+  const stamp = await prepareDashboardSourceRequest();
+  const response = await fetch(url, { cache: 'no-store' });
+  await checkDashboardDataMode();
+  assertDashboardSourceResponse(response, stamp);
+  return response;
+}
+function clearDashboardDataModeToken() {
+  const token = byId('dashboardDataModeToken');
+  token.value = '';
+  dashboardDataModeLocalToken = undefined;
+  dashboardDataModeAutofillGeneration += 1;
+  dashboardDataModeAutofilling = false;
+  clearTimeout(dashboardDataModeTokenTimer);
+  renderDashboardDataMode();
+}
+async function autofillDashboardDataModeToken() {
+  if (!dashboardDataMode?.localAutofillAvailable || dashboardDataMode.transitioning || dashboardDataModeSubmitting || dashboardDataModeAutofilling) return;
+  clearDashboardDataModeToken();
+  const generation = dashboardDataModeAutofillGeneration;
+  const status = byId('dashboardDataModeDialogStatus');
+  dashboardDataModeAutofilling = true;
+  status.textContent = 'Creating a temporary local token…';
+  renderDashboardDataMode();
+  try {
+    const response = await fetch('/api/data-mode/local-token', { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const payload = await response.json();
+    if (generation !== dashboardDataModeAutofillGeneration || !byId('dashboardDataModeDialog').open) return;
+    if (!response.ok || !payload.success) throw new Error(payload.error || 'Unable to auto fill the token. Please try again.');
+    const expiresAt = Date.parse(payload.data?.expiresAt);
+    if (typeof payload.data?.token !== 'string' || !payload.data.token || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw new Error('The temporary token has expired. Click Auto fill to try again.');
+    dashboardDataModeLocalToken = { value: payload.data.token, expiresAt };
+    byId('dashboardDataModeToken').value = payload.data.token;
+    dashboardDataModeTokenTimer = setTimeout(() => {
+      if (generation !== dashboardDataModeAutofillGeneration) return;
+      clearDashboardDataModeToken();
+      status.textContent = 'The temporary token expired. Click Auto fill to get another.';
+    }, expiresAt - Date.now());
+    status.textContent = 'Token filled. Choose a data mode and Apply within 2 minutes.';
+  } catch (error) {
+    if (generation === dashboardDataModeAutofillGeneration && byId('dashboardDataModeDialog').open) status.textContent = error.message;
+  } finally {
+    if (generation === dashboardDataModeAutofillGeneration) { dashboardDataModeAutofilling = false; renderDashboardDataMode(); }
+  }
+}
+async function submitDashboardDataMode(event) {
+  event.preventDefault();
+  const token = byId('dashboardDataModeToken');
+  const status = byId('dashboardDataModeDialogStatus');
+  const operatorToken = token.value;
+  const expired = dashboardDataModeLocalToken && dashboardDataModeLocalToken.expiresAt <= Date.now();
+  clearDashboardDataModeToken();
+  if (expired) { status.textContent = 'The temporary token expired. Click Auto fill to get another.'; return; }
+  dashboardDataModeSubmitting = true;
+  renderDashboardDataMode();
+  status.textContent = 'Requesting mode switch…';
+  try {
+    if (dashboardDataModeCheck) await dashboardDataModeCheck;
+    dashboardDataModeCheck = (async () => {
+      const response = await fetch('/api/data-mode', { method: 'PUT', cache: 'no-store', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${operatorToken}` }, body: JSON.stringify({ mode: byId('dashboardDataModeSelection').value }) });
+      const payload = await response.json();
+      if (!response.ok || !payload.success) throw new Error(payload.error || 'Unable to change dashboard data mode.');
+      return acceptDashboardDataMode(payload.data);
+    })().finally(() => { dashboardDataModeCheck = undefined; });
+    const state = await dashboardDataModeCheck;
+    status.textContent = state.transitioning ? 'Switch accepted. Current queries and refreshes will finish first. Progress updates automatically.' : 'Dashboard data mode updated for all browsers.';
+  } catch (error) { status.textContent = error.message; }
+  finally { dashboardDataModeSubmitting = false; renderDashboardDataMode(); }
+}
+function initializeDashboardDataModeControls() {
+  const dialog = byId('dashboardDataModeDialog');
+  byId('dashboardDataModeOpen').addEventListener('click', () => { byId('dashboardDataModeSelection').value = dashboardDataMode?.requestedMode || dashboardDataMode?.mode || 'staging'; byId('dashboardDataModeDialogStatus').textContent = ''; dialog.showModal(); checkDashboardDataMode().catch((error) => { byId('dashboardDataModeDialogStatus').textContent = error.message; }); });
+  byId('dashboardDataModeClose').addEventListener('click', () => dialog.close());
+  dialog.addEventListener('close', clearDashboardDataModeToken);
+  byId('dashboardDataModeAutofill').addEventListener('click', autofillDashboardDataModeToken);
+  byId('dashboardDataModeToken').addEventListener('input', () => { dashboardDataModeLocalToken = undefined; dashboardDataModeAutofillGeneration += 1; clearTimeout(dashboardDataModeTokenTimer); renderDashboardDataMode(); });
+  byId('dashboardDataModeForm').addEventListener('submit', submitDashboardDataMode);
+  const poll = () => checkDashboardDataMode().catch((error) => { byId('dashboardDataModeStatus').textContent = error.message; });
+  window.addEventListener('focus', poll);
+  setInterval(poll, 10000);
+  return checkDashboardDataMode();
+}
+
 async function request(url, options = {}, retriedAfterAuthentication = false) {
+  const authenticationGeneration = databaseAuthentication.generation;
   const method = options.method || 'GET';
-  const cacheable = method === 'GET' && /^\/api\/(?:config|part-numbers|quantity|mtd-quantity|chart|wip-flow|yield|operation-transitions)/.test(url);
+  const modeDependent = method === 'GET' && typeof isDashboardSourceRequest === 'function' && isDashboardSourceRequest(url);
+  const stamp = modeDependent ? await prepareDashboardSourceRequest() : undefined;
+  const live = stamp?.mode === 'live';
+  const cacheable = !live && method === 'GET' && /^\/api\/(?:config|part-numbers|quantity|mtd-quantity|chart|wip-flow|yield|operation-transitions)/.test(url);
   const cached = cacheable ? clientResponseCache.get(url) : undefined;
   if (cached && cached.expiresAt > Date.now()) return cached.data;
-  const response = await fetch(url, /^\/api\/options(?:\?|$)/.test(url) ? { ...options, cache: 'no-store' } : options);
+  const bypassHttpCache = method === 'GET' && (live || isWipCacheRequest(url));
+  const wipCompletionAtRequestStart = stagingWipCompletedAt;
+  const response = await fetch(url, modeDependent || bypassHttpCache || /^\/api\/options(?:\?|$)/.test(url) ? { ...options, cache: 'no-store' } : options);
   const payload = await readApiPayload(response, url);
-  if (response.status === 401 && payload.code === 'AUTH_REQUIRED' && !retriedAfterAuthentication) {
+  if (stamp) { await checkDashboardDataMode(); assertDashboardSourceResponse(response, stamp); }
+  if (response.status === 401 && payload.code === 'AUTH_REQUIRED') {
     clientResponseCache.clear();
-    await refreshDatabaseAuthentication();
+    if (retriedAfterAuthentication || databaseAuthentication.blocked) {
+      databaseAuthentication = { ...databaseAuthentication, blocked: true };
+      renderDatabaseAuthenticationRetry();
+      throw new Error('MES access is still unavailable. Use Sign in to MES to retry, or ask the server operator to verify access.');
+    }
+    const recentlyAuthenticated = databaseAuthentication.completedAt && Date.now() - databaseAuthentication.completedAt < 30000;
+    if (authenticationGeneration === databaseAuthentication.generation && !recentlyAuthenticated) {
+      await refreshDatabaseAuthentication(databaseAuthenticationDataset(url));
+    }
     return request(url, options, true);
   }
   if (!response.ok || !payload.success) throw new Error(payload.error || 'Request failed.');
-  if (cacheable) {
+  if (cacheable && (!bypassHttpCache || wipCompletionAtRequestStart === stagingWipCompletedAt)) {
     const maxAge = Number(response.headers.get('cache-control')?.match(/max-age=(\d+)/)?.[1] || 120);
     clientResponseCache.set(url, { data: payload.data, expiresAt: Date.now() + maxAge * 1000 });
     while (clientResponseCache.size > clientCacheLimit) clientResponseCache.delete(clientResponseCache.keys().next().value);
   }
-  if (/^\/api\/staging-status(?:\?|$)/.test(url)) { stagingMonitorPayload = payload; return payload; }
+  if (/^\/api\/staging-status(?:\?|$)/.test(url)) { stagingMonitorPayload = payload; invalidateCompletedWipRepairCache(payload.pipelines?.wip); return payload; }
   return payload.data;
 }
+
+// Every MES report shares the same server credential. Parallel failures must share one sign-in.
+let databaseAuthentication = { generation: 0, pending: undefined, blocked: false, completedAt: 0 };
+
+function databaseAuthenticationDataset(url) {
+  const dataset = new URLSearchParams(String(url).split('?')[1] || '').get('dataset');
+  if (['closed', 'lot', 'yield', 'ta-yield'].includes(dataset)) return dataset;
+  if (/^\/api\/ta-yield/.test(url)) return 'ta-yield';
+  if (/^\/api\/sc-yield/.test(url)) return 'yield';
+  return 'closed';
+}
+
+function renderDatabaseAuthenticationRetry() {
+  let button = byId('databaseAuthRetry');
+  if (!button && databaseAuthentication.blocked) {
+    const status = byId('status');
+    if (!status) return;
+    button = document.createElement('button');
+    button.id = 'databaseAuthRetry';
+    button.type = 'button';
+    button.className = 'export-completion';
+    button.textContent = 'Sign in to MES';
+    button.addEventListener('click', retryDatabaseAuthentication);
+    const dashboard = byId('dashboardView');
+    if (dashboard) dashboard.before(button);
+    else status.after(button);
+  }
+  if (button) {
+    button.hidden = !databaseAuthentication.blocked;
+    button.disabled = Boolean(databaseAuthentication.pending);
+  }
+}
+
+async function refreshDatabaseAuthentication(dataset, explicit = false) {
+  if (databaseAuthentication.pending) return databaseAuthentication.pending;
+  if (databaseAuthentication.blocked && !explicit) throw new Error('Use Sign in to MES to retry authentication.');
+  setStatus('Microsoft Entra sign-in is required. Complete the browser sign-in to continue.', true);
+  const pending = (async () => {
+    await Promise.resolve();
+    try {
+      const url = `/api/auth/login?dataset=${encodeURIComponent(dataset)}`;
+      const response = await fetch(url, { cache: 'no-store' });
+      const payload = await readApiPayload(response, '/api/auth/login');
+      if (!response.ok || !payload.success) throw new Error(payload.error || 'Microsoft Entra sign-in failed.');
+      databaseAuthentication = { ...databaseAuthentication, generation: databaseAuthentication.generation + 1, blocked: false, completedAt: Date.now() };
+    } catch (error) {
+      databaseAuthentication = { ...databaseAuthentication, blocked: true };
+      throw error;
+    } finally {
+      databaseAuthentication = { ...databaseAuthentication, pending: undefined };
+      renderDatabaseAuthenticationRetry();
+    }
+  })();
+  databaseAuthentication = { ...databaseAuthentication, pending };
+  renderDatabaseAuthenticationRetry();
+  return pending;
+}
+
+async function retryDatabaseAuthentication() {
+  try {
+    await refreshDatabaseAuthentication(selectedDataset(), true);
+    clientResponseCache.clear();
+    await reloadDashboardSourceData();
+  } catch (error) {
+    setStatus(error.message);
+  }
+}
+
+async function reloadDashboardSourceData() {
+  const selected = { process: byId('process').value, serie: selectedSeries(), case: byId('case').value };
+  const partNumbers = [...selectedPartNumbers()];
+  const dataset = selectedDataset();
+  const config = await request(`/api/config?dataset=${dataset}`);
+  const params = new URLSearchParams({ dataset, ...(byId('product').value ? { product: byId('product').value } : {}) });
+  const options = await request(`/api/options?${params}`);
+  if (dataset !== selectedDataset()) return;
+  currentConfig = config;
+  populateOptions(options, selected);
+  pnState.requestId += 1;
+  resetPartNumbers();
+  pnState.selected = partNumbers;
+  renderPartNumberSelection();
+  await loadData();
+  const view = document.querySelector?.('.app-tab.active')?.dataset.view;
+  if (view && view !== 'dashboard') showView(view);
+}
+
 async function loadData() {
   const requestId = ++dataRequestId;
   scYieldTendencyRequestId += 1;
@@ -1483,12 +1914,21 @@ async function loadData() {
 async function refreshOptionsForProduct() { const product = byId('product').value; setReportControlsLoading(true); setStatus('Refreshing available series...', true); try { const options = await request(`/api/options?${new URLSearchParams({ dataset: selectedDataset(), ...(product ? { product } : {}) })}`); populateOptions(options); resetPartNumbers(); setStatus(''); } catch (error) { setStatus(error.message); } finally { setReportControlsLoading(false); } }
 async function refreshOptionsForProcess() { const process = byId('process').value; const product = byId('product').value; setReportControlsLoading(true); setStatus('Refreshing available series...', true); try { const options = await request(`/api/options?${new URLSearchParams({ dataset: selectedDataset(), ...(product ? { product } : {}), ...(process ? { process } : {}) })}`); populateOptions(options, { process }); setSelectedProcess(process); resetPartNumbers(); setStatus(''); } catch (error) { setStatus(error.message); } finally { setReportControlsLoading(false); } }
 function refreshOptionsForSerie() { resetPartNumbers(); setStatus(''); }
-async function initialize() { if (!hasInitializedDashboard && !restoredDashboardProduct && !byId('product').value) setSelectedProduct('NEO'); hasInitializedDashboard = true; const isLot = selectedDataset() === 'lot'; const isScYield = selectedDataset() === 'yield'; const isTaYield = selectedDataset() === 'ta-yield'; if (isScYield) setSelectedProduct('SC'); if (isTaYield) setSelectedProduct('NEO'); const todayString = bangkokToday(); const initialEndDate = isTaYield ? await latestTaYieldStagingDate(todayString) : todayString; if (isTaYield && selectedDataset() !== 'ta-yield') return; byId('endDate').value = initialEndDate; byId('startDate').value = `${initialEndDate.slice(0, 7)}-01`; if (!byId('parameterPeriod').value) byId('parameterPeriod').value = todayString.slice(0, 7); byId('lotProcessField').hidden = !isLot; document.querySelector('.process-field').hidden = isScYield || isTaYield; try { const config = await request(`/api/config?dataset=${selectedDataset()}`); if (!config.ready) throw new Error(`Dashboard configuration is incomplete: ${config.missing.join(', ')}.`); currentConfig = config; commentsEnabled = Boolean(config.commentStorage?.enabled); const usesSharedTargetStorage = Boolean(config.mtdTargetStorage?.enabled); targetStorageRemote = usesSharedTargetStorage; if (config.dataset === 'closed') await loadTargetSettings(usesSharedTargetStorage); const supportsMtd = config.dataset === 'closed'; byId('mtdSection').hidden = !supportsMtd; byId('dailyTargetControl').hidden = !supportsMtd; document.querySelector('.app-tab[data-view="parameters"]').hidden = !supportsMtd && !isScYield && !isTaYield; document.querySelector('.app-tab[data-view="parameters"]').textContent = isTaYield ? 'TA Yield target setting' : isScYield ? 'Yield target setting' : 'MTD Parameter setting'; byId('scYieldLogTab').hidden = !isScYield; byId('taYieldLogTab').hidden = !isTaYield; byId('taYieldMachineTab').hidden = !isTaYield; byId('taDataTableTab').hidden = !isTaYield; document.querySelector('.app-tab[data-view="comments"]').hidden = !commentsEnabled; const activeView = document.querySelector('.app-tab.active')?.dataset.view; if ((!supportsMtd && !isScYield && !isTaYield && activeView === 'parameters') || (!isScYield && activeView === 'sc-yield-log') || (!isTaYield && ['ta-yield-log', 'ta-yield-machine', 'ta-data-table'].includes(activeView)) || (!commentsEnabled && activeView === 'comments')) showView('dashboard'); byId('dashboardTitle').textContent = isScYield ? 'SC Yield Control' : isTaYield ? 'TA Yield Control' : config.dataset === 'lot' ? 'WIP Production Volume' : 'Completion 901'; byId('chart-title').textContent = config.chartAxis === 'process' ? 'Quantity moved by process' : 'Completed qty by day'; document.querySelector('.report-top').hidden = isScYield || isTaYield; document.querySelector('.table-section').hidden = isScYield || isTaYield; byId('scYieldSection').hidden = !isScYield; byId('taYieldSection').hidden = !isTaYield; setFilterAvailability(config.filters); const optionParams = new URLSearchParams({ dataset: selectedDataset(), ...(byId('product').value ? { product: byId('product').value } : {}) }); populateOptions(await request(`/api/options?${optionParams}`)); resetPartNumbers(); await loadData(); } catch (error) { setStatus(error.message); } }
+async function initialize() { if (!hasInitializedDashboard && !restoredDashboardProduct && !byId('product').value) setSelectedProduct('NEO'); hasInitializedDashboard = true; const isLot = selectedDataset() === 'lot'; const isScYield = selectedDataset() === 'yield'; const isTaYield = selectedDataset() === 'ta-yield'; if (isScYield) setSelectedProduct('SC'); if (isTaYield) setSelectedProduct('NEO'); const todayString = bangkokToday(); const initialEndDate = isTaYield ? await latestTaYieldStagingDate(todayString) : todayString; if (isTaYield && selectedDataset() !== 'ta-yield') return; byId('endDate').value = initialEndDate; byId('startDate').value = `${initialEndDate.slice(0, 7)}-01`; syncReportDateRangePicker(); if (!byId('parameterPeriod').value) byId('parameterPeriod').value = todayString.slice(0, 7); byId('lotProcessField').hidden = !isLot; document.querySelector('.process-field').hidden = isScYield || isTaYield; try { const config = await request(`/api/config?dataset=${selectedDataset()}`); if (!config.ready) throw new Error(`Dashboard configuration is incomplete: ${config.missing.join(', ')}.`); currentConfig = config; commentsEnabled = Boolean(config.commentStorage?.enabled); const usesSharedTargetStorage = Boolean(config.mtdTargetStorage?.enabled); targetStorageRemote = usesSharedTargetStorage; if (config.dataset === 'closed') await loadTargetSettings(usesSharedTargetStorage); const supportsMtd = config.dataset === 'closed'; byId('mtdSection').hidden = !supportsMtd; byId('dailyTargetControl').hidden = !supportsMtd; document.querySelector('.app-tab[data-view="parameters"]').hidden = !supportsMtd && !isScYield && !isTaYield; document.querySelector('.app-tab[data-view="parameters"]').textContent = isTaYield ? 'TA Yield target setting' : isScYield ? 'Yield target setting' : 'MTD Parameter setting'; byId('scYieldLogTab').hidden = !isScYield; byId('taYieldLogTab').hidden = !isTaYield; byId('taYieldMachineTab').hidden = !isTaYield; byId('taDataTableTab').hidden = !isTaYield; document.querySelector('.app-tab[data-view="comments"]').hidden = !commentsEnabled; const activeView = document.querySelector('.app-tab.active')?.dataset.view; if ((!supportsMtd && !isScYield && !isTaYield && activeView === 'parameters') || (!isScYield && activeView === 'sc-yield-log') || (!isTaYield && ['ta-yield-log', 'ta-yield-machine', 'ta-data-table'].includes(activeView)) || (!commentsEnabled && activeView === 'comments')) showView('dashboard'); byId('dashboardTitle').textContent = isScYield ? 'SC Yield Control' : isTaYield ? 'TA Yield Control' : config.dataset === 'lot' ? 'WIP Production Volume' : 'Completion 901'; byId('chart-title').textContent = config.chartAxis === 'process' ? 'Quantity moved by process' : 'Completed qty by day'; document.querySelector('.report-top').hidden = isScYield || isTaYield; document.querySelector('.table-section').hidden = isScYield || isTaYield; byId('scYieldSection').hidden = !isScYield; byId('taYieldSection').hidden = !isTaYield; setFilterAvailability(config.filters); const optionParams = new URLSearchParams({ dataset: selectedDataset(), ...(byId('product').value ? { product: byId('product').value } : {}) }); populateOptions(await request(`/api/options?${optionParams}`)); resetPartNumbers(); await loadData(); } catch (error) { setStatus(error.message); } }
 function exportReportParams() { const params = new URLSearchParams({ dataset: selectedDataset(), startDate: byId('startDate').value, endDate: byId('endDate').value }); ids.filter((id) => !['serie', 'pn'].includes(id)).forEach((id) => { if (byId(id).value) params.set(id, byId(id).value); }); if (byId('product').value) params.set('product', byId('product').value); selectedSeries().forEach((serie) => params.append('serie', serie)); selectedPartNumbers().forEach((pn) => params.append('pn', pn)); return params; }
-async function exportCompletion() { if (!latestData.length) { setStatus('Load report data before exporting.'); return; } const button = byId('exportCompletion'); button.disabled = true; button.textContent = 'Exporting...'; try { const response = await fetch(`/api/export/completion?${exportReportParams()}`); if (!response.ok) { const payload = await response.json().catch(() => ({})); throw new Error(payload.error || 'Excel export could not be created.'); } const blob = await response.blob(); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `${selectedDataset() === 'closed' ? '901' : 'wip'}-series-completion-${byId('startDate').value}-to-${byId('endDate').value}.xlsx`; document.body.append(link); link.click(); link.remove(); URL.revokeObjectURL(link.href); setStatus(''); } catch (error) { setStatus(error.message); } finally { button.disabled = false; button.textContent = 'Export Excel'; } }
+async function exportCompletion() { if (!latestData.length) { setStatus('Load report data before exporting.'); return; } const button = byId('exportCompletion'); button.disabled = true; button.textContent = 'Exporting...'; try { const response = await fetchDashboardExport(`/api/export/completion?${exportReportParams()}`); if (!response.ok) { const payload = await response.json().catch(() => ({})); throw new Error(payload.error || 'Excel export could not be created.'); } const blob = await response.blob(); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `${selectedDataset() === 'closed' ? '901' : 'wip'}-series-completion-${byId('startDate').value}-to-${byId('endDate').value}.xlsx`; document.body.append(link); link.click(); link.remove(); URL.revokeObjectURL(link.href); setStatus(''); } catch (error) { setStatus(error.message); } finally { button.disabled = false; button.textContent = 'Export Excel'; } }
 byId('apply').addEventListener('click', loadData); byId('exportCompletion').addEventListener('click', exportCompletion); byId('process').addEventListener('change', refreshOptionsForProcess); byId('serie').addEventListener('change', refreshOptionsForSerie);
+byId('reportDateRangeTrigger').addEventListener('click', openReportDateRangePicker);
+window.addEventListener('resize', () => { if (!byId('reportDateRangePopover').hidden) positionReportDateRangePicker(); });
+byId('reportDateRangePrevious').addEventListener('click', () => { reportDateRangeViewMonth = reportMonthOffset(reportDateRangeViewMonth, -1); renderReportDateRangeCalendar(); });
+byId('reportDateRangeNext').addEventListener('click', () => { reportDateRangeViewMonth = reportMonthOffset(reportDateRangeViewMonth, 1); renderReportDateRangeCalendar(); });
+byId('reportDateRangePopover').addEventListener('click', (event) => { event.stopPropagation(); const preset = event.target.closest('[data-date-range-preset]'); if (preset) { applyReportDateRangePreset(preset.dataset.dateRangePreset); return; } const date = event.target.closest('[data-date-range-date]'); if (date) selectReportDate(date.dataset.dateRangeDate); });
+byId('reportDateRangePopover').addEventListener('pointerover', (event) => { const date = event.target.closest('[data-date-range-date]'); if (date) previewReportDateRange(date.dataset.dateRangeDate); });
+byId('reportDateRangePopover').addEventListener('pointerleave', () => { if (!reportDateRangePreviewEnd) return; reportDateRangePreviewEnd = ''; renderReportDateRangeCalendar(); });
 byId('reportControls').addEventListener('change', updateReportPendingNotice);
 byId('reportControls').addEventListener('click', (event) => { if (event.target.closest('.process-option, .serie-option input, .pn-option, [data-remove-pn]')) requestAnimationFrame(updateReportPendingNotice); });
+document.addEventListener('click', (event) => { if (!event.target.closest('.date-range-field')) closeReportDateRangePicker(false); });
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !byId('reportDateRangePopover').hidden) closeReportDateRangePicker(true); });
 document.querySelectorAll('.app-tab').forEach((button) => button.addEventListener('click', () => showView(button.dataset.view)));
 document.addEventListener('click', (event) => { if (event.target.closest('.app-tab')?.dataset.view === 'dashboard' && selectedDataset() === 'ta-yield') { [...byId('taYieldSection').children].forEach((child) => { child.hidden = false; }); byId('taYieldHead').closest('section').hidden = !taYieldDetailVisible; byId('taYieldLotFilter').hidden = taYieldTableView !== 'lots'; } });
 
@@ -1727,7 +2167,8 @@ function renderTaYieldMultiSeriesChart(rows, buckets, targetsByBucket, label, is
   const seriesLegend = series.map((row) => `<span><i style="background:${row.color}"></i>${escapeHtml(row.name)}</span>`).join('');
   const totalLegend = isTotal ? `<span class="ta-yield-priority-legend"><i class="ta-yield-total-key"></i>${escapeHtml(aggregateLabel)}</span>` : '';
   const legend = `${totalLegend}${targetLegend}${seriesLegend}`;
-  byId('taYieldYieldChart').innerHTML = `<div class="sc-yield-legend">${legend}</div><div class="sc-yield-chart-scroll"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="TA yield by series${isTotal ? `, ${aggregateLabel.toLowerCase()}, and ${targetLabel.toLowerCase()}` : ''}">${grid}${regularPlot}${totalPlot}${targetPlot}${buckets.map((row, index) => `<text class="axis" x="${x(index)}" y="${base + 22}" text-anchor="middle">${escapeHtml(label(row.month))}</text>`).join('')}</svg></div>`;
+  const fitTrendPanel = typeof taYieldInterval !== 'undefined' && taYieldInterval !== 'day' && buckets.length <= 12;
+  byId('taYieldYieldChart').innerHTML = `<div class="sc-yield-legend">${legend}</div><div class="sc-yield-chart-scroll${fitTrendPanel ? ' ta-yield-fit-panel' : ''}"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="TA yield by series${isTotal ? `, ${aggregateLabel.toLowerCase()}, and ${targetLabel.toLowerCase()}` : ''}">${grid}${regularPlot}${totalPlot}${targetPlot}${buckets.map((row, index) => `<text class="axis" x="${x(index)}" y="${base + 22}" text-anchor="middle">${escapeHtml(label(row.month))}</text>`).join('')}</svg></div>`;
 }
 
 function scrollTaYieldTendencyToLatest() {
@@ -1820,8 +2261,8 @@ renderTaYieldMachineView = async function renderTaYieldMachineViewWithGrouping()
 function stagingPipelineBlueprintFromStatus(row) { return [{ label: 'Source', detail: row.source || 'Source query', kind: 'source' }, { label: 'Lookup context', detail: 'Series, part number & process', kind: 'lookup' }, { label: 'Transform', detail: row.plan || 'Dataset mapping and aggregation', kind: 'transform' }, { label: 'Staging table', detail: row.table || 'Configured target table', kind: 'destination' }, { label: 'Validate', detail: 'Freshness, row count & coverage', kind: 'validate' }]; }
 function renderAccurateStagingPipelineMap(rows) { const lane = (row) => { const health = stagingHealth(row); const stages = stagingPipelineBlueprintFromStatus(row); return `<article class="staging-flow ${health}"><header><div><span class="staging-state ${health}">${escapeHtml(health)}</span><h3>${escapeHtml(row.name)}</h3></div><span class="staging-flow-rows">${row.activityAvailable ? `${format.format(row.rowCount || 0)} rows` : 'Activity unavailable'}</span></header><div class="staging-flow-stages">${stages.map((stage, index) => `<div class="staging-flow-stage ${stage.kind}"><span class="staging-flow-order">${index + 1}</span><b>${escapeHtml(stage.label)}</b><small>${escapeHtml(stage.detail)}</small></div>`).join('')}</div><footer><span>Coverage: ${escapeHtml(row.firstDataDate ? `${String(row.firstDataDate).slice(0, 10)} → ${String(row.lastDataDate).slice(0, 10)}` : 'Waiting for data')}</span><span>${escapeHtml(stagingTime(row.lastRefreshedAt))}</span></footer></article>`; }; return `<section class="staging-pipeline-map" aria-labelledby="stagingMapTitle"><header class="staging-map-heading"><div><p class="section-kicker">Data lineage</p><h2 id="stagingMapTitle">Staging pipeline map</h2><p>Current source and target-table names come from live status. Lookup and transform nodes show the conceptual processing path between them.</p></div><div class="staging-map-legend" aria-label="Pipeline stage legend"><span class="source">Source</span><span class="lookup">Lookup</span><span class="transform">Transform</span><span class="destination">Stage table</span><span class="validate">Validate</span></div></header><div class="staging-flow-list">${rows.map(lane).join('')}</div></section>`; }
 function setAccurateStagingMonitorTab(view, tab) { stagingMonitorTab = tab === 'map' ? 'map' : 'overview'; saveDashboardSubtab('staging', stagingMonitorTab); view.querySelectorAll('[data-staging-monitor-tab]').forEach((button) => { const active = button.dataset.stagingMonitorTab === stagingMonitorTab; button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active)); }); view.querySelectorAll('[data-staging-monitor-panel]').forEach((panel) => { panel.hidden = panel.dataset.stagingMonitorPanel !== stagingMonitorTab; }); }
-renderStagingStatus = async function renderStagingStatusWithPersistentPipelineMap() { const view = ensureUtilityView('stagingStatusView'); rememberStaging901RepairRange(view); await renderStagingStatusWithTabs(); const monitor = view.querySelector('.staging-monitor'); if (!monitor) return; const rows = stagingMonitorPayload?.data || []; const overview = monitor.outerHTML; view.innerHTML = `<div class="staging-monitor-tabs" aria-label="Staging views"><button type="button" class="${stagingMonitorTab === 'overview' ? 'active' : ''}" aria-pressed="${stagingMonitorTab === 'overview'}" data-staging-monitor-tab="overview">Overview</button><button type="button" class="${stagingMonitorTab === 'map' ? 'active' : ''}" aria-pressed="${stagingMonitorTab === 'map'}" data-staging-monitor-tab="map">Pipeline map</button></div><div data-staging-monitor-panel="overview" ${stagingMonitorTab === 'overview' ? '' : 'hidden'}>${overview}</div><div data-staging-monitor-panel="map" ${stagingMonitorTab === 'map' ? '' : 'hidden'}>${renderAccurateStagingPipelineMap(rows)}</div>`; };
+renderStagingStatus = async function renderStagingStatusWithPersistentPipelineMap() { const view = ensureUtilityView('stagingStatusView'); rememberStaging901RepairRange(view); rememberStagingWipRepairRange(view); await renderStagingStatusWithTabs(); const monitor = view.querySelector('.staging-monitor'); if (!monitor) return; const rows = stagingMonitorPayload?.data || []; const overview = monitor.outerHTML; view.innerHTML = `<div class="staging-monitor-tabs" aria-label="Staging views"><button type="button" class="${stagingMonitorTab === 'overview' ? 'active' : ''}" aria-pressed="${stagingMonitorTab === 'overview'}" data-staging-monitor-tab="overview">Overview</button><button type="button" class="${stagingMonitorTab === 'map' ? 'active' : ''}" aria-pressed="${stagingMonitorTab === 'map'}" data-staging-monitor-tab="map">Pipeline map</button></div><div data-staging-monitor-panel="overview" ${stagingMonitorTab === 'overview' ? '' : 'hidden'}>${overview}</div><div data-staging-monitor-panel="map" ${stagingMonitorTab === 'map' ? '' : 'hidden'}>${renderAccurateStagingPipelineMap(rows)}</div>`; };
 document.addEventListener('click', (event) => { const tab = event.target.closest('[data-staging-monitor-tab]'); if (tab) setAccurateStagingMonitorTab(ensureUtilityView('stagingStatusView'), tab.dataset.stagingMonitorTab); });
 
 restoreDashboardSubtabControls();
-initializeDashboardNavigation().catch((error) => setStatus(error.message));
+initializeDashboardDataModeControls().then(initializeDashboardNavigation).catch((error) => setStatus(error.message));

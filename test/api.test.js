@@ -1,7 +1,13 @@
 import request from 'supertest';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import ExcelJS from 'exceljs';
 import { createApp } from '../src/app.js';
+
+// API fixtures need only this description; workbook parsing is covered separately.
+vi.mock('../src/taYieldMapping.js', async (importOriginal) => ({
+  ...await importOriginal(),
+  loadTaWorkbookReconciliationMapping: async () => new Map([['Cam1 defective for GPS', 'App']])
+}));
 
 const configuredEnvironment = {
   SQL_SERVER: 'apaz-sqlinstprod3.d9dee625aa38.database.windows.net',
