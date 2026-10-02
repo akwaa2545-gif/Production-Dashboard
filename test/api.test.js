@@ -412,6 +412,45 @@ describe('dashboard API', () => {
     expect((await request(app).get('/api/quantity?startDate=2026-01-01&endDate=2026-01-01')).body.data[0].quantityMoved).toBe(8);
   });
 
+  it('serves output lots only from a data source that provides staged daily output', async () => {
+    const repository = { getDailyOutput: () => Promise.resolve([{ itemName: 'FPS A3', quantityMoved: 1200, lotCount: 1 }]) };
+    const response = await request(createApp({ environment: configuredEnvironment, repository }))
+      .get('/api/daily-output?startDate=2026-01-01&endDate=2026-01-02');
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual([{ itemName: 'FPS A3', quantityMoved: 1200, lotCount: 1 }]);
+  });
+
+  it('serves TA output with distinct JobNames from date-filtered workbook data', async () => {
+    const lots = [
+      { line: 'FPS', lotNo: '6K01N00052', itemName: 'PN1', tapingDate: '2026-10-01', categories: { Input: 1600, Good: 1500 } },
+      { line: 'FPS', lotNo: '6K01N00052', itemName: 'PN1', tapingDate: '2026-10-01', categories: { Input: 1600, Good: 1500 } },
+      { line: 'FPS', lotNo: '6K01N00053', itemName: 'PN1', tapingDate: '2026-10-02', categories: { Input: 1100, Good: 1000 } },
+      { line: 'PSL', lotNo: '6K01N00054', itemName: 'PN2', tapingDate: '2026-10-02', categories: { Input: 500, Good: 450 } }
+    ];
+    const readFilters = [];
+    const app = createApp({ environment: {
+      ...configuredEnvironment, DASHBOARD_TA_YIELD_STAGING_ENABLED: 'true', STAGING_SQL_SERVER: 'staging', STAGING_SQL_DATABASE: 'ProductionMES', STAGING_SQL_USER: 'user', STAGING_SQL_PASSWORD: 'password'
+    }, taYieldStagingRepository: { getWorkbookRows: (filters) => { readFilters.push(filters); return Promise.resolve(lots); } } });
+    const response = await request(app).get('/api/daily-output?dataset=ta-yield&startDate=2026-10-01&endDate=2026-10-02&serie=FPS&pn=PN1');
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual([{ itemName: 'FPS', quantityMoved: 2500, lotCount: 2, jobNames: ['6K01N00052', '6K01N00053'] }]);
+    expect(readFilters[0]).toMatchObject({ startDate: '2026-10-01', endDate: '2026-10-02' });
+  });
+
+  it('keeps full-month TA summary quantities while obtaining JobName counts from lots', async () => {
+    const app = createApp({ environment: {
+      ...configuredEnvironment, DASHBOARD_TA_YIELD_STAGING_ENABLED: 'true', STAGING_SQL_SERVER: 'staging', STAGING_SQL_DATABASE: 'ProductionMES', STAGING_SQL_USER: 'user', STAGING_SQL_PASSWORD: 'password'
+    }, taYieldStagingRepository: {
+      getMonthlySummary: () => Promise.resolve([{ month: '2026-10', line: 'FPS', input: 2600000, finalGood: 2405110, defect: 194890, group: 'ESR' }]),
+      getMonthlyPartNumbers: () => Promise.resolve(['PN1']),
+      getWorkbookRows: () => Promise.resolve([{ line: 'FPS', lotNo: '6K01N00052', itemName: 'PN1', tapingDate: '2026-10-01', categories: { Good: 1500 } }])
+    } });
+    const response = await request(app).get('/api/daily-output?dataset=ta-yield&startDate=2026-10-01&endDate=2026-10-31');
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual([{ itemName: 'FPS', quantityMoved: 2405110, lotCount: 1, jobNames: ['6K01N00052'] }]);
+  });
+
   it('exports the filtered series completion table as an Excel workbook', async () => {
     const repository = { getQuantity: () => Promise.resolve([{ bucketDate: '2026-01-01', itemName: 'FPS A3', quantityMoved: 8 }]) };
     const response = await request(createApp({ environment: configuredEnvironment, repository }))

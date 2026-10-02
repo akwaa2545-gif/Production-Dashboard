@@ -1,6 +1,7 @@
 import sql from 'mssql';
 const q = (name) => name.split('.').map((part) => `[${part}]`).join('.');
-const thailandDate = (value) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value));
+const thailandDateFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit' });
+const thailandDate = (value) => thailandDateFormatter.format(new Date(value));
 const utcDate = (value) => new Date(value).toISOString().slice(0, 10);
 const latestSnapshotsByMonth = (records) => [...records.reduce((snapshots, record) => {
   const month = utcDate(record.ScopeStart).slice(0, 7);
@@ -128,7 +129,20 @@ export class TaYieldStagingRepository {
   }
   async getWorkbookRows(filters) {
     const req = (await this.getPool()).request(); req.input('start', sql.Date, filters.startDate); req.input('end', sql.Date, filters.endDate);
-    const result = await req.query(`SELECT ScopeStart, ScopeEnd, RefreshedAt, Payload FROM ${q(this.config.workbookTable)} WHERE ScopeStart >= DATEFROMPARTS(YEAR(@start), MONTH(@start), 1) AND ScopeStart <= DATEFROMPARTS(YEAR(@end), MONTH(@end), 1) ORDER BY ScopeStart, ScopeEnd DESC, RefreshedAt DESC`);
+    const result = await req.query(`WITH RankedSnapshots AS (
+      SELECT ScopeStart, ScopeEnd, ROW_NUMBER() OVER (
+        PARTITION BY DATEFROMPARTS(YEAR(ScopeStart), MONTH(ScopeStart), 1)
+        ORDER BY ScopeEnd DESC, RefreshedAt DESC
+      ) AS SnapshotRank
+      FROM ${q(this.config.workbookTable)}
+      WHERE ScopeStart >= DATEFROMPARTS(YEAR(@start), MONTH(@start), 1)
+        AND ScopeStart <= DATEFROMPARTS(YEAR(@end), MONTH(@end), 1)
+    )
+    SELECT snapshot.ScopeStart, snapshot.ScopeEnd, snapshot.RefreshedAt, snapshot.Payload
+    FROM ${q(this.config.workbookTable)} AS snapshot
+    INNER JOIN RankedSnapshots AS latest ON snapshot.ScopeStart=latest.ScopeStart AND snapshot.ScopeEnd=latest.ScopeEnd
+    WHERE latest.SnapshotRank=1
+    ORDER BY snapshot.ScopeStart`);
     if (!result.recordset.length) throw new Error('TA Yield DataTable staging data is not ready for this date range.');
     return latestSnapshotsByMonth(result.recordset).flatMap((row) => JSON.parse(row.Payload)).filter((row) => { const date = thailandDate(row.tapingDate); return date >= filters.startDate && date <= filters.endDate; });
   }

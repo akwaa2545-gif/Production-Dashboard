@@ -137,7 +137,7 @@ describe('dashboard live data source API', () => {
   });
 
   it.each([
-    '/api/ta-yield-workbook-reconciliation', '/api/ta-yield', '/api/ta-yield-weekly', '/api/ta-yield-tendency'
+    '/api/ta-yield-workbook-reconciliation', '/api/ta-yield', '/api/ta-yield-weekly', '/api/ta-yield-tendency', '/api/daily-output'
   ])('uses MES workbook rows for %s even when staging is configured', async (path) => {
     const { app, staging, ta } = fixture();
     const response = await request(app).get(path).query({ dataset: 'ta-yield', ...dates });

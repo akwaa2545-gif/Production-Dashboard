@@ -1,0 +1,101 @@
+.daily-output-panel.ta-yield-compare-panel {
+  top: max(16px, calc((100vh - 640px) / 2));
+  left: max(16px, calc((100vw - 1080px) / 2));
+  right: auto;
+  width: min(1080px, calc(100vw - 32px));
+  height: min(640px, calc(100vh - 32px));
+  min-width: min(360px, calc(100vw - 32px));
+  min-height: min(380px, calc(100vh - 32px));
+}
+.ta-yield-compare-panel .ta-compare-content {
+  display: block;
+  overflow-y: auto;
+  scrollbar-color: #9ca9c1 transparent;
+  scrollbar-width: thin;
+}
+.ta-compare-content > * + * { margin-top: 10px; }
+.ta-compare-controls { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; }
+.ta-compare-current { margin-right: auto; min-width: 130px; }
+.ta-compare-current > span, .ta-compare-controls > label {
+  display: grid; gap: 6px; color: #64718a; font-size: 11px; font-weight: 700;
+}
+.ta-compare-current > span { margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; font-size: 10px; }
+.ta-compare-current > strong { display: block; color: #25304b; font-size: 18px; line-height: 1.6; font-variant-numeric: tabular-nums; }
+.ta-compare-controls input, .ta-compare-controls select { min-height: 36px; min-width: 152px; box-sizing: border-box; border: 1px solid #c7d1e5; border-radius: 2px; padding: 7px 9px; color: #25304b; background: #fff; font: inherit; }
+.ta-compare-controls > button { min-height: 36px; border: 1px solid #28358c; border-radius: 2px; padding: 7px 24px; color: #fff; background: #28358c; font: 700 12px Bahnschrift, "Aptos", "Segoe UI", sans-serif; cursor: pointer; }
+.ta-compare-controls > button:hover { background: #1d2872; }
+.ta-compare-controls > button:disabled { opacity: .65; cursor: wait; }
+.ta-compare-content :focus-visible { outline: 2px solid #28358c; outline-offset: 2px; }
+.ta-compare-chart-card { position: relative; display: grid; grid-template-rows: auto auto auto; height: auto; min-height: 350px; border: 1px solid #dbe1ed; border-top: 3px solid #28358c; padding: 12px; background: #fff; }
+.ta-compare-chart-heading { display: grid; gap: 5px; padding-bottom: 8px; text-align: center; color: #25304b; }
+.ta-compare-chart-heading > strong { font-size: 20px; }
+.ta-compare-chart-heading > span { color: #64718a; font-size: 11px; }
+.ta-compare-chart { min-height: 0; overflow: auto; scrollbar-color: #9ca9c1 transparent; scrollbar-width: thin; }
+.ta-compare-chart svg { display: block; width: 100%; height: auto; font-family: Bahnschrift, "Aptos", "Segoe UI", sans-serif; }
+.ta-compare-grid { stroke: #e1e5ec; stroke-width: 1; }
+.ta-compare-zero { stroke: #9eacc1; stroke-width: 1.5; }
+.ta-compare-tick { fill: #64718a; font-size: 11px; }
+.ta-compare-value { fill: #25304b; font-size: 13px; font-weight: 700; paint-order: stroke fill; stroke: #fff; stroke-width: 3px; }
+.ta-compare-label { fill: #25304b; font-size: 12px; font-weight: 700; }
+.ta-compare-chart .ta-compare-tick { font-size: 13px; }
+.ta-compare-chart .ta-compare-value { font-size: 16px; }
+.ta-compare-chart .ta-compare-label { font-size: 14px; }
+.ta-compare-bar { cursor: pointer; outline: none; }
+.ta-compare-bar:focus .ta-compare-hit { stroke: #28358c; stroke-width: 2; fill: #28358c; fill-opacity: .035; }
+.ta-compare-bar:hover .ta-compare-hit { fill: #28358c; fill-opacity: .035; }
+.ta-compare-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding-top: 8px; border-top: 1px solid #e5e8f0; color: #64718a; font-size: 10px; }
+.ta-compare-footer > span { display: inline-flex; align-items: center; gap: 5px; }
+.ta-compare-footer i { display: inline-block; width: 8px; height: 8px; }
+.ta-compare-positive { background: #008a3e; }.ta-compare-negative { background: #d32f2f; }
+.ta-compare-message { padding: 36px 12px; color: #64718a; text-align: center; font-size: 13px; }
+.ta-compare-message[role="alert"] { color: #a12929; }
+.ta-compare-tooltip { position: absolute; z-index: 2; left: 12px; right: 12px; bottom: 40px; pointer-events: none; padding: 9px 12px; background: #28358c; border-bottom: 3px solid #f15a24; color: #fff; font-size: 12px; line-height: 1.5; box-shadow: 0 4px 12px #25304b33; }
+.ta-yield-compare-panel.is-minimized { min-height: 0; width: min(420px, calc(100vw - 24px)); }
+.ta-yield-compare-panel.is-minimized .ta-compare-content { display: none; }
+.ta-compare-range-note { margin-bottom: 0; color: #64718a; font-size: 11px; line-height: 1.5; }
+.ta-compare-range-note:empty { display: none; }
+.ta-compare-export-status { color: #28358c; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.ta-compare-export-status:empty { display: none; }
+.ta-compare-status { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.ta-compare-table-scroll { max-width: 100%; overflow-x: auto; border: 1px solid #dbe1ed; scrollbar-color: #9ca9c1 transparent; scrollbar-width: thin; }
+.ta-compare-table { border-collapse: collapse; min-width: 780px; width: 100%; font-size: 11px; color: #25304b; font-variant-numeric: tabular-nums; }
+.ta-compare-table caption { padding: 10px 12px; color: #28358c; font-size: 12px; font-weight: 700; text-align: left; background: #f2f4fb; }
+.ta-compare-table th, .ta-compare-table td { padding: 8px 10px; border-bottom: 1px solid #e5e8f0; text-align: right; white-space: nowrap; }
+.ta-compare-table thead th { background: #f7f9fd; color: #64718a; font-weight: 700; }
+.ta-compare-table th:first-child { text-align: left; }
+.ta-compare-table tbody tr:hover { background: #f7f9fd; }
+.ta-compare-table button, .ta-compare-detail button { min-height: 32px; border: 1px solid #c7d1e5; border-radius: 2px; background: #fff; color: #28358c; padding: 6px 10px; font: 700 11px Bahnschrift, "Aptos", "Segoe UI", sans-serif; cursor: pointer; }
+.ta-compare-table button:hover, .ta-compare-detail button:hover { background: #f2f4fb; }
+.ta-compare-detail button:disabled { opacity: .55; cursor: default; }
+.ta-compare-detail { border: 1px solid #dbe1ed; border-top: 3px solid #f15a24; padding: 12px; background: #fff; }
+.ta-compare-detail[hidden], .ta-compare-detail button[hidden] { display: none; }
+.ta-compare-detail-header, .ta-compare-detail-pagination { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ta-compare-detail-header { justify-content: space-between; margin-bottom: 10px; }
+.ta-compare-detail-header h3 { margin: 0; font-size: 16px; overflow-wrap: anywhere; color: #28358c; }
+.ta-compare-detail-note, .ta-compare-jobs p { color: #64718a; font-size: 11px; line-height: 1.6; }
+.ta-compare-jobs { margin-top: 16px; }
+.ta-compare-jobs h4 { margin: 0 0 5px; color: #25304b; font-size: 13px; }
+.ta-compare-detail-pagination { margin-top: 12px; }
+.ta-compare-better { color: #0f7048; }.ta-compare-worse { color: #a12929; }
+.ta-lookup-visuals { margin: 14px 0; }
+.ta-lookup-graphs { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 620px), 1fr)); gap: 12px; }
+.ta-lookup-graph-card { min-width: 0; border: 1px solid #dbe1ed; border-top: 3px solid #28358c; padding: 12px; background: #fff; }
+.ta-lookup-graph-card h4 { margin: 0 0 4px; color: #25304b; font-size: 14px; }
+.ta-lookup-graph-card > p { margin: 0 0 8px; color: #64718a; font-size: 11px; }
+.ta-lookup-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 8px; color: #25304b; font-size: 11px; }
+.ta-lookup-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.ta-lookup-legend i { width: 12px; height: 8px; display: inline-block; }
+.ta-lookup-selected { background: #28358c; }.ta-lookup-comparison { background: #007c91; }
+.ta-lookup-graph-scroll { max-height: 420px; overflow: auto; scrollbar-color: #9ca9c1 transparent; scrollbar-width: thin; }
+.ta-lookup-graph-scroll svg { display: block; width: 100%; min-width: 620px; height: auto; font-family: Bahnschrift, "Aptos", "Segoe UI", sans-serif; }
+.ta-lookup-chart-value { fill: #25304b; font-size: 12px; font-variant-numeric: tabular-nums; }
+.ta-lookup-chart-value[data-period="current"] { fill: #28358c; }
+.ta-lookup-chart-value[data-period="compare"] { fill: #007c91; }
+.ta-lookup-adjustment { display: grid; gap: 5px; padding: 10px 12px; border-left: 3px solid #68758d; background: #f2f4fb; color: #25304b; font-size: 11px; }
+.ta-lookup-empty { color: #64718a; font-size: 12px; }
+@media (max-width: 560px) {
+  .daily-output-panel.ta-yield-compare-panel { left: 12px; top: 12px; width: calc(100vw - 24px); height: calc(100vh - 24px); }
+  .ta-compare-current { width: 100%; }
+  .ta-compare-controls > label { flex: 1; min-width: 0; }
+  .ta-compare-controls input, .ta-compare-controls select { width: 100%; min-width: 0; }
+}

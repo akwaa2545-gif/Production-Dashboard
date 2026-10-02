@@ -10,6 +10,11 @@ import { SqlRepository } from './sqlRepository.js';
 import { Staging901Repository } from './staging901Repository.js';
 import { refresh901Staging } from './staging901Refresh.js';
 import { StagingWipRepository } from './stagingWipRepository.js';
+import { mapTaDailyOutput } from './dailyOutput.js';
+import { mapTaYieldCompare, taYieldComparePeriods } from './taYieldCompare.js';
+import { createTaCompareDetailsLimiter, mapTaYieldCompareDetails, validateTaYieldCompareSelection } from './taYieldCompareDetails.js';
+import { buildTaYieldCompareWorkbook } from './taYieldCompareExport.js';
+import { registerTaYieldCompareExportRoute } from './taYieldCompareExportRoute.js';
 import { refreshWipStaging } from './stagingWipRefresh.js';
 import { ScYieldRepository } from './scYieldRepository.js';
 import { ScYieldStagingRepository } from './scYieldStagingRepository.js';
@@ -852,6 +857,8 @@ export function createApp({ environment = process.env, repository, scYieldReposi
       return response.json({ success: true, data: result.value });
     } catch (error) {
       console.error('Database request failed:', error.message);
+      if (error?.code === 'TA_COMPARE_STAGING_UNAVAILABLE') return response.status(503).json({ success: false, code: error.code, error: 'Compare LOOKUP requires complete staging coverage for both periods. Staged details are unavailable; use Staging mode or choose an available date range.' });
+      if (error?.code === 'TA_COMPARE_SELECTION_INVALID') return response.status(400).json({ success: false, code: error.code, error: 'The selected Compare row is not available in these staged periods.' });
       if (!databaseFailure(error) && (isConnectionError(error) || (isAuthenticationError(error) && error?.name !== 'AuthenticationRequiredError'))) {
         if (database?.resetConnection) {
           try {
@@ -897,6 +904,28 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const selectedPartNumbers = filters.pn ? (Array.isArray(filters.pn) ? filters.pn : [filters.pn]) : [];
     const rows = cached.value.filter((row) => (!selectedSeries.length || selectedSeries.includes(row.line)) && (!selectedPartNumbers.length || selectedPartNumbers.includes(row.itemName)));
     return { rows, mapping: await taWorkbookReconciliationMapping };
+  }
+  async function sharedTaCompareStagedRows(filters) {
+    const source = taYieldStaging;
+    const unavailable = (cause) => Object.assign(new Error('Compare staged detail coverage is unavailable.', { cause }), { code: 'TA_COMPARE_STAGING_UNAVAILABLE' });
+    if (dataMode.isLive() || !source?.getWorkbookRows || !source.hasWorkbookCoverage) throw unavailable();
+    const range = { startDate: filters.startDate, endDate: filters.endDate };
+    const cached = await responseCache.getOrSet(`ta-yield:compare-staged-details:v1:${JSON.stringify(range)}`, 300000, async () => {
+      try {
+        if (!await source.hasWorkbookCoverage(range)) throw unavailable();
+        const rows = await source.getWorkbookRows(range);
+        if (!Array.isArray(rows)) throw unavailable();
+        const normalized = rows.every((row) => row?.categories && typeof row.categories === 'object');
+        if (!normalized) taWorkbookReconciliationMapping ||= loadTaWorkbookReconciliationMapping('TA/Yield_Data_Aug2026.xlsx');
+        return { rows, mapping: normalized ? new Map() : await taWorkbookReconciliationMapping };
+      } catch (error) { throw unavailable(error); }
+    });
+    const series = filters.serie ? (Array.isArray(filters.serie) ? filters.serie : [filters.serie]) : [];
+    const parts = filters.pn ? (Array.isArray(filters.pn) ? filters.pn : [filters.pn]) : [];
+    return { ...cached.value, rows: cached.value.rows.filter((row) => {
+      const date = thailandTapingDate(row.tapingDate);
+      return date >= range.startDate && date <= range.endDate && (!series.length || series.includes(row.line)) && (!parts.length || parts.includes(row.itemName));
+    }) };
   }
   async function sharedTaMachineSnapshotLots(context, filters) {
     const cached = await responseCache.getOrSet(`ta-yield:machine-lots:${JSON.stringify(filters)}`, 300000, async () => {
@@ -1021,6 +1050,21 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const context = contextFor(request, response); if (!context) return undefined;
     return useDatabase(() => dashboardDatabase(context, validation.filters).getQuantity(validation.filters), response, context.config, false, { key: `${context.dataset}:quantity:${JSON.stringify(validation.filters)}`, ttlMs: 120000 });
   });
+  app.get('/api/daily-output', (request, response) => {
+    const validation = validatedFilters(request.query);
+    if (validation.error) return response.status(400).json({ success: false, error: validation.error });
+    const context = contextFor(request, response); if (!context) return undefined;
+    if (context.dataset === 'ta-yield') return useDatabase(async () => {
+      const [summary, workbook] = await settleAll([
+        sharedTaYieldDashboardResult(context, validation.filters),
+        sharedTaWorkbookYieldRows(context, validation.filters)
+      ]);
+      return mapTaDailyOutput(summary, mapTaWorkbookReconciliationRows(workbook.rows, workbook.mapping));
+    }, response, context.config, false, undefined, context.dataset);
+    const source = dashboardDatabase(context, validation.filters);
+    if (typeof source.getDailyOutput !== 'function') return response.json({ success: true, data: [] });
+    return useDatabase(() => source.getDailyOutput(validation.filters), response, context.config, false, { key: `${context.dataset}:daily-output:${JSON.stringify(validation.filters)}`, ttlMs: 120000 });
+  });
   app.get('/api/sc-yield', (request, response) => {
     const validation = validatedFilters(request.query);
     if (validation.error) return response.status(400).json({ success: false, error: validation.error });
@@ -1055,6 +1099,51 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const validation = validatedFilters(request.query); if (validation.error) return response.status(400).json({ success: false, error: validation.error }); const context = contextFor(request, response); if (!context) return undefined;
     if (context.dataset !== 'ta-yield') return response.status(400).json({ success: false, error: 'TA Yield is available for the TA Yield data source only.' });
     return useDatabase(() => sharedTaYieldDashboardResult(context, validation.filters), response, context.config, false, undefined, context.dataset);
+  });
+  app.get('/api/ta-yield-compare', (request, response) => {
+    const hasReportDates = request.query.startDate !== undefined || request.query.endDate !== undefined;
+    const validation = hasReportDates ? validatedFilters(request.query) : validatedOptionFilters(request.query);
+    if (validation.error) return response.status(400).json({ success: false, error: validation.error });
+    const reportRange = hasReportDates ? { startDate: validation.filters.startDate, endDate: validation.filters.endDate } : undefined;
+    const periods = taYieldComparePeriods(request.query, currentThailandMonthFilters(), reportRange);
+    if (periods.error) return response.status(400).json({ success: false, error: periods.error });
+    const context = contextFor(request, response); if (!context) return undefined;
+    if (context.dataset !== 'ta-yield') return response.status(400).json({ success: false, error: 'Compare is available for the TA Yield data source only.' });
+    return useDatabase(async () => {
+      const [current, comparison] = await settleAll([
+        sharedTaYieldDashboardResult(context, { ...validation.filters, ...periods.currentRange }),
+        sharedTaYieldDashboardResult(context, { ...validation.filters, ...periods.compareRange })
+      ]);
+      return { ...periods, rows: mapTaYieldCompare(current, comparison) };
+    }, response, context.config, false, undefined, context.dataset);
+  });
+  app.get('/api/ta-yield-compare-details', createTaCompareDetailsLimiter(), (request, response) => {
+    const hasReportDates = request.query.startDate !== undefined || request.query.endDate !== undefined;
+    const validation = hasReportDates ? validatedFilters(request.query) : validatedOptionFilters(request.query);
+    if (validation.error) return response.status(400).json({ success: false, error: validation.error });
+    const selected = validateTaYieldCompareSelection(request.query);
+    if (selected.error) return response.status(400).json({ success: false, error: selected.error });
+    const reportRange = hasReportDates ? { startDate: validation.filters.startDate, endDate: validation.filters.endDate } : undefined;
+    const periods = taYieldComparePeriods(request.query, currentThailandMonthFilters(), reportRange);
+    if (periods.error) return response.status(400).json({ success: false, error: periods.error });
+    const context = contextFor(request, response); if (!context) return undefined;
+    if (context.dataset !== 'ta-yield') return response.status(400).json({ success: false, error: 'Compare LOOKUP is available for the TA Yield data source only.' });
+    return useDatabase(async () => {
+      const [current, compare] = await settleAll([
+        sharedTaCompareStagedRows({ ...validation.filters, ...periods.currentRange }),
+        sharedTaCompareStagedRows({ ...validation.filters, ...periods.compareRange })
+      ]);
+      // Each staged period may be normalized or an older raw reconciliation snapshot.
+      const currentLots = mapTaWorkbookReconciliationRows(current.rows, current.mapping);
+      const compareLots = mapTaWorkbookReconciliationRows(compare.rows, compare.mapping);
+      return { ...periods, ...mapTaYieldCompareDetails(currentLots, compareLots, new Map(), selected.selection, selected.pagination) };
+    }, response, context.config, false, { key: `ta-yield:compare-details:v1:${JSON.stringify([validation.filters, periods, selected])}`, ttlMs: 120000 }, context.dataset);
+  });
+  registerTaYieldCompareExportRoute(app, {
+    validateFilters: validatedFilters,
+    getPeriods: (query, filters) => taYieldComparePeriods(query, currentThailandMonthFilters(), { startDate: filters.startDate, endDate: filters.endDate }),
+    contextFor, loadStagedRows: sharedTaCompareStagedRows,
+    runTracked: (task) => dataMode.track(task), buildWorkbook: buildTaYieldCompareWorkbook
   });
   app.get('/api/ta-yield-weekly', (request, response) => {
     const validation = validatedFilters(request.query); if (validation.error) return response.status(400).json({ success: false, error: validation.error }); const context = contextFor(request, response); if (!context) return undefined;

@@ -242,6 +242,15 @@ let currentConfig = { chartAxis: 'date' };
 let chartMode = dashboardSubtabs.productionChart;
 let processChartFit = false;
 let latestData = [];
+let dailyOutputPanelState = { minimized: false, maximized: false, drag: undefined, restoreBounds: undefined };
+let dailyOutputPanelEnabled = false;
+let latestDailyOutputData = [];
+let latestDailyOutputPanelRows = [];
+let latestDailyOutputPanelError = '';
+let latestDailyOutputPanelLoading = false;
+let latestDailyOutputPanelScope;
+let dailyOutputResizeFrame;
+let taYieldCompareController;
 let latestChartData = [];
 let latestMtdData = [];
 let latestWipFlow = [];
@@ -279,6 +288,9 @@ let taYieldTargetSearch = '';
 let taYieldTableView = dashboardSubtabs.taTable;
 let latestTaYieldLotsUrl = '';
 let latestTaYieldLotsRequestId = 0;
+let taYieldDailyOutputScope = null;
+let taYieldDailyOutputRequest = null;
+let taYieldLotDetailsRequest = null;
 let taYieldLotSearch = '';
 let taYieldLotSeries = '';
 let taYieldLogSeries = '';
@@ -303,7 +315,7 @@ let reportDateRangeAnimationTimer;
 const reportDateRangeCloseDelayMs = 360;
 const reportDateRangeAnimationDurationMs = 180;
 function reportControlSnapshot() { return JSON.stringify({ dataset: selectedDataset(), product: byId('product').value, startDate: byId('startDate').value, endDate: byId('endDate').value, process: byId('process').value, series: [...selectedSeries()].sort(), case: byId('case').value, partNumbers: [...selectedPartNumbers()].sort() }); }
-function updateReportPendingNotice() { const notice = byId('reportPendingNotice'); const pending = Boolean(appliedReportControlSnapshot) && reportControlSnapshot() !== appliedReportControlSnapshot; notice.hidden = !pending; byId('apply').classList.toggle('has-pending-changes', pending); }
+function updateReportPendingNotice() { const notice = byId('reportPendingNotice'); const pending = Boolean(appliedReportControlSnapshot) && reportControlSnapshot() !== appliedReportControlSnapshot; notice.hidden = !pending; byId('apply').classList.toggle('has-pending-changes', pending); if (typeof syncTaYieldCompareSelection === 'function') syncTaYieldCompareSelection(); }
 function markReportControlsApplied() { appliedReportControlSnapshot = reportControlSnapshot(); updateReportPendingNotice(); }
 let mtdChartStyle = dashboardSubtabs.mtdChart;
 let dailyTargetStatusEnabled = true;
@@ -632,7 +644,7 @@ function setStagingMonitorTab(view, tab) { view.querySelectorAll('[data-staging-
 const renderStagingStatusWithTabs = renderStagingStatus;
 renderStagingStatus = async function renderStagingStatusWithPipelineMap() { await renderStagingStatusWithTabs(); const view = ensureUtilityView('stagingStatusView'); const monitor = view.querySelector('.staging-monitor'); if (!monitor || monitor.dataset.pipelineTabsReady) return; const status = await request('/api/staging-status'); const rows = status.data || status; const overview = monitor.outerHTML; monitor.dataset.pipelineTabsReady = 'true'; view.innerHTML = `<div class="staging-monitor-tabs" role="tablist" aria-label="Staging views"><button type="button" role="tab" aria-selected="true" class="active" data-staging-monitor-tab="overview">Overview</button><button type="button" role="tab" aria-selected="false" data-staging-monitor-tab="map">Pipeline map</button></div><div data-staging-monitor-panel="overview">${overview}</div><div data-staging-monitor-panel="map" hidden>${renderStagingPipelineMap(rows)}</div>`; };
 document.addEventListener('click', (event) => { const tab = event.target.closest('[data-staging-monitor-tab]'); if (tab) setStagingMonitorTab(ensureUtilityView('stagingStatusView'), tab.dataset.stagingMonitorTab); });
-function showView(view) { saveDashboardNavigation(view); const parameters = view === 'parameters'; const comments = view === 'comments'; const model = view === 'model'; const defects = view === 'defects'; const staging = view === 'staging'; const dataTable = view === 'ta-data-table'; const taMachine = view === 'ta-yield-machine'; const scCalculationLog = view === 'sc-yield-log'; const taCalculationLog = view === 'ta-yield-log'; const calculationLog = scCalculationLog || taCalculationLog; const scYieldParameters = parameters && currentConfig.dataset === 'yield'; const scLogView = ensureScYieldLogView(); const taLogView = ensureTaYieldLogView(); const machineView = ensureTaYieldMachineView(); const defectView = ensureUtilityView('defectSettingsView'); const stagingView = ensureUtilityView('stagingStatusView'); const dataTableView = byId('taDataTableView'); byId('dashboardView').hidden = parameters || comments || model || calculationLog || defects || staging || dataTable || taMachine; dataTableView.hidden = !dataTable; machineView.hidden = !taMachine; byId('parameterView').hidden = !parameters || scYieldParameters; byId('scYieldParameterView').hidden = !scYieldParameters; scLogView.hidden = !scCalculationLog; taLogView.hidden = !taCalculationLog; defectView.hidden = !defects; stagingView.hidden = !staging; const modeSettings = byId('dashboardDataModeSettings'); if (modeSettings) modeSettings.hidden = !staging; byId('commentView').hidden = !comments; byId('dataModelView').hidden = !model; document.querySelectorAll('.app-tab').forEach((button) => { const active = button.dataset.view === view; button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active)); }); if (taMachine) renderTaYieldMachineView(); if (dataTable) ensureTaWorkbookVerificationView().loadRows().catch((error) => { byId('taWorkbookRows').innerHTML = `<tr><td colspan="6">${escapeHtml(error.message)}</td></tr>`; }); if (defects) renderDefectSettings().catch((error) => { defectView.textContent = error.message; }); if (staging) renderStagingStatus().catch((error) => { stagingView.textContent = error.message; }); if (parameters) { if (scYieldParameters) renderScYieldTargetParameters(latestScYieldData).catch((error) => { byId('scYieldTargetStatus').className = 'parameter-status'; byId('scYieldTargetStatus').textContent = error.message; }); else if (currentConfig.dataset === 'ta-yield') renderTaYieldTargetParameters().catch((error) => setStatus(error.message)); else { if (!byId('parameterProduct').value && byId('product').value) byId('parameterProduct').value = byId('product').value; loadParameterSeries(); renderSavedParameters(); } } if (scCalculationLog) renderScYieldCalculationLog(); if (taCalculationLog) renderTaYieldCalculationLog(); if (comments) loadCommentLog(); if (model) renderDataModel(currentConfig.dataModels); }
+function showView(view) { saveDashboardNavigation(view); const parameters = view === 'parameters'; const comments = view === 'comments'; const model = view === 'model'; const defects = view === 'defects'; const staging = view === 'staging'; const dataTable = view === 'ta-data-table'; const taMachine = view === 'ta-yield-machine'; const scCalculationLog = view === 'sc-yield-log'; const taCalculationLog = view === 'ta-yield-log'; const calculationLog = scCalculationLog || taCalculationLog; const scYieldParameters = parameters && currentConfig.dataset === 'yield'; const scLogView = ensureScYieldLogView(); const taLogView = ensureTaYieldLogView(); const machineView = ensureTaYieldMachineView(); const defectView = ensureUtilityView('defectSettingsView'); const stagingView = ensureUtilityView('stagingStatusView'); const dataTableView = byId('taDataTableView'); byId('dashboardView').hidden = parameters || comments || model || calculationLog || defects || staging || dataTable || taMachine; dataTableView.hidden = !dataTable; machineView.hidden = !taMachine; byId('parameterView').hidden = !parameters || scYieldParameters; byId('scYieldParameterView').hidden = !scYieldParameters; scLogView.hidden = !scCalculationLog; taLogView.hidden = !taCalculationLog; defectView.hidden = !defects; stagingView.hidden = !staging; const modeSettings = byId('dashboardDataModeSettings'); if (modeSettings) modeSettings.hidden = !staging; byId('commentView').hidden = !comments; byId('dataModelView').hidden = !model; document.querySelectorAll('.app-tab').forEach((button) => { const active = button.dataset.view === view; button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active)); }); if (view === 'dashboard') restoreTaYieldDashboardDetails(); if (taMachine) renderTaYieldMachineView(); if (dataTable) ensureTaWorkbookVerificationView().loadRows().catch((error) => { byId('taWorkbookRows').innerHTML = `<tr><td colspan="6">${escapeHtml(error.message)}</td></tr>`; }); if (defects) renderDefectSettings().catch((error) => { defectView.textContent = error.message; }); if (staging) renderStagingStatus().catch((error) => { stagingView.textContent = error.message; }); if (parameters) { if (scYieldParameters) renderScYieldTargetParameters(latestScYieldData).catch((error) => { byId('scYieldTargetStatus').className = 'parameter-status'; byId('scYieldTargetStatus').textContent = error.message; }); else if (currentConfig.dataset === 'ta-yield') renderTaYieldTargetParameters().catch((error) => setStatus(error.message)); else { if (!byId('parameterProduct').value && byId('product').value) byId('parameterProduct').value = byId('product').value; loadParameterSeries(); renderSavedParameters(); } } if (scCalculationLog) renderScYieldCalculationLog(); if (taCalculationLog) renderTaYieldCalculationLog(); if (comments) loadCommentLog(); if (model) renderDataModel(currentConfig.dataModels); }
 
 function populateOptions(options, selected = {}) {
   const placeholders = { process: 'All processes', serie: 'All series', case: 'All cases' };
@@ -758,6 +770,408 @@ function renderCategoricalChart(categories, series, valueFor, options) {
   chart.innerHTML = `<div class="chart-scroll${options.fitToPanel ? ' chart-scroll-fit' : ''}"><svg viewBox="0 0 ${width} ${height}" style="width:${svgWidth}" role="img" aria-label="${escapeHtml(options.accessibleLabel)}">${grid}<line x1="${left}" y1="${base}" x2="${width - right}" y2="${base}" stroke="#b8c7bf"/>${labels}${marks}</svg></div><div class="chart-tooltip" hidden></div>`; bindChartTooltips();
 }
 
+function aggregateDailyOutput(rows) {
+  const totals = rows.reduce((result, row) => {
+    const itemName = String(row.itemName || '').trim() || 'Unspecified';
+    const current = result.get(itemName) || { quantityMoved: 0, lotCount: 0, hasLotCount: true, jobNames: new Set(), hasJobNames: true };
+    const nextLotCount = Number(row.lotCount);
+    const hasLotCount = row.lotCount !== null && row.lotCount !== undefined && row.lotCount !== '' && Number.isFinite(nextLotCount);
+    const jobNames = Array.isArray(row.jobNames) ? row.jobNames.map((name) => String(name || '').trim()).filter(Boolean) : [];
+    return new Map([...result, [itemName, {
+      quantityMoved: current.quantityMoved + (Number(row.quantityMoved) || 0),
+      lotCount: current.lotCount + (hasLotCount ? nextLotCount : 0),
+      hasLotCount: current.hasLotCount && hasLotCount,
+      jobNames: new Set([...current.jobNames, ...jobNames]),
+      hasJobNames: current.hasJobNames && Array.isArray(row.jobNames)
+    }]]);
+  }, new Map());
+  return [...totals.entries()].map(([itemName, value]) => ({ itemName, quantityKpcs: value.quantityMoved / 1000, lotCount: value.hasJobNames ? value.jobNames.size : value.hasLotCount ? value.lotCount : null, ...(value.hasJobNames ? { jobNames: [...value.jobNames] } : {}) })).sort((left, right) => left.itemName.localeCompare(right.itemName, undefined, { numeric: true, sensitivity: 'base' }));
+}
+
+const dailyOutputPalette = ['#187b9b', '#dc7a2b', '#315da8', '#318466', '#b34c63', '#7657a5', '#9a7828', '#397f83', '#bf5c32', '#5266a6'];
+function dailyOutputSeriesColor(series) {
+  const hash = [...String(series || '')].reduce((value, character) => Math.imul(value, 31) + character.charCodeAt(0) >>> 0, 2166136261);
+  return dailyOutputPalette[hash % dailyOutputPalette.length];
+}
+
+function bindDailyOutputTooltips(chart = byId('dailyOutputChart')) {
+  const tooltip = byId('dailyOutputTooltip');
+  if (!chart || !tooltip) return;
+  const hide = () => { tooltip.hidden = true; tooltip.setAttribute('aria-hidden', 'true'); };
+  const show = (mark, event) => {
+    const color = /^#[0-9a-f]{6}$/i.test(mark.dataset.seriesColor || '') ? mark.dataset.seriesColor : '#187b9b';
+    tooltip.innerHTML = `<strong><i style="background:${color}"></i>${escapeHtml(mark.dataset.tooltipSeries)}</strong><span><b>Output</b>${escapeHtml(mark.dataset.tooltipOutput)}</span><span><b>Share</b>${escapeHtml(mark.dataset.tooltipShare)}</span><span><b>Lots</b>${escapeHtml(mark.dataset.tooltipLots)}</span>`;
+    tooltip.hidden = false;
+    tooltip.setAttribute('aria-hidden', 'false');
+    const chartBounds = chart.getBoundingClientRect();
+    const markBounds = mark.getBoundingClientRect();
+    const clientX = Number.isFinite(event?.clientX) ? event.clientX : markBounds.left + markBounds.width / 2;
+    const clientY = Number.isFinite(event?.clientY) ? event.clientY : markBounds.top;
+    const left = Math.min(Math.max(clientX - chartBounds.left + 12, 8), Math.max(8, chartBounds.width - tooltip.offsetWidth - 8));
+    const top = Math.max(8, clientY - chartBounds.top - tooltip.offsetHeight - 12);
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+  };
+  chart.querySelectorAll('.daily-output-series-mark').forEach((mark) => {
+    mark.addEventListener('pointermove', (event) => show(mark, event));
+    mark.addEventListener('pointerleave', hide);
+    mark.addEventListener('focus', () => show(mark));
+    mark.addEventListener('blur', hide);
+    mark.addEventListener('keydown', (event) => { if (event.key === 'Escape') hide(); });
+  });
+}
+
+function taYieldDailyOutputRows(details) {
+  const totals = details.reduce((result, row) => {
+    const itemName = String(row.series || '').trim() || 'Unspecified';
+    const current = result.get(itemName) || { quantityMoved: 0, lotNumbers: new Set() };
+    return new Map([...result, [itemName, { quantityMoved: current.quantityMoved + Number(row.finalGood || 0), lotNumbers: new Set([...current.lotNumbers, String(row.lotNo || '').trim()].filter(Boolean)) }]]);
+  }, new Map());
+  return [...totals.entries()].map(([itemName, value]) => ({ itemName, quantityMoved: value.quantityMoved, lotCount: value.lotNumbers.size }));
+}
+
+function taYieldSummaryOutputRows(rows) {
+  const totals = rows.reduce((result, row) => {
+    const itemName = String(row.line || '').trim() || 'Unspecified';
+    const current = result.get(itemName) || 0;
+    return new Map([...result, [itemName, current + Number(row.finalGood || 0)]]);
+  }, new Map());
+  return [...totals.entries()].map(([itemName, quantityMoved]) => ({ itemName, quantityMoved }));
+}
+
+function isCurrentTaYieldDetailScope(scope) {
+  return Boolean(scope && scope === taYieldDailyOutputScope && scope.url === taYieldDailyOutputScope.url
+    && scope.requestId === dataRequestId && scope.generation === dashboardDataModeGeneration
+    && currentConfig.dataset === 'ta-yield' && selectedDataset() === 'ta-yield');
+}
+
+function renderTaYieldDailyOutputPanel(payload = latestTaYieldData) {
+  if (!dailyOutputPanelEnabled) return;
+  if (!isCurrentTaYieldDetailScope(taYieldDailyOutputScope)) { renderDailyOutputPanel([], '', true); return; }
+  renderDailyOutputPanel(payload.dailyOutput ?? taYieldSummaryOutputRows(payload.summary || []),
+    payload.dailyOutputError || '', Boolean(payload.dailyOutputLoading), payload.reportScope);
+}
+
+function loadTaYieldDailyOutput() {
+  const scope = taYieldDailyOutputScope;
+  if (!dailyOutputPanelEnabled || !isCurrentTaYieldDetailScope(scope)) return Promise.resolve();
+  if (latestTaYieldData.dailyOutputLoaded) { renderTaYieldDailyOutputPanel(); return Promise.resolve(); }
+  if (taYieldDailyOutputRequest?.scope === scope) return taYieldDailyOutputRequest.promise;
+  latestTaYieldData = { ...latestTaYieldData, dailyOutputLoading: true, dailyOutputError: '' };
+  renderTaYieldDailyOutputPanel();
+  const promise = (async () => {
+    try {
+      const rows = await request(scope.url);
+      if (!isCurrentTaYieldDetailScope(scope)) return;
+      latestTaYieldData = { ...latestTaYieldData, dailyOutput: rows, dailyOutputLoaded: true, dailyOutputLoading: false, dailyOutputError: '' };
+    } catch (error) {
+      if (!isCurrentTaYieldDetailScope(scope)) return;
+      latestTaYieldData = { ...latestTaYieldData, dailyOutputLoaded: true, dailyOutputLoading: false, dailyOutputError: error.message };
+    } finally {
+      if (taYieldDailyOutputRequest?.scope === scope) taYieldDailyOutputRequest = null;
+    }
+    if (dailyOutputPanelEnabled && isCurrentTaYieldDetailScope(scope)) renderTaYieldDailyOutputPanel();
+  })();
+  taYieldDailyOutputRequest = { scope, promise };
+  return promise;
+}
+
+function loadTaYieldLotDetails() {
+  const scope = taYieldDailyOutputScope;
+  const url = latestTaYieldLotsUrl;
+  if (!isCurrentTaYieldDetailScope(scope) || latestTaYieldLotsRequestId !== dataRequestId || !url) return Promise.resolve();
+  if (latestTaYieldData.detailsLoaded) return Promise.resolve(latestTaYieldData.details);
+  if (taYieldLotDetailsRequest?.scope === scope && taYieldLotDetailsRequest.url === url) return taYieldLotDetailsRequest.promise;
+  const promise = (async () => {
+    try {
+      const details = await request(url);
+      if (!isCurrentTaYieldDetailScope(scope) || url !== latestTaYieldLotsUrl) return;
+      latestTaYieldData = { ...latestTaYieldData, details, detailsLoaded: true, detailsError: '' };
+      return details;
+    } finally {
+      if (taYieldLotDetailsRequest?.scope === scope && taYieldLotDetailsRequest.url === url) taYieldLotDetailsRequest = null;
+    }
+  })();
+  taYieldLotDetailsRequest = { scope, url, promise };
+  return promise;
+}
+
+async function loadTaYieldLotsTable() {
+  const scope = taYieldDailyOutputScope;
+  const visible = () => taYieldDetailVisible && taYieldTableView === 'lots'
+    && (!document.querySelector('.app-tab.active')?.dataset.view || document.querySelector('.app-tab.active').dataset.view === 'dashboard');
+  if (!visible() || !isCurrentTaYieldDetailScope(scope) || latestTaYieldData.detailsLoaded) return;
+  byId('taYieldDetailTitle').textContent = 'Loading Excel-style lot detail…';
+  byId('taYieldHead').innerHTML = '';
+  byId('taYieldRows').innerHTML = '<tr><td>Loading lot detail…</td></tr>';
+  try {
+    const details = await loadTaYieldLotDetails();
+    if (details !== undefined && isCurrentTaYieldDetailScope(scope) && visible()) renderTaYield(latestTaYieldData);
+  } catch (error) {
+    if (!isCurrentTaYieldDetailScope(scope)) return;
+    latestTaYieldData = { ...latestTaYieldData, detailsError: error.message };
+    if (visible()) { byId('taYieldDetailTitle').textContent = 'Excel-style lot detail'; byId('taYieldRows').innerHTML = `<tr><td>${escapeHtml(error.message)}</td></tr>`; }
+  }
+}
+
+function restoreTaYieldDashboardDetails() {
+  if (currentConfig.dataset !== 'ta-yield' || !isCurrentTaYieldDetailScope(taYieldDailyOutputScope)
+    || !taYieldDetailVisible || taYieldTableView !== 'lots') return;
+  renderTaYield(latestTaYieldData);
+  loadTaYieldLotsTable();
+}
+
+function ensureTaYieldCompareController() {
+  if (!taYieldCompareController) {
+    taYieldCompareController = window.createTaYieldCompareWindow({
+      request, bindResize: bindDailyOutputResize, escapeHtml, toggleButton: byId('taYieldCompareToggle'),
+      getFilters: taYieldCompareFilters, fetchExport: fetchDashboardExport
+    });
+  }
+  return taYieldCompareController;
+}
+
+function taYieldCompareFilters() {
+  return { startDate: byId('startDate').value, endDate: byId('endDate').value,
+    product: byId('product').value, serie: selectedSeries(), pn: selectedPartNumbers(),
+    dataMode: `${dashboardDataMode?.mode || 'unknown'}:${dashboardDataModeGeneration}` };
+}
+
+function updateTaYieldCompare() {
+  const controller = ensureTaYieldCompareController();
+  const available = selectedDataset() === 'ta-yield';
+  controller.setAvailable(available);
+  if (available && controller.enabled) controller.refresh(taYieldCompareFilters(), true);
+}
+
+function syncTaYieldCompareSelection() {
+  if (taYieldCompareController && selectedDataset() === 'ta-yield') {
+    taYieldCompareController.syncFilters(taYieldCompareFilters());
+  }
+}
+
+function toggleTaYieldCompare() {
+  const controller = ensureTaYieldCompareController();
+  controller.setAvailable(selectedDataset() === 'ta-yield');
+  if (controller.enabled) { controller.toggle(); return; }
+  controller.refresh(taYieldCompareFilters());
+  controller.toggle();
+}
+
+function updateDailyOutputToggle() {
+  const button = byId('dailyOutputToggle');
+  if (!button) return;
+  const supported = ['closed', 'lot', 'ta-yield'].includes(currentConfig.dataset);
+  button.hidden = !supported;
+  button.setAttribute('aria-pressed', String(dailyOutputPanelEnabled));
+  button.textContent = `Daily output: ${dailyOutputPanelEnabled ? 'On' : 'Off'}`;
+}
+
+function setDailyOutputPanelEnabled(enabled, restorePanel) {
+  dailyOutputPanelEnabled = Boolean(enabled);
+  if (!dailyOutputPanelEnabled) {
+    const panel = byId('dailyOutputPanel');
+    if (panel) panel.hidden = true;
+    updateDailyOutputToggle();
+    return false;
+  }
+  updateDailyOutputToggle();
+  if (typeof restorePanel === 'function') restorePanel();
+  else if (currentConfig.dataset === 'ta-yield') { renderTaYieldDailyOutputPanel(); loadTaYieldDailyOutput(); }
+  else renderDailyOutputPanel(latestDailyOutputData);
+  return true;
+}
+
+function toggleDailyOutputPanel(restorePanel) {
+  return setDailyOutputPanelEnabled(!dailyOutputPanelEnabled, restorePanel);
+}
+
+function closeDailyOutputPanel() {
+  const enabled = setDailyOutputPanelEnabled(false);
+  byId('dailyOutputToggle')?.focus();
+  return enabled;
+}
+
+function calculateDailyOutputResize(bounds, direction, deltaX, deltaY, viewport, limits) {
+  const maxRight = Math.max(9, viewport.width - 8);
+  const maxBottom = Math.max(9, viewport.height - 8);
+  const minWidth = Math.min(Math.max(1, limits.minWidth), maxRight - 8);
+  const minHeight = Math.min(Math.max(1, limits.minHeight), maxBottom - 8);
+  let right = Math.min(maxRight, Math.max(8 + minWidth, bounds.left + bounds.width));
+  let bottom = Math.min(maxBottom, Math.max(8 + minHeight, bounds.top + bounds.height));
+  let left = Math.max(8, Math.min(bounds.left, right - minWidth));
+  let top = Math.max(8, Math.min(bounds.top, bottom - minHeight));
+  if (direction.includes('w')) left = Math.max(8, Math.min(left + deltaX, right - minWidth));
+  if (direction.includes('e')) right = Math.min(maxRight, Math.max(right + deltaX, left + minWidth));
+  if (direction.includes('n')) top = Math.max(8, Math.min(top + deltaY, bottom - minHeight));
+  if (direction.includes('s')) bottom = Math.min(maxBottom, Math.max(bottom + deltaY, top + minHeight));
+  return { left, top, width: right - left, height: bottom - top };
+}
+
+function dailyOutputResizeLimits(panel) {
+  const style = getComputedStyle(panel);
+  return { minWidth: Math.max(280, parseFloat(style.minWidth) || 0), minHeight: parseFloat(style.minHeight) || 360 };
+}
+
+function canResizeDailyOutputPanel(panel) {
+  return !panel.hidden && !panel.classList.contains('is-minimized') && !panel.classList.contains('is-maximized');
+}
+
+function applyDailyOutputBounds(panel, bounds) {
+  panel.style.right = 'auto';
+  panel.style.bottom = 'auto';
+  panel.style.left = `${bounds.left}px`;
+  panel.style.top = `${bounds.top}px`;
+  panel.style.width = `${bounds.width}px`;
+  panel.style.height = `${bounds.height}px`;
+}
+
+function bindDailyOutputResizeHandle(panel, handle) {
+  const direction = handle.dataset.resizeDirection;
+  let resize;
+  const applyResize = (bounds, deltaX, deltaY, limits) => applyDailyOutputBounds(panel,
+    calculateDailyOutputResize(bounds, direction, deltaX, deltaY,
+      { width: window.innerWidth, height: window.innerHeight }, limits));
+  handle.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || event.isPrimary === false || resize || !canResizeDailyOutputPanel(panel)) return;
+    event.preventDefault(); event.stopPropagation();
+    resize = { pointerId: event.pointerId, x: event.clientX, y: event.clientY,
+      bounds: panel.getBoundingClientRect(), limits: dailyOutputResizeLimits(panel) };
+    handle.setPointerCapture(event.pointerId);
+  });
+  handle.addEventListener('pointermove', (event) => {
+    if (!resize || resize.pointerId !== event.pointerId || !canResizeDailyOutputPanel(panel)) return;
+    applyResize(resize.bounds, event.clientX - resize.x, event.clientY - resize.y, resize.limits);
+  });
+  const endResize = (event) => {
+    if (resize?.pointerId !== event.pointerId) return;
+    resize = undefined;
+    if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+  };
+  handle.addEventListener('pointerup', endResize);
+  handle.addEventListener('pointercancel', endResize);
+  handle.addEventListener('lostpointercapture', endResize);
+  handle.addEventListener('keydown', (event) => {
+    if (resize || !canResizeDailyOutputPanel(panel)) return;
+    const horizontal = direction.includes('e') || direction.includes('w');
+    const vertical = direction.includes('n') || direction.includes('s');
+    const step = event.shiftKey ? 50 : 10;
+    const deltaX = horizontal ? ({ ArrowLeft: -step, ArrowRight: step }[event.key] || 0) : 0;
+    const deltaY = vertical ? ({ ArrowUp: -step, ArrowDown: step }[event.key] || 0) : 0;
+    if (!deltaX && !deltaY) return;
+    event.preventDefault(); event.stopPropagation();
+    applyResize(panel.getBoundingClientRect(), deltaX, deltaY, dailyOutputResizeLimits(panel));
+  });
+}
+
+function bindDailyOutputResize(panel, title = 'Daily output') {
+  const panelTitle = title === 'Compare' ? 'Compare' : 'Daily output';
+  const directions = { n: 'top', e: 'right', s: 'bottom', w: 'left', ne: 'top right', se: 'bottom right', sw: 'bottom left', nw: 'top left' };
+  panel.insertAdjacentHTML('beforeend', Object.entries(directions).map(([direction, label]) =>
+    `<span class="daily-output-resize-handle" data-resize-direction="${direction}" role="button" tabindex="0" aria-label="Resize ${panelTitle} from ${label}" title="Drag to resize from ${label}; arrow keys resize, Shift for larger steps"></span>`).join(''));
+  panel.querySelectorAll('.daily-output-resize-handle').forEach((handle) => bindDailyOutputResizeHandle(panel, handle));
+}
+
+function ensureDailyOutputPanel() {
+  const existing = byId('dailyOutputPanel');
+  if (existing) return existing;
+  const panel = document.createElement('section');
+  panel.id = 'dailyOutputPanel';
+  panel.className = 'daily-output-panel';
+  panel.setAttribute('role', 'region');
+  panel.setAttribute('aria-label', 'Daily output chart');
+  panel.innerHTML = `<header class="daily-output-panel-header" id="dailyOutputDragHandle"><div class="daily-output-panel-identity"><span class="daily-output-panel-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><strong>Daily output</strong><span>Production pulse / kpcs. + lots</span></div></div><div class="daily-output-panel-actions"><button type="button" id="dailyOutputMaximize" aria-pressed="false" aria-label="Maximize Daily output panel" title="Maximize panel"><span class="daily-output-action-icon" aria-hidden="true">[ ]</span></button><button type="button" id="dailyOutputMinimize" aria-expanded="true" aria-controls="dailyOutputPanelContent" aria-label="Minimize Daily output panel" title="Minimize panel"><span class="daily-output-action-icon" aria-hidden="true">_</span></button><button type="button" id="dailyOutputClose" class="daily-output-panel-close" aria-label="Close Daily output panel" title="Close panel"><span aria-hidden="true">x</span></button></div></header><div class="daily-output-panel-content" id="dailyOutputPanelContent"><p class="daily-output-panel-scope" id="dailyOutputScope"></p><div class="daily-output-panel-summary" id="dailyOutputSummary"></div><div class="daily-output-panel-chart" id="dailyOutputChart"></div></div><span class="daily-output-resize-hint" aria-hidden="true" title="Drag to resize"></span>`;
+  document.body.append(panel);
+  bindDailyOutputResize(panel);
+  const header = byId('dailyOutputDragHandle');
+  const minimize = byId('dailyOutputMinimize');
+  const maximize = byId('dailyOutputMaximize');
+  const close = byId('dailyOutputClose');
+  const setAction = (button, label, icon) => { button.setAttribute('aria-label', `${label} Daily output panel`); button.title = `${label} panel`; button.querySelector('.daily-output-action-icon').textContent = icon; };
+  maximize.addEventListener('click', () => {
+    if (dailyOutputPanelState.maximized) {
+      const bounds = dailyOutputPanelState.restoreBounds;
+      panel.classList.remove('is-maximized');
+      if (bounds) { panel.style.left = `${bounds.left}px`; panel.style.top = `${bounds.top}px`; panel.style.width = `${bounds.width}px`; panel.style.height = `${bounds.height}px`; panel.style.right = 'auto'; panel.style.bottom = 'auto'; }
+      dailyOutputPanelState = { ...dailyOutputPanelState, maximized: false, restoreBounds: undefined };
+      maximize.setAttribute('aria-pressed', 'false'); setAction(maximize, 'Maximize', '[ ]');
+      return;
+    }
+    const bounds = panel.getBoundingClientRect();
+    panel.classList.remove('is-minimized');
+    minimize.setAttribute('aria-expanded', 'true'); setAction(minimize, 'Minimize', '_');
+    dailyOutputPanelState = { ...dailyOutputPanelState, minimized: false, maximized: true, restoreBounds: { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height } };
+    panel.classList.add('is-maximized');
+    maximize.setAttribute('aria-pressed', 'true'); setAction(maximize, 'Restore', '<>');
+  });
+  minimize.addEventListener('click', () => {
+    dailyOutputPanelState = { ...dailyOutputPanelState, minimized: !dailyOutputPanelState.minimized };
+    panel.classList.toggle('is-minimized', dailyOutputPanelState.minimized);
+    minimize.setAttribute('aria-expanded', String(!dailyOutputPanelState.minimized));
+    setAction(minimize, dailyOutputPanelState.minimized ? 'Restore' : 'Minimize', dailyOutputPanelState.minimized ? '^' : '_');
+  });
+  close.addEventListener('click', closeDailyOutputPanel);
+  header.addEventListener('pointerdown', (event) => {
+    if (event.target.closest('button')) return;
+    if (dailyOutputPanelState.maximized) return;
+    const bounds = panel.getBoundingClientRect();
+    dailyOutputPanelState = { ...dailyOutputPanelState, drag: { pointerId: event.pointerId, offsetX: event.clientX - bounds.left, offsetY: event.clientY - bounds.top } };
+    header.setPointerCapture(event.pointerId);
+    panel.style.right = 'auto'; panel.style.bottom = 'auto'; panel.style.left = `${bounds.left}px`; panel.style.top = `${bounds.top}px`;
+  });
+  header.addEventListener('pointermove', (event) => {
+    const drag = dailyOutputPanelState.drag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const bounds = panel.getBoundingClientRect();
+    const left = Math.min(Math.max(8, event.clientX - drag.offsetX), Math.max(8, window.innerWidth - bounds.width - 8));
+    const top = Math.min(Math.max(8, event.clientY - drag.offsetY), Math.max(8, window.innerHeight - bounds.height - 8));
+    panel.style.left = `${left}px`; panel.style.top = `${top}px`;
+  });
+  const endDrag = (event) => { if (dailyOutputPanelState.drag?.pointerId === event.pointerId) dailyOutputPanelState = { ...dailyOutputPanelState, drag: undefined }; };
+  header.addEventListener('pointerup', endDrag); header.addEventListener('pointercancel', endDrag);
+  if (typeof ResizeObserver === 'function') {
+    let previousSize = '';
+    const resizeObserver = new ResizeObserver(([entry]) => {
+      const size = `${Math.round(entry.contentRect.width)}x${Math.round(entry.contentRect.height)}`;
+      if (size === previousSize) return;
+      previousSize = size;
+      if (panel.hidden || dailyOutputPanelState.minimized || !dailyOutputPanelEnabled) return;
+      cancelAnimationFrame(dailyOutputResizeFrame);
+      dailyOutputResizeFrame = requestAnimationFrame(() => renderDailyOutputPanel(latestDailyOutputPanelRows, latestDailyOutputPanelError, latestDailyOutputPanelLoading, latestDailyOutputPanelScope));
+    });
+    resizeObserver.observe(panel);
+  }
+  return panel;
+}
+
+function renderDailyOutputPanel(rows, error = '', loading = false, reportScope) {
+  latestDailyOutputPanelRows = [...rows];
+  latestDailyOutputPanelError = error;
+  latestDailyOutputPanelLoading = loading;
+  latestDailyOutputPanelScope = reportScope;
+  const panel = ensureDailyOutputPanel();
+  const supported = ['closed', 'lot', 'ta-yield'].includes(currentConfig.dataset);
+  panel.hidden = !supported || !dailyOutputPanelEnabled;
+  updateDailyOutputToggle();
+  if (!supported || !dailyOutputPanelEnabled) return;
+  const values = aggregateDailyOutput(rows);
+  const hasLotCounts = values.some((row) => row.lotCount !== null);
+  const totalKpcs = values.reduce((sum, row) => sum + row.quantityKpcs, 0);
+  const totalLots = values.every((row) => Array.isArray(row.jobNames))
+    ? new Set(values.flatMap((row) => row.jobNames)).size
+    : hasLotCounts ? values.reduce((sum, row) => sum + (row.lotCount || 0), 0) : null;
+  byId('dailyOutputScope').textContent = `${reportScope?.startDate || byId('startDate').value} to ${reportScope?.endDate || byId('endDate').value} · ${values.length} series${loading ? ' · Loading distinct JobName lot counts…' : error ? ` · Lot count unavailable: ${error}` : ''}`;
+  byId('dailyOutputSummary').innerHTML = `<span title="Sum of all selected output quantities. 1 kpcs = 1,000 pieces."><small>Total output</small><b>${totalKpcs.toLocaleString(undefined, { maximumFractionDigits: 2 })}</b> kpcs.</span><span title="Distinct JobNames, such as 6K01N00052, each count as one lot."><small>Total lots</small><b>${totalLots === null ? '—' : format.format(totalLots)}</b> JobName</span>`;
+  if (!values.length) { byId('dailyOutputChart').innerHTML = `<p class="empty">${loading ? 'Loading Daily output…' : 'No output matches the current filters.'}</p>`; return; }
+  const width = Math.max(520, values.length * 92 + 72); const measuredPanelHeight = Number(panel.getBoundingClientRect?.().height) || 0; const height = Math.max(300, Math.min(760, Math.round(measuredPanelHeight - 190))); const top = 34; const base = height - 78; const plotHeight = base - top; const slot = (width - 56) / values.length;
+  const maxKpcs = Math.max(...values.map((row) => row.quantityKpcs), 1); const maxLots = Math.max(...values.map((row) => row.lotCount || 0), 1);
+  const marks = values.map((row, index) => { const x = 36 + index * slot + slot / 2; const outputHeight = row.quantityKpcs / maxKpcs * plotHeight; const lotHeight = row.lotCount === null ? 0 : row.lotCount / maxLots * plotHeight; const fullLabel = escapeHtml(row.itemName); const label = escapeHtml(shortTaSeries(row.itemName)); const outputLabel = row.quantityKpcs.toLocaleString(undefined, { maximumFractionDigits: 2 }); const outputPieces = row.quantityKpcs * 1000; const outputText = `${outputLabel} kpcs. / ${format.format(outputPieces)} pcs`; const outputShare = totalKpcs ? row.quantityKpcs / totalKpcs * 100 : 0; const shareText = `${outputShare.toFixed(1)}% of selected output`; const lotsText = row.lotCount === null ? 'Unavailable' : format.format(row.lotCount); const seriesColor = dailyOutputSeriesColor(row.itemName); const accessibleLabel = `${fullLabel}. Output ${outputText}. Share ${shareText}. Lots ${lotsText}.`; const valueY = Math.max(top + 11, base - outputHeight - 8); return `<g class="daily-output-series-mark" tabindex="0" role="img" aria-label="${accessibleLabel}" data-series-color="${seriesColor}" data-tooltip-series="${fullLabel}" data-tooltip-output="${outputText}" data-tooltip-share="${shareText}" data-tooltip-lots="${lotsText}"><rect class="daily-output-kpcs" x="${x - 23}" y="${base - outputHeight}" width="24" height="${outputHeight}" rx="3" style="fill:${seriesColor}"/><rect class="daily-output-lots" x="${x + 6}" y="${base - lotHeight}" width="14" height="${lotHeight}" rx="3" style="fill:${seriesColor};opacity:.38"/><text class="daily-output-value-label" x="${x - 11}" y="${valueY}" text-anchor="middle">${outputLabel}</text><text class="daily-output-series-label" x="${x}" y="${base + 18}" text-anchor="end" transform="rotate(-36 ${x} ${base + 18})">${label}</text></g>`; }).join('');
+  const lotLabel = 'Distinct JobName lots';
+  const legendLots = hasLotCounts ? `${lotLabel} (lighter companion bar)` : loading ? 'Loading distinct JobName lot counts…' : 'Lot count unavailable in this data source';
+  byId('dailyOutputChart').innerHTML = `<div class="daily-output-axis"><span>Output · ${maxKpcs.toFixed(1)} kpcs.</span><span>Lots · ${hasLotCounts ? format.format(maxLots) : '—'}</span></div><div class="daily-output-panel-scroll"><svg style="height:${height}px" viewBox="0 0 ${width} ${height}" role="img" aria-label="Daily output in kpcs and distinct lots by series"><line x1="24" y1="${base}" x2="${width - 8}" y2="${base}"/>${marks}</svg></div><p class="daily-output-legend"><i class="daily-output-series-key"></i>Output by series <i class="daily-output-lots-key"></i>${legendLots}</p><div id="dailyOutputTooltip" class="daily-output-tooltip" role="tooltip" aria-hidden="true" hidden></div>`;
+  bindDailyOutputTooltips(byId('dailyOutputChart'));
+}
+
 function renderChart(data, chartData) {
   const isProcessChart = currentConfig.chartAxis === 'process' && !usesOperationDateAxis();
   byId('chartFit').hidden = !isProcessChart;
@@ -819,10 +1233,11 @@ function ensureOperationTransitions() {
   request(`/api/operation-transitions?${key}`).then((rows) => { if (operationTransitionRequestKey !== key) return; latestOperationTransitions = rows; renderChart(latestData, latestChartData); }).catch(() => { if (operationTransitionRequestKey === key) latestOperationTransitions = []; });
 }
 
-function renderData(data, chartData, mtdData = data) {
+function renderData(data, chartData, mtdData = data, dailyOutputData = latestDailyOutputData) {
   latestData = data;
   latestChartData = chartData || [];
   latestMtdData = mtdData;
+  latestDailyOutputData = dailyOutputData;
   inProgressReportingDate = resolveInProgressReportingDate();
   latestSourceReportingDate = data.map((row) => row.bucketDate).filter((date) => date <= byId('endDate').value).sort().at(-1) || '';
   const hasInProgressDay = Boolean(inProgressReportingDate);
@@ -843,6 +1258,7 @@ function renderData(data, chartData, mtdData = data) {
   byId('inProgressDayMessage').textContent = hasInProgressDay ? currentConfig.dataset === 'closed' ? `${inProgressReportingDate.slice(5)} is live; MTD includes day ${Number(byId('endDate').value.slice(-2))}.` : latestSourceReportingDate && latestSourceReportingDate < inProgressReportingDate ? `${inProgressReportingDate.slice(5)} is live; WIP source data is currently reported through ${latestSourceReportingDate.slice(5)}. ${latestSourceReportingDate.slice(5)} may still increase while the source refreshes.` : `${inProgressReportingDate.slice(5)} is live; WIP quantities may still increase.` : '';
   byId('commentHint').hidden = commentsEnabled && Boolean(byId('product').value);
   byId('commentHint').textContent = commentsEnabled ? 'Select a Product to add comments' : 'Comment storage is unavailable';
+  renderDailyOutputPanel(dailyOutputData);
   byId('tableHead').innerHTML = `<tr><th rowspan="2">${groupedByPn ? 'PN' : 'Series'}</th><th rowspan="2">Qty</th><th colspan="${dates.length}">Day</th></tr><tr>${dates.map((date) => `<th class="${isInProgressDay(date) ? 'in-progress-day' : ''}${isWipRefreshPendingDay(date) ? ' refresh-pending-day' : ''}">${reportingDateLabel(date)}</th>`).join('')}</tr>`;
   byId('rows').innerHTML = series.map((name) => { const total = displayData.filter((row) => row.itemName === name).reduce((sum, row) => sum + row.quantityMoved, 0); const mtdTotal = mtdData.filter((row) => row.itemName === name).reduce((sum, row) => sum + row.quantityMoved, 0); const target = targetSetting(byId('product').value, name); const belowTarget = target && mtdTotal < mtdPlan(target).mtdTarget; return `<tr class="${belowTarget ? 'below-target' : ''}"${belowTarget ? ` aria-label="${escapeHtml(name)} is below its MTD target"` : ''}><td>${escapeHtml(name)}</td><td>${format.format(total)}</td>${dates.map((date) => commentDayCell(amounts[`${name}|${date}`] || 0, name, date)).join('')}</tr>`; }).join('');
   renderMtd(mtdData);
@@ -1408,7 +1824,7 @@ function ensureTaYieldActionsView() {
     return `<tr data-action-date="${escapeHtml(actionDate)}">${dateCell}<td data-action-label="Series"><strong>${escapeHtml(action.serie)}</strong></td><td data-action-label="Problem">${escapeHtml(action.problem)}</td><td data-action-label="Analysis / action">${escapeHtml(action.analysisAction || '—')}</td><td data-action-label="Progress">${escapeHtml(action.progress || '—')}</td><td data-action-label="PIC">${escapeHtml(action.pic || '—')}</td><td data-action-label="Due">${escapeHtml(formatDate(action.dueDate))}</td><td data-action-label="Status"><span class="ta-action-status ${action.status.toLowerCase().replace('_', '-')}">${escapeHtml(action.status === 'CLOSED' ? 'Closed' : action.status === 'OPEN' ? 'Open' : 'In progress')}</span></td><td data-action-label="Action"><button type="button" data-edit-ta-action="${action.id}">Edit</button></td></tr>`;
   }).join('') || `<tr><td colspan="9" class="ta-action-empty">No ${taYieldActionStatus === 'CLOSED' ? 'closed' : 'in-progress'} actions.</td></tr>`;
   view.innerHTML = `<div class="ta-action-heading"><div><p class="section-kicker">Corrective action tracker</p><h3>TA Yield actions</h3><p>Problems, owners, analysis, and follow-up progress from the TA Yield review.</p></div><div><button id="toggleTaYieldDetail" class="ta-action-secondary" type="button">${taYieldDetailVisible ? 'Hide yield detail' : 'Show yield detail'}</button><button id="addTaYieldAction" class="ta-action-primary" type="button">Add action</button></div></div><div class="ta-action-tabs" role="tablist" aria-label="Action status"><button class="ta-action-tab${taYieldActionStatus === 'IN_PROGRESS' ? ' active' : ''}" type="button" data-ta-action-filter="IN_PROGRESS" role="tab" aria-selected="${taYieldActionStatus === 'IN_PROGRESS'}">In progress <b>${inProgress.length}</b></button><button class="ta-action-tab${taYieldActionStatus === 'CLOSED' ? ' active' : ''}" type="button" data-ta-action-filter="CLOSED" role="tab" aria-selected="${taYieldActionStatus === 'CLOSED'}">Closed <b>${closed.length}</b></button></div><div class="ta-action-table-wrap"><table><thead><tr><th scope="col">Date</th><th scope="col">Series</th><th scope="col">Problem</th><th scope="col">Analysis / action</th><th scope="col">Progress</th><th scope="col">PIC</th><th scope="col">Due</th><th scope="col">Status</th><th scope="col">Action</th></tr></thead><tbody>${rows}</tbody></table></div>`;
-  byId('toggleTaYieldDetail').addEventListener('click', () => { taYieldDetailVisible = !taYieldDetailVisible; saveDashboardSubtab('taDetails', taYieldDetailVisible ? 'visible' : 'hidden'); renderTaYield(latestTaYieldData); });
+  byId('toggleTaYieldDetail').addEventListener('click', () => { taYieldDetailVisible = !taYieldDetailVisible; saveDashboardSubtab('taDetails', taYieldDetailVisible ? 'visible' : 'hidden'); renderTaYield(latestTaYieldData); loadTaYieldLotsTable(); });
   byId('addTaYieldAction').addEventListener('click', () => openTaYieldActionModal());
   view.querySelectorAll('[data-ta-action-filter]').forEach((button) => button.addEventListener('click', () => { taYieldActionStatus = button.dataset.taActionFilter; saveDashboardSubtab('taActions', taYieldActionStatus); ensureTaYieldActionsView(); }));
   view.querySelectorAll('[data-edit-ta-action]').forEach((button) => button.addEventListener('click', () => openTaYieldActionModal(latestTaYieldActions.find((action) => action.id === Number(button.dataset.editTaAction)))));
@@ -1458,12 +1874,12 @@ function renderTaYield(payload) {
   byId('taYieldHead').closest('section').hidden = !taYieldDetailVisible;
   ensureTaYieldActionsView();
   taWorkbookVisibleRows = 50;
-  latestTaYieldLotsRequestId = dataRequestId;
   byId('taYieldLogTab')?.removeAttribute('hidden');
   const parameterTab = document.querySelector('.app-tab[data-view="parameters"]'); parameterTab.hidden = false; parameterTab.textContent = 'TA Yield target setting';
   if (document.querySelector('.app-tab.active')?.dataset.view === 'ta-yield-log') renderTaYieldCalculationLog();
   const rows = payload.summary || [];
   const details = payload.details || [];
+  renderDailyOutputPanel(payload.dailyOutput ?? (details.length ? taYieldDailyOutputRows(details) : taYieldSummaryOutputRows(rows)), payload.dailyOutputError, Boolean(payload.dailyOutputLoading), payload.reportScope);
   const groups = [...new Set(rows.flatMap((row) => row.groups.map((group) => group.group)))].sort();
   const chartRows = rows.filter((row) => Number.isFinite(row.defectRate) && Number.isFinite(row.yield));
   const totals = rows.reduce((sum, row) => ({ input: sum.input + Number(row.input || 0), finalGood: sum.finalGood + Number(row.finalGood || 0), defect: sum.defect + Number(row.defect || 0) }), { input: 0, finalGood: 0, defect: 0 });
@@ -1472,7 +1888,7 @@ function renderTaYield(payload) {
   byId('taYieldInput').textContent = format.format(totals.input); byId('taYieldDefect').textContent = format.format(totals.defect); byId('taYieldDefectRate').textContent = defectRate === undefined ? '-' : `${defectRate.toFixed(2)}%`; byId('taYieldTotal').textContent = yieldValue === undefined ? '-' : `${yieldValue.toFixed(2)}%`;
   byId('taYieldScope').textContent = `${rows.length} month-series record${rows.length === 1 ? '' : 's'} | valid production lots only`;
   const lotSeries = [...new Set(details.map((row) => row.series))].sort();
-  if (!lotSeries.includes(taYieldLotSeries)) taYieldLotSeries = '';
+  if ((payload.detailsLoaded || details.length) && !lotSeries.includes(taYieldLotSeries)) taYieldLotSeries = '';
   const lotSeriesSelect = ensureTaYieldLotSeriesControl();
   lotSeriesSelect.replaceChildren(new Option('Select a series', ''), ...lotSeries.map((series) => new Option(shortTaSeries(series), series)));
   lotSeriesSelect.value = taYieldLotSeries;
@@ -1486,6 +1902,7 @@ function renderTaYield(payload) {
     byId('taYieldHead').innerHTML = `<tr><th>Series</th><th>Lot No</th><th>Close date</th><th>Input Q</th><th>Final Good Q</th>${detailGroups.map((group) => `<th>${escapeHtml(group)}</th>`).join('')}<th>Total defect</th><th>Yield</th></tr>`;
     byId('taYieldLotCount').textContent = taYieldLotSeries ? `${visibleDetails.length} of ${details.filter((row) => row.series === taYieldLotSeries).length} lots` : 'Select a series to display lot details.';
     byId('taYieldRows').innerHTML = visibleDetails.map((row) => { const quantities = Object.fromEntries(row.groups.map((group) => [group.group, group.quantity])); return `<tr><td>${escapeHtml(shortTaSeries(row.series))}</td><td>${escapeHtml(row.lotNo)}</td><td>${escapeHtml(row.closeDate)}</td><td>${format.format(row.input)}</td><td>${format.format(row.finalGood)}</td>${detailGroups.map((group) => `<td>${format.format(quantities[group] || 0)}</td>`).join('')}<td>${format.format(row.defect)}</td><td>${row.yield === undefined ? '-' : `${row.yield.toFixed(2)}%`}</td></tr>`; }).join('') || `<tr><td colspan="${7 + detailGroups.length}">${taYieldLotSeries ? 'No TA lots match this table filter.' : 'Select a series to display lot details.'}</td></tr>`;
+    if (payload.detailsError) byId('taYieldRows').innerHTML = `<tr><td colspan="${7 + detailGroups.length}">${escapeHtml(payload.detailsError)}</td></tr>`;
   } else {
     byId('taYieldLotCount').textContent = '';
     byId('taYieldDetailTitle').textContent = 'Yield and defects by TA series';
@@ -1555,7 +1972,7 @@ let dashboardDataModeAutofilling = false;
 let dashboardDataModeAutofillGeneration = 0;
 let dashboardDataModeLocalToken;
 let dashboardDataModeTokenTimer;
-const isDashboardSourceRequest = (url) => /^\/api\/(?:config|options|part-numbers|quantity|mtd-quantity|chart|wip-flow|yield|operation-transitions|defect-settings|dispositions|series-diagnostics|sc-yield(?:-weekly|-tendency)?|ta-yield(?:-lots|-weekly|-tendency|-datatable|-workbook-reconciliation|-machine[^?/]*)?|export\/[^?]+)(?:\?|$)/.test(url);
+const isDashboardSourceRequest = (url) => /^\/api\/(?:config|options|part-numbers|daily-output|quantity|mtd-quantity|chart|wip-flow|yield|operation-transitions|defect-settings|dispositions|series-diagnostics|sc-yield(?:-weekly|-tendency)?|ta-yield(?:-compare(?:-details)?|-lots|-weekly|-tendency|-datatable|-workbook-reconciliation|-machine[^?/]*)?|export\/[^?]+)(?:\?|$)/.test(url);
 
 function dashboardStagingPaused() {
   return Boolean(dashboardDataMode?.transitioning || dashboardDataMode?.mode === 'live');
@@ -1639,6 +2056,9 @@ function acceptDashboardDataMode(next) {
     scYieldTendencyRequestId += 1;
     latestTaYieldLotsRequestId = 0;
     latestTaYieldLotsUrl = '';
+    taYieldDailyOutputScope = null;
+    taYieldDailyOutputRequest = null;
+    taYieldLotDetailsRequest = null;
     setStatus(next.transitioning ? 'Data mode is switching. Current work must finish before reports can reload.' : 'Data mode changed. Reloading the current report…', true);
     if (!next.transitioning) scheduleDashboardDataModeReload();
   }
@@ -1879,6 +2299,13 @@ async function reloadDashboardSourceData() {
 
 async function loadData() {
   const requestId = ++dataRequestId;
+  const sourceGeneration = dashboardDataModeGeneration;
+  taYieldDailyOutputScope = null;
+  taYieldDailyOutputRequest = null;
+  taYieldLotDetailsRequest = null;
+  latestTaYieldLotsUrl = '';
+  latestTaYieldLotsRequestId = 0;
+  updateTaYieldCompare();
   scYieldTendencyRequestId += 1;
   let loadFailed = false;
   const params = new URLSearchParams({ dataset: selectedDataset(), startDate: byId('startDate').value, endDate: byId('endDate').value });
@@ -1890,16 +2317,38 @@ async function loadData() {
   const mtdParams = period && currentConfig.dataset === 'closed' ? new URLSearchParams(params) : undefined; if (mtdParams) mtdParams.set('startDate', `${period}-01`);
   apply.textContent = 'Loading'; setReportControlsLoading(true); setStatus(isScYield ? 'Loading SC Yield data...' : isTaYield ? 'Loading TA Yield data...' : 'Loading quantity data...', true);
   try {
-    if (isScYield) { const tendencyParams = new URLSearchParams(params); tendencyParams.set('interval', scYieldInterval); const tendencyRequest = scYieldInterval === 'month' ? Promise.resolve(undefined) : request(`/api/sc-yield-tendency?${tendencyParams}`); const [rows, weeklyRows, tendencyRows, actions] = await Promise.all([request(`/api/sc-yield?${params}`), request(`/api/sc-yield-weekly?${params}`), tendencyRequest, request('/api/sc-yield-actions').catch(() => [])]); if (requestId !== dataRequestId) return; latestScYieldTendencyData = tendencyRows || rows; latestScYieldActions = actions; renderScYield(rows); renderScYieldWeeklyCharts(weeklyRows); setStatus(''); return; }
-    if (isTaYield) { const groupTendencyParams = new URLSearchParams(params); groupTendencyParams.set('interval', taYieldInterval); const groupTendencyRequest = request(`/api/ta-yield-tendency?${groupTendencyParams}`); const tendencyParams = new URLSearchParams(groupTendencyParams); if (taYieldTrendPartNumber !== 'All') tendencyParams.set('trendPn', taYieldTrendPartNumber); const tendencyRequest = taYieldTrendPartNumber === 'All' ? groupTendencyRequest : request(`/api/ta-yield-tendency?${tendencyParams}`); const [summary, groupTendencyRows, tendencyRows, targets, actions] = await Promise.all([request(`/api/ta-yield?${params}`), groupTendencyRequest, tendencyRequest, request('/api/ta-yield-targets'), request('/api/ta-yield-actions').catch(() => [])]); if (requestId !== dataRequestId) return; taYieldTargets = targets.reduce((settings, target) => ({ ...settings, [target.serie]: { ...(settings[target.serie] || {}), [target.period]: target.target } }), {}); latestTaYieldActions = actions; latestTaYieldLotsUrl = `/api/ta-yield-lots?${params}`; latestTaYieldData = { summary, details: [] }; latestTaYieldTendencyData = tendencyRows; latestTaYieldGroupTendencyData = groupTendencyRows; if (taYieldTableView === 'lots') { const details = await request(latestTaYieldLotsUrl); if (requestId !== dataRequestId) return; latestTaYieldData = { ...latestTaYieldData, details }; } renderTaYield(latestTaYieldData); setStatus(''); return; }
+    if (isScYield) { renderDailyOutputPanel([]); const tendencyParams = new URLSearchParams(params); tendencyParams.set('interval', scYieldInterval); const tendencyRequest = scYieldInterval === 'month' ? Promise.resolve(undefined) : request(`/api/sc-yield-tendency?${tendencyParams}`); const [rows, weeklyRows, tendencyRows, actions] = await Promise.all([request(`/api/sc-yield?${params}`), request(`/api/sc-yield-weekly?${params}`), tendencyRequest, request('/api/sc-yield-actions').catch(() => [])]); if (requestId !== dataRequestId) return; latestScYieldTendencyData = tendencyRows || rows; latestScYieldActions = actions; renderScYield(rows); renderScYieldWeeklyCharts(weeklyRows); setStatus(''); return; }
+    if (isTaYield) {
+      const groupTendencyParams = new URLSearchParams(params); groupTendencyParams.set('interval', taYieldInterval);
+      const groupTendencyRequest = request(`/api/ta-yield-tendency?${groupTendencyParams}`);
+      const tendencyParams = new URLSearchParams(groupTendencyParams);
+      if (taYieldTrendPartNumber !== 'All') tendencyParams.set('trendPn', taYieldTrendPartNumber);
+      const tendencyRequest = taYieldTrendPartNumber === 'All' ? groupTendencyRequest : request(`/api/ta-yield-tendency?${tendencyParams}`);
+      const taYieldLotsUrl = `/api/ta-yield-lots?${params}`;
+      const [summary, groupTendencyRows, tendencyRows, targets, actions] = await Promise.all([
+        request(`/api/ta-yield?${params}`), groupTendencyRequest, tendencyRequest, request('/api/ta-yield-targets'),
+        request('/api/ta-yield-actions').catch(() => [])
+      ]);
+      if (requestId !== dataRequestId || sourceGeneration !== dashboardDataModeGeneration || selectedDataset() !== 'ta-yield' || currentConfig.dataset !== 'ta-yield') return;
+      taYieldTargets = targets.reduce((settings, target) => ({ ...settings, [target.serie]: { ...(settings[target.serie] || {}), [target.period]: target.target } }), {});
+      latestTaYieldActions = actions; latestTaYieldLotsUrl = taYieldLotsUrl; latestTaYieldLotsRequestId = requestId;
+      const reportScope = { startDate: params.get('startDate'), endDate: params.get('endDate') };
+      taYieldDailyOutputScope = { url: `/api/daily-output?${params}`, requestId, generation: sourceGeneration, ...reportScope };
+      latestTaYieldData = { summary, details: [], detailsLoaded: false, reportScope,
+        dailyOutput: taYieldSummaryOutputRows(summary), dailyOutputLoaded: false,
+        dailyOutputLoading: dailyOutputPanelEnabled, dailyOutputError: '' };
+      latestTaYieldTendencyData = tendencyRows; latestTaYieldGroupTendencyData = groupTendencyRows;
+      renderTaYield(latestTaYieldData); setStatus('');
+      loadTaYieldDailyOutput(); loadTaYieldLotsTable(); return;
+    }
     if (isLot) {
       const data = await request(`/api/quantity?${params}`);
       if (requestId !== dataRequestId) return;
-      renderData(data, null, []);
+      renderData(data, null, [], data);
       if (currentConfig.chartAxis === 'process' && !usesOperationDateAxis()) { byId('chart-title').textContent = 'Quantity moved by process'; byId('chart').innerHTML = '<div class="chart-loading" role="status"><i aria-hidden="true"></i><span>Loading process analysis from MES…</span></div>'; }
       setStatus('WIP table loaded. Loading analysis in the background...', true);
       let stagedChartData = null;
-      const renderStagedWipTable = () => { if (requestId === dataRequestId) renderData(data, stagedChartData, []); };
+      const renderStagedWipTable = () => { if (requestId === dataRequestId) renderData(data, stagedChartData, [], data); };
       loadCellComments(requestId).then(renderStagedWipTable).catch(() => {});
       Promise.all([currentConfig.chartAxis === 'process' && !usesOperationDateAxis() ? request(`/api/chart?${params}`) : Promise.resolve(null)]).then(([chartData]) => {
         if (requestId !== dataRequestId) return;
@@ -1908,7 +2357,7 @@ async function loadData() {
       return;
     }
     const [data, chartData, mtdData, wipFlow, yieldData] = await Promise.all([request(`/api/quantity?${params}`), currentConfig.chartAxis === 'process' && !usesOperationDateAxis() ? request(`/api/chart?${params}`) : Promise.resolve(null), mtdParams ? request(`/api/mtd-quantity?${mtdParams}`) : Promise.resolve([]), Promise.resolve([]), Promise.resolve({ goodDisposition: 'good', rows: [] }), loadCellComments()]);
-    if (requestId !== dataRequestId) return; renderData(data, chartData, mtdData); setStatus('');
+    if (requestId !== dataRequestId) return; renderData(data, chartData, mtdData, data); setStatus('');
   } catch (error) { loadFailed = true; if (requestId === dataRequestId) { if (isTaYield) renderTaYieldTendencyLoadError(error.message); setStatus(error.message); } } finally { setReportControlsLoading(false); if (requestId === dataRequestId) { apply.textContent = 'Apply'; if (!loadFailed) markReportControlsApplied(); } }
 }
 async function refreshOptionsForProduct() { const product = byId('product').value; setReportControlsLoading(true); setStatus('Refreshing available series...', true); try { const options = await request(`/api/options?${new URLSearchParams({ dataset: selectedDataset(), ...(product ? { product } : {}) })}`); populateOptions(options); resetPartNumbers(); setStatus(''); } catch (error) { setStatus(error.message); } finally { setReportControlsLoading(false); } }
@@ -1949,7 +2398,7 @@ byId('parameterEditModal').addEventListener('click', (event) => { if (event.targ
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !byId('parameterEditModal').hidden) closeParameterEditModal(); });
 byId('serieTrigger').addEventListener('click', () => { const menu = byId('serieMenu'); menu.hidden = !menu.hidden; byId('serieTrigger').setAttribute('aria-expanded', String(!menu.hidden)); });
 document.querySelectorAll('.chart-mode').forEach((button) => button.addEventListener('click', () => { chartMode = button.dataset.chartMode; saveDashboardSubtab('productionChart', chartMode); document.querySelectorAll('.chart-mode').forEach((mode) => { const active = mode === button; mode.classList.toggle('active', active); mode.setAttribute('aria-pressed', String(active)); }); renderChart(latestData, latestChartData); }));
-document.querySelectorAll('.ta-yield-table-mode').forEach((button) => button.addEventListener('click', async () => { taYieldTableView = button.dataset.taYieldTable; saveDashboardSubtab('taTable', taYieldTableView); document.querySelectorAll('.ta-yield-table-mode').forEach((mode) => { const active = mode === button; mode.classList.toggle('active', active); mode.setAttribute('aria-pressed', String(active)); }); if (taYieldTableView === 'lots' && !latestTaYieldData.details.length && latestTaYieldLotsUrl) { const detailUrl = latestTaYieldLotsUrl; const requestId = dataRequestId; byId('taYieldDetailTitle').textContent = 'Loading Excel-style lot detail…'; byId('taYieldHead').innerHTML = ''; byId('taYieldRows').innerHTML = '<tr><td>Loading lot detail…</td></tr>'; try { const details = await request(detailUrl); if (requestId !== dataRequestId || detailUrl !== latestTaYieldLotsUrl || taYieldTableView !== 'lots') return; latestTaYieldData = { ...latestTaYieldData, details }; } catch (error) { if (requestId !== dataRequestId || detailUrl !== latestTaYieldLotsUrl) return; setStatus(error.message); taYieldTableView = 'summary'; saveDashboardSubtab('taTable', taYieldTableView); restoreDashboardSubtabControls(); } } renderTaYield(latestTaYieldData); }));
+document.querySelectorAll('.ta-yield-table-mode').forEach((button) => button.addEventListener('click', () => { taYieldTableView = button.dataset.taYieldTable; saveDashboardSubtab('taTable', taYieldTableView); document.querySelectorAll('.ta-yield-table-mode').forEach((mode) => { const active = mode === button; mode.classList.toggle('active', active); mode.setAttribute('aria-pressed', String(active)); }); renderTaYield(latestTaYieldData); loadTaYieldLotsTable(); }));
 byId('taYieldLotSearch').addEventListener('input', () => { taYieldLotSearch = byId('taYieldLotSearch').value; if (taYieldTableView === 'lots') renderTaYield(latestTaYieldData); });
 byId('chartFit').addEventListener('click', () => { processChartFit = !processChartFit; const button = byId('chartFit'); button.classList.toggle('active', processChartFit); button.setAttribute('aria-pressed', String(processChartFit)); button.textContent = processChartFit ? 'Readable chart' : 'Fit chart'; renderChart(latestData, latestChartData); });
 byId('dailyTargetStatus').checked = true;
@@ -1972,9 +2421,11 @@ byId('scYieldTargetPeriod').addEventListener('change', () => {
 byId('dailyTargetStatus').addEventListener('change', () => { dailyTargetStatusEnabled = byId('dailyTargetStatus').checked; renderData(latestData, latestChartData, latestMtdData); });
 byId('hideInProgressDay').addEventListener('change', () => { hideInProgressDay = byId('hideInProgressDay').checked; renderData(latestData, latestChartData, latestMtdData); });
 byId('showZeroSeries').addEventListener('change', () => { showZeroSeries = byId('showZeroSeries').checked; renderData(latestData, latestChartData, latestMtdData); });
+byId('dailyOutputToggle').addEventListener('click', () => toggleDailyOutputPanel());
+byId('taYieldCompareToggle').addEventListener('click', toggleTaYieldCompare);
 document.querySelectorAll('.process-option').forEach((button) => button.addEventListener('click', () => { setSelectedProduct(byId('product').value === button.dataset.product ? '' : button.dataset.product); saveDashboardNavigation(); refreshOptionsForProduct(); requestAnimationFrame(updateReportPendingNotice); }));
 byId('processSelect').addEventListener('change', () => { setSelectedProcess(byId('processSelect').value); refreshOptionsForProcess(); });
-byId('dataSource').addEventListener('change', () => { saveDashboardNavigation(); initialize(); });
+byId('dataSource').addEventListener('change', () => { ensureTaYieldCompareController().setAvailable(selectedDataset() === 'ta-yield'); saveDashboardNavigation(); initialize(); });
 byId('dataSource').addEventListener('change', () => { const isScYield = selectedDataset() === 'yield'; const isTaYield = selectedDataset() === 'ta-yield'; byId('scYieldLogTab').hidden = !isScYield; byId('taYieldLogTab').hidden = !isTaYield; byId('taYieldMachineTab').hidden = !isTaYield; byId('taDataTableTab').hidden = !isTaYield; const activeView = document.querySelector('.app-tab.active')?.dataset.view; if ((!isScYield && activeView === 'sc-yield-log') || (!isTaYield && ['ta-yield-log', 'ta-yield-machine', 'ta-data-table'].includes(activeView))) showView('dashboard'); });
 byId('dataSource').addEventListener('change', () => byId('scYieldArSummary')?.setAttribute('hidden', ''));
 byId('pn').addEventListener('focus', () => { pnState.query = byId('pn').value; pnState.loading = false; pnState.error = ''; renderPartNumbers(); byId('pnMenu').hidden = false; byId('pn').setAttribute('aria-expanded', 'true'); });
@@ -1991,17 +2442,19 @@ document.addEventListener('click', (event) => { if (!event.target.closest('.pn-p
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeMtdChartModal(); });
 async function renderTaYieldCalculationLog({ focusTarget = '', selectionStart, selectionEnd } = {}) {
   const holder = ensureTaYieldLogView();
-  if (!latestTaYieldLotsUrl || latestTaYieldLotsRequestId !== dataRequestId) { holder.innerHTML = '<p class="sc-yield-empty">Load TA Yield data to see the calculation log.</p>'; return; }
-  if (!latestTaYieldData.details.length) {
+  const detailScope = taYieldDailyOutputScope;
+  if (!isCurrentTaYieldDetailScope(detailScope) || !latestTaYieldLotsUrl || latestTaYieldLotsRequestId !== dataRequestId) { holder.innerHTML = '<p class="sc-yield-empty">Load TA Yield data to see the calculation log.</p>'; return; }
+  if (!latestTaYieldData.detailsLoaded) {
     holder.innerHTML = '<p class="sc-yield-empty">Loading TA lot calculation evidence…</p>';
     const detailUrl = latestTaYieldLotsUrl;
     const requestId = dataRequestId;
     try {
-      const details = await request(detailUrl);
+      const details = await loadTaYieldLotDetails();
       if (requestId !== dataRequestId || detailUrl !== latestTaYieldLotsUrl || latestTaYieldLotsRequestId !== requestId || document.querySelector('.app-tab.active')?.dataset.view !== 'ta-yield-log') return;
-      latestTaYieldData = { ...latestTaYieldData, details };
+      if (!isCurrentTaYieldDetailScope(detailScope)) return;
+      if (details === undefined) return;
     } catch (error) {
-      if (requestId === dataRequestId && detailUrl === latestTaYieldLotsUrl && document.querySelector('.app-tab.active')?.dataset.view === 'ta-yield-log') holder.innerHTML = `<p class="sc-yield-empty">${escapeHtml(error.message)}</p>`;
+      if (requestId === dataRequestId && detailUrl === latestTaYieldLotsUrl && isCurrentTaYieldDetailScope(detailScope) && document.querySelector('.app-tab.active')?.dataset.view === 'ta-yield-log') holder.innerHTML = `<p class="sc-yield-empty">${escapeHtml(error.message)}</p>`;
       return;
     }
   }
