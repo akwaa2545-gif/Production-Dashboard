@@ -251,7 +251,22 @@ export function readDatasetConfig(environment = process.env, dataset = 'closed')
     SERIE_SOURCE_JOIN_COLUMN: environment[`${prefix}_SERIE_SOURCE_JOIN_COLUMN`] || environment.SERIE_SOURCE_JOIN_COLUMN,
     SERIE_LOOKUP_JOIN_COLUMN: environment[`${prefix}_SERIE_LOOKUP_JOIN_COLUMN`] || environment.SERIE_LOOKUP_JOIN_COLUMN
   };
-  return { ...readConfig(datasetEnvironment), dataset };
+  const config = { ...readConfig(datasetEnvironment), dataset };
+  const canonicalWipColumns = { dateColumn: 'OccuredOn', chartColumn: 'From_OperationName', processColumn: 'To_OperationName', pnColumn: 'From_ItemName',
+    quantityColumn: 'QuantityMoved', serieSourceJoinColumn: 'JobName', serieLookupJoinColumn: 'JobName', productLookupColumn: 'ProdType', serieColumn: 'Series', groupColumn: 'Series' };
+  const wipMovementFallback = dataset === 'lot' && config.view.toLowerCase() === 'powerbithailand.lotcompletelog'
+    && config.serieLookupView?.toLowerCase() === 'powerbithailand.closedbatch_v'
+    && Object.entries(canonicalWipColumns).every(([name, value]) => config[name]?.toLowerCase() === value.toLowerCase())
+    && !config.serieActionFallbackView && environment.LOT_MOVEMENT_FALLBACK_ENABLED !== 'false';
+  const wipActionView = environment.LOT_MOVEMENT_ACTION_VIEW || 'PowerBIThailand.CompleteAction_v';
+  const wipReleasedView = environment.LOT_MOVEMENT_RELEASED_VIEW || 'KMESV3.ReleasedJob';
+  if (wipMovementFallback) {
+    for (const [name, value] of [['LOT_MOVEMENT_ACTION_VIEW', wipActionView], ['LOT_MOVEMENT_RELEASED_VIEW', wipReleasedView]]) {
+      if (!isSafeView(value)) config.invalid.push(name);
+    }
+    config.ready = config.ready && config.invalid.length === 0;
+  }
+  return { ...config, wipMovementFallback, wipActionView, wipReleasedView };
 }
 
 export function readScYieldConfig(environment = process.env) {

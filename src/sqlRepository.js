@@ -2,6 +2,7 @@ import { settleAll } from './settleAll.js';
 import sql from 'mssql';
 import { InteractiveBrowserCredential, useIdentityPlugin } from '@azure/identity';
 import { cachePersistencePlugin } from '@azure/identity-cache-persistence';
+import { classifyWipMovements, wipQuantityRows, wipChartRows } from './wipMovementClassification.js';
 
 useIdentityPlugin(cachePersistencePlugin);
 
@@ -530,6 +531,10 @@ export class SqlRepository {
   }
 
   async getQuantity(filters) {
+    if (this.config.wipMovementFallback) {
+      const result = await this.getClassifiedWipMovements(filters);
+      return Object.defineProperty(wipQuantityRows(result.rows, filters), 'wipMovementDiagnostics', { value: result.diagnostics });
+    }
     const pool = await this.getPool();
     const configuredGroupColumn = this.config.groupColumn || this.config.pnColumn;
     const usesLinkedSeries = hasSeriesLookup(this.config) && configuredGroupColumn === this.config.serieColumn && !this.config.serieActionFallbackView;
@@ -663,6 +668,10 @@ export class SqlRepository {
 
   async getChartData(filters, daily = false, includePartNumber = false) {
     if (!this.config.chartColumn) return [];
+    if (this.config.wipMovementFallback) {
+      const result = await this.getClassifiedWipMovements(filters);
+      return Object.defineProperty(wipChartRows(result.rows, filters, this.config, daily, includePartNumber), 'wipMovementDiagnostics', { value: result.diagnostics });
+    }
     const pool = await this.getPool();
     const request = pool.request();
     addSerieBlankFallbackParameters(request, this.config);
@@ -723,6 +732,59 @@ export class SqlRepository {
       toRouteSequence: row.toRouteSequence === null || row.toRouteSequence === undefined ? undefined : Number(row.toRouteSequence),
       quantityMoved: Number(row.quantityMoved || 0)
     }));
+  }
+
+  async getStagingQuantityRows(filters) {
+    if (this.config.wipMovementFallback) return wipQuantityRows((await this.getClassifiedWipMovements(filters)).rows, filters, { keepJobs: true });
+    return this.getQuantity(filters);
+  }
+
+  async getClassifiedWipMovements(filters) {
+    const pool = await this.getPool(); const request = pool.request();
+    request.timeout = Math.min(this.config.requestTimeout || 60000, 60000);
+    request.input('startDate', sql.Date, filters.startDate); request.input('endDate', sql.Date, filters.endDate);
+    const dateColumn = sourceColumn(this.config.dateColumn);
+    const clauses = addDateRangeClauses(request, this.config, dateColumn);
+    clauses.push(`${sourceColumn(this.config.serieSourceJoinColumn)} IS NOT NULL`);
+    addConfiguredFilters(request, this.config, clauses);
+    for (const key of ['process', 'case', 'pn']) addFilterForKey(request, this.config, key, filters[key], clauses);
+    const chartEligibility = (this.config.chartExcludedValues || []).map((value, index) => {
+      request.input(`wipChartExcluded${index}`, sql.NVarChar(4000), value);
+      return `CAST(${sourceColumn(this.config.chartColumn)} AS nvarchar(4000)) <> @wipChartExcluded${index}`;
+    });
+    const optional = (column, alias, numeric = false) => column
+      ? `${numeric ? `TRY_CONVERT(decimal(18,4),${sourceColumn(column)})` : `CAST(${sourceColumn(column)} AS nvarchar(4000))`} AS ${alias}`
+      : `NULL AS ${alias}`;
+    const raw = (await request.query(`/* wip:movements */
+      SELECT [source].[LogID] AS eventId,[source].[JobTransactionLogID] AS transactionId,
+        [source].[organizationbyplantid] AS plantId,${sourceColumn(this.config.serieSourceJoinColumn)} AS jobName,
+        ${dateColumn} AS occurredOn,CONVERT(varchar(10),${reportingDateExpression(this.config, dateColumn)},23) AS bucketDate,
+        ${sourceColumn(this.config.chartColumn)} AS chartName,${sourceColumn(this.config.processColumn)} AS processName,
+        ${chartEligibility.length ? `CASE WHEN ${chartEligibility.join(' AND ')} THEN 1 ELSE 0 END` : '1'} AS chartEligible,
+        ${sourceColumn(this.config.pnColumn)} AS sourcePartNumber,NULLIF(LTRIM(RTRIM(CAST(${sourceColumn(this.config.pnColumn)} AS nvarchar(4000)))),N'') AS partNumber,
+        TRY_CONVERT(decimal(18,4),${sourceColumn(this.config.quantityColumn)}) AS quantityMoved,
+        [source].[DispositionCode] AS dispositionCode,[source].[DispositionType] AS dispositionType,
+        ${optional(this.config.fromRouteStepColumn, 'fromRouteStepName')},${optional(this.config.toRouteStepColumn, 'toRouteStepName')},
+        ${optional(this.config.fromRouteStepColumn, 'fromRouteStepOrder', true)},${optional(this.config.toRouteStepColumn, 'toRouteStepOrder', true)},
+        ${optional(this.config.fromRouteSequenceColumn, 'fromRouteSequence', true)},${optional(this.config.toRouteSequenceColumn, 'toRouteSequence', true)}
+      FROM ${quoted(this.config.view)} AS [source] WHERE ${clauses.join(' AND ')}`)).recordset;
+    const result = await classifyWipMovements(pool, this.config, raw, filters, {
+      closedSerieSql: lookupSerieExpression(this.config), prepareClosedRequest: lookup => addSerieBlankFallbackParameters(lookup, this.config)
+    });
+    this.lastWipMovementDiagnostics = result.diagnostics;
+    return result;
+  }
+
+  async getWipStagingSnapshot(filters) {
+    if (!this.config.wipMovementFallback) return undefined;
+    const { rows: movements, diagnostics } = await this.getClassifiedWipMovements(filters);
+    const rows = []; const processRows = [];
+    for (const product of ['NEO', 'SC']) {
+      const selection = { ...filters, product };
+      rows.push(...wipQuantityRows(movements, selection, { keepJobs: true }).map(row => ({ ...row, product })));
+      processRows.push(...wipChartRows(movements, selection, this.config, true, true).map(row => ({ ...row, product })));
+    }
+    return { rows, processRows, diagnostics };
   }
 
   async getDispositionSummary(filters) {

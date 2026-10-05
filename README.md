@@ -112,6 +112,14 @@ Set `DASHBOARD_WIP_REPAIR_TOKEN` to a random operator secret of at least 32 byte
 
 Scheduled WIP refresh behavior is unchanged: once caught up, it rereads the current day only. Use historical repair to capture late MES arrivals for earlier dates. Successful repair invalidates the WIP server cache; the monitor clears cached WIP browser responses when it observes completion.
 
+## WIP movement classification
+
+For canonical WIP source columns, `ClosedBatch_v` remains the first classifier. Jobs entirely absent there can use exact `CompleteAction_v` movement metadata, validated against `ReleasedJob` by plant, lot, item and line. Only supported NEO line metadata supplies fallback product/series; `ReleasedJob.ProdType=TA` is not treated as NEO. Conflicting matches, ambiguous source identities, missing metadata and unsupported SC series remain unresolved. Original movement quantities, dates and operations are retained, and repeated metadata matches never add quantity. Both staging tables are built from the same classified source snapshot. These totals measure movement throughput; they are not current inventory by operation.
+
+Classification reads use serial parameterized batches of at most 128 jobs or movements and source timeouts capped at 60 seconds. Operation charts retain `From_OperationName`; explicitly selected process filters retain their configured column.
+
+`LOT_MOVEMENT_FALLBACK_ENABLED=false` disables the fallback. The fallback view settings accept safe SQL identifiers and default to `PowerBIThailand.CompleteAction_v` and `KMESV3.ReleasedJob`. Custom source column mappings retain their existing query path. Successful staging results expose `classificationDiagnostics` with unresolved counts/reasons/operations. Live quantity/chart responses expose `X-WIP-Fallback-Movements` and `X-WIP-Unresolved-Movements`, including cached responses, without changing their row format. Diagnostics cover the selected source movements before product/series selection. Query failures reject the refresh before any target write; unresolved metadata is reported separately from query failure. Historical staging rows change only when their dates are explicitly or routinely refreshed. Code installation does not replay completed repairs. Live option lists retain their existing ClosedBatch-based behavior.
+
 ## Cell comments
 
 Completion-by-day cells support shared comments stored separately from MES data in `dbo.DashboardCellComments` on the configured settings database. Run [DashboardCellComments.sql](FeatureMD/DashboardCellComments.sql) once, then set `COMMENTS_SQL_TABLE` and `COMMENT_DISPLAY_NAME` in `.env`. The dashboard uses the configured display name as the audit identity; no database credential or comment is stored in browser local storage. Comments are scoped to Product, Serie, PN, Process, and reporting date. Deleting a comment is a soft delete.

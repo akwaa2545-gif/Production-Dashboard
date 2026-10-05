@@ -853,6 +853,10 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     try {
       const result = await load();
       response.set('X-Dashboard-Cache', result.status);
+      if (result.value?.wipMovementDiagnostics) {
+        response.set('X-WIP-Fallback-Movements', String(result.value.wipMovementDiagnostics.fallbackResolved));
+        response.set('X-WIP-Unresolved-Movements', String(result.value.wipMovementDiagnostics.unresolved));
+      }
       if (cacheEntry && !dataMode.isLive()) response.set('Cache-Control', `private, max-age=${Math.floor(cacheEntry.ttlMs / 1000)}`);
       return response.json({ success: true, data: result.value });
     } catch (error) {
@@ -865,6 +869,10 @@ export function createApp({ environment = process.env, repository, scYieldReposi
             await recoverDatabaseConnection(database, config, generation);
             const result = await load();
             response.set('X-Dashboard-Cache', result.status);
+            if (result.value?.wipMovementDiagnostics) {
+              response.set('X-WIP-Fallback-Movements', String(result.value.wipMovementDiagnostics.fallbackResolved));
+              response.set('X-WIP-Unresolved-Movements', String(result.value.wipMovementDiagnostics.unresolved));
+            }
             if (cacheEntry && !dataMode.isLive()) response.set('Cache-Control', `private, max-age=${Math.floor(cacheEntry.ttlMs / 1000)}`);
             return response.json({ success: true, data: result.value });
           } catch (retryError) {
