@@ -23,6 +23,31 @@ function mockPool(recordsets) {
 }
 
 describe('SqlRepository', () => {
+  it.each(['NEO', 'SC'])('retains linked-series staging job grain without changing %s dashboard totals', async (product) => {
+    const repository = new SqlRepository({
+      ...config, groupColumn: 'serie', serieLookupView: 'PowerBIThailand.ClosedBatch_v',
+      serieSourceJoinColumn: 'JobName', serieLookupJoinColumn: 'JobName', productLookupColumn: 'ProdType',
+      wipMovementFallback: false
+    });
+    const sourceRows = [
+      { bucketDate: '2026-09-30', jobName: 'JOB-1', quantityMoved: '30' },
+      { bucketDate: '2026-09-30', jobName: 'JOB-2', quantityMoved: '30' }
+    ];
+    const pool = mockPool([
+      sourceRows, [{ jobName: 'JOB-1', serieName: 'SHARED' }, { jobName: 'JOB-2', serieName: 'SHARED' }], sourceRows
+    ]);
+    repository.pool = pool;
+    const filters = { startDate: '2026-09-30', endDate: '2026-09-30', product };
+
+    await expect(repository.getQuantity(filters)).resolves.toEqual([
+      { bucketDate: '2026-09-30', itemName: 'SHARED', quantityMoved: 60 }
+    ]);
+    await expect(repository.getStagingQuantityRows(filters)).resolves.toEqual([
+      { bucketDate: '2026-09-30', itemName: 'SHARED', jobName: 'JOB-1', quantityMoved: 30 },
+      { bucketDate: '2026-09-30', itemName: 'SHARED', jobName: 'JOB-2', quantityMoved: 30 }
+    ]);
+  });
+
   it('waits for sibling option queries before reporting a failed query', async () => {
     const repository = new SqlRepository(config);
     const failure = new Error('Options query failed');

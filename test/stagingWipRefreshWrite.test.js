@@ -44,6 +44,76 @@ describe('refreshWipStaging process writes', () => {
     sqlState.bulkFailure = null;
   });
 
+  it('preserves each supplied job and its quantity when jobs share a daily series', async () => {
+    const snapshot = {
+      rows: [
+        { bucketDate: '2026-09-30', product: 'NEO', itemName: 'GPS P2', jobName: 'NEO-JOB-1', quantityMoved: 30 },
+        { bucketDate: '2026-09-30', product: 'NEO', itemName: 'GPS P2', jobName: 'NEO-JOB-2', quantityMoved: 30 },
+        { bucketDate: '2026-09-30', product: 'SC', itemName: 'SC SERIES', jobName: 'SC-JOB-1', quantityMoved: 20 }
+      ],
+      processRows: [
+        { bucketDate: '2026-09-30', product: 'NEO', chartName: 'Welding', seriesName: 'GPS P2', partNumber: 'NEO-PN', quantityMoved: 60 },
+        { bucketDate: '2026-09-30', product: 'SC', chartName: 'Taping', seriesName: 'SC SERIES', partNumber: 'SC-PN', quantityMoved: 20 }
+      ]
+    };
+    const source = { getWipStagingSnapshot: async () => snapshot };
+    const schemaQuery = vi.fn(async () => ({ recordset: [{ jobNameLength: 8000 }] }));
+    const target = { getPool: async () => ({ request: () => ({ query: schemaQuery }) }) };
+    const targetConfig = { table: 'dbo.DashboardWipDaily', processTable: 'dbo.DashboardWipProcessDaily' };
+
+    await refreshWipStaging({ source, target, targetConfig, startDate: '2026-09-30', endDate: '2026-09-30' });
+
+    const daily = sqlState.bulkTables[0];
+    expect(daily.columns.values.map(column => column.columnName)).toEqual(['ReportingDate', 'Product', 'Serie', 'JobName', 'QuantityMoved']);
+    expect(daily.rows.values).toEqual([
+      ['2026-09-30', 'NEO', 'GPS P2', 'NEO-JOB-1', 30],
+      ['2026-09-30', 'NEO', 'GPS P2', 'NEO-JOB-2', 30],
+      ['2026-09-30', 'SC', 'SC SERIES', 'SC-JOB-1', 20]
+    ]);
+    expect(daily.rows.values.reduce((sum, row) => sum + row[4], 0)).toBe(80);
+    expect(sqlState.bulkTables[1].rows.values).toEqual([
+      ['2026-09-30', 'NEO', 'Welding', 'GPS P2', 'NEO-PN', 60],
+      ['2026-09-30', 'SC', 'Taping', 'SC SERIES', 'SC-PN', 20]
+    ]);
+    expect(sqlState.transactions[0]).toMatchObject({ began: true, committed: true });
+    expect(schemaQuery.mock.calls[0][0]).not.toMatch(/ADD\s+\[?JobName\]?/i);
+  });
+
+  it.each([undefined, null, '', '   '])('preserves existing snapshots when job-aware staging receives an aggregate without identity (%s)', async (jobName) => {
+    const source = { getWipStagingSnapshot: async () => ({
+      rows: [{ bucketDate: '2026-09-30', product: 'NEO', itemName: 'GPS P2', jobName, quantityMoved: 60 }],
+      processRows: []
+    }) };
+    const target = { getPool: async () => ({ request: () => ({ query: async () => ({ recordset: [{ jobNameLength: 8000 }] }) }) }) };
+    const targetConfig = { table: 'dbo.DashboardWipDaily', processTable: 'dbo.DashboardWipProcessDaily' };
+
+    await expect(refreshWipStaging({ source, target, targetConfig, startDate: '2026-09-30', endDate: '2026-09-30' })).rejects.toMatchObject({ code: 'WIP_STAGING_JOB_IDENTITY_REQUIRED' });
+
+    expect(sqlState.transactions).toEqual([]);
+    expect(sqlState.requests).toEqual([]);
+    expect(sqlState.bulkTables).toEqual([]);
+  });
+
+  it('retains series-grained writes when the existing table has no JobName column', async () => {
+    const source = { getWipStagingSnapshot: async () => ({
+      rows: [
+        { bucketDate: '2026-09-30', product: 'NEO', itemName: 'GPS P2', jobName: 'JOB-1', quantityMoved: 30.0001 },
+        { bucketDate: '2026-09-30', product: 'NEO', itemName: 'GPS P2', jobName: 'JOB-2', quantityMoved: 30.0002 },
+        { bucketDate: '2026-09-30', product: 'SC', itemName: 'GPS P2', jobName: 'SC-JOB', quantityMoved: 20 }
+      ], processRows: []
+    }) };
+    const target = { getPool: async () => ({ request: () => ({ query: async () => ({ recordset: [{ jobNameLength: null }] }) }) }) };
+    const targetConfig = { table: 'dbo.DashboardWipDaily', processTable: 'dbo.DashboardWipProcessDaily' };
+
+    const result = await refreshWipStaging({ source, target, targetConfig, startDate: '2026-09-30', endDate: '2026-09-30' });
+
+    expect(sqlState.bulkTables[0].rows.values).toEqual([
+      ['2026-09-30', 'NEO', 'GPS P2', 60.0003],
+      ['2026-09-30', 'SC', 'GPS P2', 20]
+    ]);
+    expect(result.rows).toBe(2);
+  });
+
   it('bulk writes nullable part numbers in the process table without changing daily rows', async () => {
     const source = {
       getQuantity: async ({ product }) => [{ bucketDate: '2026-09-08', itemName: `${product}-SERIES`, quantityMoved: 10 }],

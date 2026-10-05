@@ -609,7 +609,7 @@ export class SqlRepository {
     }));
   }
 
-  async getLinkedSeriesQuantity(pool, filters) {
+  async getLinkedSeriesQuantity(pool, filters, { keepJobs = false } = {}) {
     const sourceRequest = pool.request();
     sourceRequest.input('startDate', sql.Date, filters.startDate);
     sourceRequest.input('endDate', sql.Date, filters.endDate);
@@ -662,7 +662,15 @@ export class SqlRepository {
     }
     const selectedSeries = Array.isArray(filters.serie) ? new Set(filters.serie) : filters.serie ? new Set([filters.serie]) : undefined;
     const totals = new Map();
-    sourceRows.forEach((row) => { const itemName = cachedSeries.get(String(row.jobName)); if (!itemName || selectedSeries && !selectedSeries.has(itemName)) return; const key = `${row.bucketDate}|${itemName}`; totals.set(key, (totals.get(key) || 0) + row.quantityMoved); });
+    const jobRows = [];
+    sourceRows.forEach((row) => {
+      const itemName = cachedSeries.get(String(row.jobName));
+      if (!itemName || selectedSeries && !selectedSeries.has(itemName)) return;
+      if (keepJobs) { jobRows.push({ bucketDate: row.bucketDate, itemName, jobName: String(row.jobName), quantityMoved: row.quantityMoved }); return; }
+      const key = `${row.bucketDate}|${itemName}`;
+      totals.set(key, (totals.get(key) || 0) + row.quantityMoved);
+    });
+    if (keepJobs) return jobRows;
     return [...totals.entries()].map(([key, quantityMoved]) => { const [bucketDate, itemName] = key.split('|'); return { bucketDate, itemName, quantityMoved }; }).sort((left, right) => `${left.bucketDate}|${left.itemName}`.localeCompare(`${right.bucketDate}|${right.itemName}`));
   }
 
@@ -736,6 +744,10 @@ export class SqlRepository {
 
   async getStagingQuantityRows(filters) {
     if (this.config.wipMovementFallback) return wipQuantityRows((await this.getClassifiedWipMovements(filters)).rows, filters, { keepJobs: true });
+    const groupColumn = this.config.groupColumn || this.config.pnColumn;
+    if (hasSeriesLookup(this.config) && groupColumn === this.config.serieColumn && !this.config.serieActionFallbackView) {
+      return this.getLinkedSeriesQuantity(await this.getPool(), filters, { keepJobs: true });
+    }
     return this.getQuantity(filters);
   }
 

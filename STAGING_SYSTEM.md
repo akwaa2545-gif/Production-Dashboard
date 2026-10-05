@@ -85,6 +85,8 @@ Source: `PowerBIThailand.LotCompleteLog`
 
 Operation, part number, and case-filtered WIP quantity requests currently continue to use MES directly because the daily series staging table does not contain enough detail for those filters.
 
+When the daily table already has a nullable `JobName nvarchar(4000)` column, WIP refreshes retain one quantity per day/product/series/job and populate that identifier from job-grained source rows. Linked-series staging keeps the job grain even when movement fallback is disabled; dashboard quantity responses still aggregate by series. Aggregate-only source rows without a job identifier are rejected before replacement with `WIP_STAGING_JOB_IDENTITY_REQUIRED`. Tables without `JobName` keep series-grained totals. This writer does not add or migrate the `JobName` column.
+
 ## Validation
 
 Run an exact MES-to-staging comparison with:

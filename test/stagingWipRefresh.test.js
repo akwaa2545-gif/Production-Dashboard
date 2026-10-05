@@ -5,6 +5,24 @@ import { loadWipStagingRows } from '../src/stagingWipRefresh.js';
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
 describe('loadWipStagingRows', () => {
+  it('uses job-grained staging quantities instead of dashboard aggregates when available', async () => {
+    const source = {
+      getQuantity: async () => [{ bucketDate: '2026-09-30', itemName: 'SERIES', quantityMoved: 60 }],
+      getStagingQuantityRows: async () => [
+        { bucketDate: '2026-09-30', itemName: 'SERIES', jobName: 'JOB-1', quantityMoved: 30 },
+        { bucketDate: '2026-09-30', itemName: 'SERIES', jobName: 'JOB-2', quantityMoved: 30 }
+      ],
+      getChartData: async () => []
+    };
+
+    const result = await loadWipStagingRows(source, { startDate: '2026-09-30', endDate: '2026-09-30' });
+
+    expect(result.rows).toEqual(['NEO', 'SC'].flatMap(product => [
+      { bucketDate: '2026-09-30', itemName: 'SERIES', jobName: 'JOB-1', quantityMoved: 30, product },
+      { bucketDate: '2026-09-30', itemName: 'SERIES', jobName: 'JOB-2', quantityMoved: 30, product }
+    ]));
+  });
+
   it('loads daily and process data sequentially for each product', async () => {
     const calls = []; let inFlight = 0; let maximumInFlight = 0;
     const delayed = async (label, row) => {
