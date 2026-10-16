@@ -24,6 +24,9 @@
 .ta-compare-controls input, .ta-compare-controls select { min-height: 36px; min-width: 152px; box-sizing: border-box; border: 1px solid #c7d1e5; border-radius: 2px; padding: 7px 9px; color: #25304b; background: #fff; font: inherit; }
 .ta-compare-controls > button { min-height: 36px; border: 1px solid #28358c; border-radius: 2px; padding: 7px 24px; color: #fff; background: #28358c; font: 700 12px Bahnschrift, "Aptos", "Segoe UI", sans-serif; cursor: pointer; }
 .ta-compare-controls > button:hover { background: #1d2872; }
+.ta-compare-controls > [data-compare-add-graph] { background: #fff; color: #28358c; padding-inline: 16px; }
+.ta-compare-controls > [data-compare-add-graph]:hover { background: #f2f4fb; }
+.ta-compare-shared-scope { color: #64718a; font-size: 11px; line-height: 1.5; }
 .ta-compare-controls > button:disabled { opacity: .65; cursor: wait; }
 .ta-compare-content :focus-visible { outline: 2px solid #28358c; outline-offset: 2px; }
 .ta-compare-chart-card { position: relative; display: grid; grid-template-rows: auto auto auto; height: auto; min-height: 350px; border: 1px solid #dbe1ed; border-top: 3px solid #28358c; padding: 12px; background: #fff; }
@@ -96,6 +99,7 @@
 @media (max-width: 560px) {
   .daily-output-panel.ta-yield-compare-panel { left: 12px; top: 12px; width: calc(100vw - 24px); height: calc(100vh - 24px); }
   .ta-compare-current { width: 100%; }
-  .ta-compare-controls > label { flex: 1; min-width: 0; }
+  .ta-compare-controls > label { flex: 1 1 calc(50% - 6px); min-width: min(140px, 100%); }
   .ta-compare-controls input, .ta-compare-controls select { width: 100%; min-width: 0; }
+  .ta-compare-controls > button { flex: 1 1 calc(33.333% - 8px); min-width: 90px; padding-inline: 10px; }
 }

@@ -238,6 +238,24 @@ function taYieldTargetSegments(values, x, y) {
   return values.map((value, index) => Number.isFinite(value) ? `${x(index)},${y(value)}` : '\n')
     .join(' ').split('\n').map((segment) => segment.trim()).filter(Boolean);
 }
+function taYieldColumnValueLabelY(columnY, targetY, base, adjacentTargetYs = [], slot = 0) {
+  const defaultY = columnY - 7;
+  const targetSlope = Number.isFinite(targetY) && slot > 0
+    ? Math.max(0, ...adjacentTargetYs.filter(Number.isFinite).map((adjacentY) => Math.abs(adjacentY - targetY) / slot))
+    : 0;
+  const targetClearance = 14 + Math.min(40, targetSlope * 18);
+  const targetCrossesLabel = Number.isFinite(targetY) && Math.abs(targetY - defaultY) <= targetClearance;
+  if (!targetCrossesLabel) return defaultY;
+  const labelAboveTarget = Math.min(defaultY - 16, targetY - 16);
+  if (targetY > defaultY) return labelAboveTarget;
+  return columnY + 16 <= base - 8 ? columnY + 16 : labelAboveTarget;
+}
+function taYieldColumnValueLabel(x, y, value, includeBackdrop = true) {
+  const label = `${value.toFixed(2)}%`;
+  const width = label.length * 6.5 + 6;
+  const backdrop = includeBackdrop ? `<rect class="ta-yield-column-value-backdrop" x="${x - width / 2}" y="${y - 12}" width="${width}" height="16" rx="2"/>` : '';
+  return `${backdrop}<text class="ta-yield-column-value" x="${x}" y="${y}" text-anchor="middle">${label}</text>`;
+}
 let currentConfig = { chartAxis: 'date' };
 let chartMode = dashboardSubtabs.productionChart;
 let processChartFit = false;
@@ -298,6 +316,8 @@ let taYieldLogMode = '';
 let taYieldLogCategory = '';
 let taYieldLogSearch = '';
 let taYieldMachineState = { process: '', serie: '', pn: '', machine: '', defectType: '', defect: '', groupBy: 'day' };
+let taYieldMachineGraphs;
+function ensureTaYieldMachineGraphs() { return taYieldMachineGraphs ||= window.createTaYieldMachineGraphs({ request, renderChart: machineDateLinesForGraph }); }
 let appliedTaYieldMachineControlSnapshot = '';
 let selectedScYieldWeeks = [];
 let scYieldWeeklyVisible = false;
@@ -441,17 +461,122 @@ function updateTaYieldMachinePendingNotice() { const notice = byId('taMachinePen
 function markTaYieldMachineControlsApplied(snapshot = taYieldMachineControlSnapshot()) { appliedTaYieldMachineControlSnapshot = snapshot; updateTaYieldMachinePendingNotice(); }
 function machineChart(rows) { const values = new Map(); rows.forEach((row) => { const key = `${row.date}|${row.machineName}`; values.set(key, { date: row.date, machineName: row.machineName, quantity: Number(values.get(key)?.quantity || 0) + Number(row.quantity || 0) }); }); const points = [...values.values()]; const machines = [...new Set(points.map((row) => row.machineName))].sort(); const dates = [...new Set(points.map((row) => row.date))].sort(); const maximum = Math.max(...points.map((row) => row.quantity), 1); const colors = ['#6f3cc3', '#f15a24', '#16835b', '#1596c4', '#d39300']; const colorFor = (machine) => colors[machines.indexOf(machine) % colors.length]; const width = Math.max(720, dates.length * 106); const height = 300; const left = 58; const right = 24; const top = 22; const bottom = 54; const plotWidth = width - left - right; const plotHeight = height - top - bottom; const x = (date) => left + dates.indexOf(date) * (dates.length > 1 ? plotWidth / (dates.length - 1) : plotWidth / 2); const y = (quantity) => top + plotHeight - quantity / maximum * plotHeight; const ticks = [0, .25, .5, .75, 1]; const machineLabel = machines.length === 1 ? machines[0] : `${machines.length} machines`; const grid = ticks.map((tick) => `<g><line x1="${left}" y1="${y(maximum * tick)}" x2="${width - right}" y2="${y(maximum * tick)}" class="ta-machine-grid"/><text x="${left - 10}" y="${y(maximum * tick) + 4}" text-anchor="end">${format.format(maximum * tick)}</text></g>`).join(''); const series = machines.map((machine) => { const machinePoints = dates.map((date) => ({ date, quantity: points.find((point) => point.date === date && point.machineName === machine)?.quantity || 0 })); const line = machinePoints.map((point) => `${x(point.date)},${y(point.quantity)}`).join(' '); return `<g class="ta-machine-line-series"><polyline points="${line}" stroke="${colorFor(machine)}"/><g>${machinePoints.map((point) => `<circle cx="${x(point.date)}" cy="${y(point.quantity)}" r="4" fill="${colorFor(machine)}"><title>${escapeHtml(`${machine} · ${point.date} · ${format.format(point.quantity)} defects`)}</title></circle>`).join('')}</g></g>`; }).join(''); return `<header class="ta-machine-chart-heading"><div class="ta-machine-identity"><span class="ta-machine-icon" aria-hidden="true">M</span><div><p>Machine trend</p><h3>${escapeHtml(machineLabel)}</h3><small>Process: ${escapeHtml(taYieldMachineState.process || '—')} · Defect quantity by occurrence date</small></div></div><div class="ta-machine-chart-summary"><span><b>${format.format(dates.length)}</b> reporting dates</span><span><b>${format.format(points.reduce((sum, point) => sum + point.quantity, 0))}</b> total defects</span></div></header><div class="ta-machine-legend" aria-label="Machine legend">${machines.map((machine) => `<span><i style="background:${colorFor(machine)}"></i>${escapeHtml(machine)}</span>`).join('')}</div><div class="ta-machine-line-scroll"><svg class="ta-machine-line-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="TA Yield defect quantity trend by machine">${grid}${series}${dates.map((date) => `<text x="${x(date)}" y="${height - 18}" text-anchor="middle">${escapeHtml(date.slice(5))}</text>`).join('')}</svg></div>`; }
 function machineDateBars(rows) { const points = new Map(); rows.forEach((row) => { const key = `${row.date}|${row.machineName}`; points.set(key, { date: row.date, machineName: row.machineName, quantity: Number(points.get(key)?.quantity || 0) + Number(row.quantity || 0) }); }); const values = [...points.values()].sort((left, right) => `${left.date}|${left.machineName}`.localeCompare(`${right.date}|${right.machineName}`)); const maximum = Math.max(...values.map((row) => row.quantity), 1); const totalQuantity = values.reduce((sum, row) => sum + row.quantity, 0); const percentage = (quantity) => totalQuantity ? quantity / totalQuantity * 100 : 0; return `<header class="ta-machine-chart-heading"><div class="ta-machine-identity"><span class="ta-machine-icon" aria-hidden="true">M</span><div><p>Machine output by date</p><h3>${format.format(values.length)} date / machine records</h3><small>Process: ${escapeHtml(taYieldMachineState.process || '—')} · Defect share (%) · Machine name is shown below each date</small></div></div><div class="ta-machine-chart-summary"><label class="ta-machine-order">Order<select aria-label="Chart order" onchange="const bars=this.closest('.ta-machine-chart-wrap').querySelector('.ta-machine-date-bars');const items=[...bars.children];const key=(item)=>this.value==='machine-date'?item.dataset.machine+'|'+item.dataset.date:item.dataset.date+'|'+item.dataset.machine;items.sort((a,b)=>key(a).localeCompare(key(b)));bars.replaceChildren(...items)"><option value="date-machine">Date → Machine</option><option value="machine-date">Machine → Date</option></select></label><span><b>${format.format(new Set(values.map((row) => row.machineName)).size)}</b> machines</span><span><b>${format.format(totalQuantity)}</b> total defects</span></div></header><div class="ta-machine-bars-scroll"><div class="ta-machine-date-bars">${values.map((row) => `<article data-date="${escapeHtml(row.date)}" data-machine="${escapeHtml(row.machineName)}" title="${escapeHtml(`${row.date} · ${row.machineName} · ${format.format(row.quantity)} defects · ${percentage(row.quantity).toFixed(1)}% of selected total`)}"><span>${percentage(row.quantity).toFixed(1)}%</span><i style="height:${Math.max(3, row.quantity / maximum * 190)}px"></i><strong>${escapeHtml(row.date.slice(5))}</strong><small>${escapeHtml(row.machineName)}</small></article>`).join('')}</div></div>`; }
-async function renderTaYieldMachineView() { const view = ensureTaYieldMachineView(); const { process, serie, pn, defectType, defect } = taYieldMachineState; view.innerHTML = `<div class="parameter-heading"><p class="section-kicker">TA Yield analysis</p><h2 id="taYieldMachineTitle">Machine</h2><p></p></div><div class="ta-machine-filters"><label>Start date<input id="taMachineStartDate" type="date" value="${byId('startDate').value}" /></label><label>End date<input id="taMachineEndDate" type="date" value="${byId('endDate').value}" /></label><label>Series<select id="taMachineSerie"><option value="">All series</option></select></label><label>Process<select id="taMachineProcess"><option value="">Select process</option><option value="1.1stAnodization">1.1stAnodization</option><option value="2.Welding">2.Welding</option><option value="3.Ei">3.Ei</option></select></label><label>Part number<select id="taMachinePartNumber"><option value="">All part numbers</option></select></label><label>Defect view<select id="taMachineDefect" disabled><option value="">Select process first</option></select></label><button id="taMachineApply" type="button">Analyze all machines</button></div><p id="taMachineLink" class="ta-machine-link" role="status"></p><div id="taMachineChart" class="ta-machine-chart-wrap"><p class="sc-yield-empty">Select a process and defect view, then analyze all machines.</p></div>`; byId('taMachineProcess').value = process;
+function taYieldMachineFilterParams() {
+  const params = new URLSearchParams({ dataset: 'ta-yield', startDate: byId('taMachineStartDate').value, endDate: byId('taMachineEndDate').value });
+  const selectedSerie = byId('taMachineSerie').value;
+  const selectedPartNumber = byId('taMachinePartNumber').value;
+  if (selectedSerie) params.set('serie', selectedSerie);
+  if (selectedPartNumber) params.set('pn', selectedPartNumber);
+  return params;
+}
+function taYieldMachineOptionMarkup(values, label) {
+  return `<option value="">${escapeHtml(label)}</option>${values.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join('')}`;
+}
+function createTaYieldMachineFilterLoader() {
+  const processControl = byId('taMachineProcess');
+  const isCurrent = () => byId('taMachineProcess') === processControl;
+  let processRequest = 0;
+  let defectRequest = 0;
+  const clearDefects = (label = 'Select process first') => {
+    byId('taMachineDefect').value = '';
+    byId('taMachineDefect').innerHTML = taYieldMachineOptionMarkup([], label);
+    byId('taMachineDefect').disabled = true;
+    byId('taMachineApply').disabled = true;
+  };
+  const loadDefects = async () => {
+    const revision = ++defectRequest;
+    const process = processControl.value;
+    const selectedDefect = taYieldMachineState.defectType && taYieldMachineState.defect ? `${taYieldMachineState.defectType}|${taYieldMachineState.defect}` : '';
+    clearDefects(process ? 'Loading defect views…' : 'Select process first');
+    if (!process) return;
+    const params = taYieldMachineFilterParams();
+    params.set('process', process);
+    try {
+      const data = await request(`/api/ta-yield-machine-options?${params}`);
+      if (!isCurrent() || revision !== defectRequest) return;
+      const codes = data.codes || [];
+      const categories = data.categories || [];
+      const values = [...codes.map((value) => `code|${value}`), ...categories.map((value) => `category|${value}`)];
+      byId('taMachineDefect').innerHTML = `<option value="">Select defect view</option><optgroup label="Disposition code">${codes.map((value) => `<option value="code|${escapeHtml(value)}">${escapeHtml(value)}</option>`).join('')}</optgroup><optgroup label="Yield Category">${categories.map((value) => `<option value="category|${escapeHtml(value)}">${escapeHtml(value)}</option>`).join('')}</optgroup>`;
+      byId('taMachineDefect').value = values.includes(selectedDefect) ? selectedDefect : '';
+      byId('taMachineDefect').disabled = !values.length;
+      byId('taMachineApply').disabled = !byId('taMachineDefect').value;
+      if (!values.includes(selectedDefect)) taYieldMachineState = { ...taYieldMachineState, defectType: '', defect: '' };
+      byId('taMachineLink').textContent = values.length ? '' : 'No defect views are available for these TA Yield lots.';
+    } catch (error) {
+      if (!isCurrent() || revision !== defectRequest) return;
+      clearDefects('Unable to load defect views');
+      taYieldMachineState = { ...taYieldMachineState, defectType: '', defect: '' };
+      byId('taMachineLink').textContent = `Unable to load defect views: ${error.message}`;
+    }
+  };
+  const loadProcesses = async () => {
+    const revision = ++processRequest;
+    defectRequest += 1;
+    const selected = processControl.value || taYieldMachineState.process || '';
+    const aliases = { '1.1stAnodization': '1stAnodization', '2.Welding': 'Welding', '3.Ei': 'EI' };
+    const previous = aliases[selected] || selected;
+    processControl.value = '';
+    processControl.disabled = true;
+    processControl.innerHTML = taYieldMachineOptionMarkup([], 'Loading processes…');
+    clearDefects();
+    byId('taMachineLink').textContent = 'Loading processes for eligible TA Yield lots…';
+    try {
+      const data = await request(`/api/ta-yield-machine-processes?${taYieldMachineFilterParams()}`);
+      if (!isCurrent() || revision !== processRequest) return;
+      const processes = [...new Set((data.processes || []).filter((value) => typeof value === 'string' && value))];
+      const process = processes.includes(previous) ? previous : '';
+      processControl.innerHTML = taYieldMachineOptionMarkup(processes, processes.length ? 'Select process' : 'No processes available');
+      processControl.value = process;
+      processControl.disabled = !processes.length;
+      taYieldMachineState = { ...taYieldMachineState, process, ...(process ? {} : { defectType: '', defect: '' }) };
+      byId('taMachineLink').textContent = processes.length ? 'Select a process and defect view to analyze eligible TA Yield lots.' : 'No processes were found for the eligible TA Yield lots in this selection.';
+      if (process) await loadDefects();
+    } catch (error) {
+      if (!isCurrent() || revision !== processRequest) return;
+      processControl.innerHTML = taYieldMachineOptionMarkup([], 'Unable to load processes');
+      clearDefects();
+      taYieldMachineState = { ...taYieldMachineState, process: '', defectType: '', defect: '' };
+      byId('taMachineLink').textContent = `Unable to load processes: ${error.message}`;
+    }
+  };
+  return { loadProcesses, loadDefects, isCurrent };
+}
+async function renderTaYieldMachineView() { const view = ensureTaYieldMachineView(); const { serie, pn } = taYieldMachineState; view.innerHTML = `<div class="parameter-heading"><p class="section-kicker">TA Yield analysis</p><h2 id="taYieldMachineTitle">Machine</h2><p></p></div><div class="ta-machine-filters"><label>Start date<input id="taMachineStartDate" type="date" value="${byId('startDate').value}" /></label><label>End date<input id="taMachineEndDate" type="date" value="${byId('endDate').value}" /></label><label>Series<select id="taMachineSerie"><option value="">All series</option></select></label><label>Process<select id="taMachineProcess" disabled><option value="">Loading processes…</option></select></label><label>Part number<select id="taMachinePartNumber"><option value="">All part numbers</option></select></label><label>Defect view<select id="taMachineDefect" disabled><option value="">Select process first</option></select></label><button id="taMachineApply" type="button" disabled>Analyze all machines</button></div><p id="taMachineLink" class="ta-machine-link" role="status"></p><div id="taMachineChart" class="ta-machine-chart-wrap"><p class="sc-yield-empty">Select a process and defect view, then analyze all machines.</p></div><button id="taMachineAddGraph" class="ta-machine-add-graph" type="button" disabled aria-label="Add graph" title="Add another Machine graph"><span class="ta-machine-add-graph-icon" aria-hidden="true">+</span><span class="ta-machine-add-graph-label">Add graph</span></button>`;
+  ensureTaYieldMachineGraphs().attach(view, byId('taMachineAddGraph'));
   byId('taMachineApply').insertAdjacentHTML('afterend', '<p id="taMachinePendingNotice" class="ta-machine-pending-notice" role="status" hidden>Filters changed. Click Analyze all machines to update the analysis.</p>');
-  const loadLotFilters = async () => { const options = await request('/api/options?dataset=ta-yield'); const setOptions = (id, values, selected, label) => { const control = byId(id); control.innerHTML = `<option value="">${label}</option>${values.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join('')}`; control.value = values.includes(selected) ? selected : ''; }; setOptions('taMachineSerie', options.serie || [], serie, 'All series'); setOptions('taMachinePartNumber', options.pn || [], pn, 'All part numbers'); }; const loadOptions = async () => { if (!byId('taMachineProcess').value) return; byId('taMachineDefect').disabled = true; byId('taMachineDefect').innerHTML = '<option>Loading defect views…</option>'; byId('taMachineApply').disabled = true; const params = new URLSearchParams({ dataset: 'ta-yield', startDate: byId('startDate').value, endDate: byId('endDate').value, process: byId('taMachineProcess').value }); const data = await request(`/api/ta-yield-machine-options?${params}`); byId('taMachineDefect').disabled = false; byId('taMachineApply').disabled = false; byId('taMachineDefect').innerHTML = `<option value="">Select defect view</option><optgroup label="Disposition code">${data.codes.map((value) => `<option value="code|${escapeHtml(value)}">${escapeHtml(value)}</option>`).join('')}</optgroup><optgroup label="Yield Category">${data.categories.map((value) => `<option value="category|${escapeHtml(value)}">${escapeHtml(value)}</option>`).join('')}</optgroup>`; byId('taMachineDefect').value = defectType && defect ? `${defectType}|${defect}` : ''; }; loadLotFilters().catch((error) => { byId('taMachineLink').textContent = error.message; });
-  const analyze = async () => { const selectedProcess = byId('taMachineProcess').value; const selectedMachine = '__ALL__'; const [selectedDefectType, selectedDefect] = byId('taMachineDefect').value.split('|'); taYieldMachineState = { process: selectedProcess, machine: selectedMachine, defectType: selectedDefectType || '', defect: selectedDefect || '' }; if (!selectedProcess || !selectedDefect) { byId('taMachineChart').innerHTML = '<p class="sc-yield-empty">Select a process and defect view before analyzing.</p>'; return; } byId('taMachineApply').disabled = true; byId('taMachineApply').textContent = 'Loading…'; byId('taMachineChart').innerHTML = '<p class="sc-yield-empty">Loading Machine analysis…</p>'; const params = new URLSearchParams({ dataset: 'ta-yield', startDate: byId('taMachineStartDate').value, endDate: byId('taMachineEndDate').value, process: selectedProcess, machine: selectedMachine, defectType: selectedDefectType, defect: selectedDefect }); try { const data = await request(`/api/ta-yield-machine?${params}`); byId('taMachineLink').textContent = selectedDefectType === 'category' ? `Linked disposition codes: ${data.linkedModes.join(', ') || 'None'}` : ''; byId('taMachineChart').innerHTML = data.rows.length ? machineDateBars(data.rows) : '<p class="sc-yield-empty">No matching TA Yield defects were found for this selection.</p>'; } catch (error) { byId('taMachineChart').innerHTML = `<p class="sc-yield-empty">${escapeHtml(error.message)}</p>`; } finally { byId('taMachineApply').disabled = false; byId('taMachineApply').textContent = 'Analyze all machines'; } };
+  const loader = createTaYieldMachineFilterLoader();
+  const loadLotFilters = async () => {
+    const options = await request('/api/options?dataset=ta-yield');
+    if (!loader.isCurrent()) return;
+    const setOptions = (id, values, selected, label) => {
+      byId(id).innerHTML = taYieldMachineOptionMarkup(values, label);
+      byId(id).value = values.includes(selected) ? selected : '';
+    };
+    setOptions('taMachineSerie', options.serie || [], serie, 'All series');
+    setOptions('taMachinePartNumber', options.pn || [], pn, 'All part numbers');
+    taYieldMachineState = { ...taYieldMachineState, serie: byId('taMachineSerie').value, pn: byId('taMachinePartNumber').value };
+  };
+  const analyze = async () => { const selectedProcess = byId('taMachineProcess').value; const selectedMachine = '__ALL__'; const [selectedDefectType, selectedDefect] = byId('taMachineDefect').value.split('|'); taYieldMachineState = { ...taYieldMachineState, process: selectedProcess, machine: selectedMachine, defectType: selectedDefectType || '', defect: selectedDefect || '' }; if (!selectedProcess || !selectedDefect) { byId('taMachineChart').innerHTML = '<p class="sc-yield-empty">Select a process and defect view before analyzing.</p>'; return; } byId('taMachineApply').disabled = true; byId('taMachineApply').textContent = 'Loading…'; byId('taMachineChart').innerHTML = '<p class="sc-yield-empty">Loading Machine analysis…</p>'; const params = new URLSearchParams({ dataset: 'ta-yield', startDate: byId('taMachineStartDate').value, endDate: byId('taMachineEndDate').value, process: selectedProcess, machine: selectedMachine, defectType: selectedDefectType, defect: selectedDefect }); try { const data = await request(`/api/ta-yield-machine?${params}`); byId('taMachineLink').textContent = selectedDefectType === 'category' ? `Linked disposition codes: ${data.linkedModes.join(', ') || 'None'}` : ''; byId('taMachineChart').innerHTML = data.rows.length ? machineDateBars(data.rows) : '<p class="sc-yield-empty">No matching TA Yield defects were found for this selection.</p>'; } catch (error) { byId('taMachineChart').innerHTML = `<p class="sc-yield-empty">${escapeHtml(error.message)}</p>`; } finally { byId('taMachineApply').disabled = false; byId('taMachineApply').textContent = 'Analyze all machines'; } };
   byId('taMachineStartDate').addEventListener('change', (event) => { setReportDateRange(event.target.value, byId('endDate').value); renderTaYieldMachineView(); }); byId('taMachineEndDate').addEventListener('change', (event) => { setReportDateRange(byId('startDate').value, event.target.value); renderTaYieldMachineView(); });
-  byId('taMachineProcess').addEventListener('change', async (event) => { taYieldMachineState = { process: event.target.value, machine: '__ALL__', defectType: '', defect: '' }; await renderTaYieldMachineView(); });
-  byId('taMachineSerie').addEventListener('change', (event) => { taYieldMachineState = { ...taYieldMachineState, serie: event.target.value }; }); byId('taMachinePartNumber').addEventListener('change', (event) => { taYieldMachineState = { ...taYieldMachineState, pn: event.target.value }; }); byId('taMachineDefect').addEventListener('change', (event) => { const [type, value] = event.target.value.split('|'); taYieldMachineState = { ...taYieldMachineState, defectType: type || '', defect: value || '' }; }); byId('taMachineApply').addEventListener('click', analyze);
+  byId('taMachineProcess').addEventListener('change', async (event) => { taYieldMachineState = { ...taYieldMachineState, process: event.target.value, machine: '__ALL__', defectType: '', defect: '' }; await loader.loadDefects(); });
+  byId('taMachineSerie').addEventListener('change', async (event) => { taYieldMachineState = { ...taYieldMachineState, serie: event.target.value }; await loader.loadProcesses(); updateTaYieldMachinePendingNotice(); }); byId('taMachinePartNumber').addEventListener('change', async (event) => { taYieldMachineState = { ...taYieldMachineState, pn: event.target.value }; await loader.loadProcesses(); updateTaYieldMachinePendingNotice(); }); byId('taMachineDefect').addEventListener('change', (event) => { const [type, value] = event.target.value.split('|'); taYieldMachineState = { ...taYieldMachineState, defectType: type || '', defect: value || '' }; byId('taMachineApply').disabled = !event.target.value; }); byId('taMachineApply').addEventListener('click', analyze);
   byId('taMachineApply').addEventListener('click', () => { if (byId('taMachineProcess').value && byId('taMachineDefect').value) markTaYieldMachineControlsApplied(); });
   view.querySelector('.ta-machine-filters').addEventListener('change', () => requestAnimationFrame(updateTaYieldMachinePendingNotice));
   updateTaYieldMachinePendingNotice();
-  if (process) { try { await loadOptions(); } catch (error) { byId('taMachineDefect').disabled = false; byId('taMachineDefect').innerHTML = `<option value="">${escapeHtml(error.message)}</option>`; byId('taMachineApply').disabled = false; byId('taMachineChart').innerHTML = `<p class="sc-yield-empty">${escapeHtml(error.message)}</p>`; } }
+  try {
+    await loadLotFilters();
+    if (!loader.isCurrent()) return false;
+    await loader.loadProcesses();
+  } catch (error) {
+    if (!loader.isCurrent()) return false;
+    byId('taMachineLink').textContent = `Unable to load TA Yield lot filters: ${error.message}`;
+    byId('taMachineProcess').innerHTML = taYieldMachineOptionMarkup([], 'Unable to load processes');
+    taYieldMachineState = { ...taYieldMachineState, process: '', defectType: '', defect: '' };
+  }
+  if (!loader.isCurrent()) return false;
+  updateTaYieldMachinePendingNotice();
+  return true;
 }
 function ensureUtilityView(id) { let view = byId(id); if (!view) { view = document.createElement('section'); view.id = id; view.className = 'parameter-view'; view.hidden = true; ensureTaYieldLogView().insertAdjacentElement('afterend', view); } return view; }
 async function renderDefectSettings() { const view = ensureUtilityView('defectSettingsView'); const data = await request('/api/defect-settings'); const isSc = currentConfig.dataset === 'yield'; const dataset = isSc ? 'SC' : 'TA'; const maps = (isSc ? data.sc.map((x) => ({ mode: x.mode, group: x.group, included: x.included })) : data.ta.map((x) => ({ mode: x.source, description: x.description, group: x.target, included: x.included }))).sort((a, b) => a.mode.localeCompare(b.mode)); const title = isSc ? 'SC Yield defect rule studio' : 'TA Yield defect rule studio'; const groups = [...new Set([...maps.map((x) => x.group), 'Unmapped'])].sort(); const sourceRows = maps.map((x) => `<button type="button" class="defect-rule-row" data-defect-mode="${escapeHtml(x.mode)}"><span class="defect-rule-code">${escapeHtml(x.mode)}${x.description ? `<small>${escapeHtml(x.description)}</small>` : ''}</span><span class="defect-rule-state ${x.included ? 'on' : 'off'}">${x.included ? 'Included' : 'Unmapped'}</span></button>`).join(''); const groupNodes = groups.map((group) => `<button type="button" class="defect-group-node" data-defect-group="${escapeHtml(group)}"><span>${escapeHtml(group)}</span><small>${maps.filter((x) => x.group === group).length} rules</small></button>`).join(''); view.innerHTML = `<div class="section-heading defect-studio-heading"><div><p class="section-kicker">Yield configuration</p><h2>${title}</h2><p>All source modes are loaded from MES. Unmapped modes are safe by default until you assign a Yield group and save.</p></div><div class="defect-studio-summary"><b>${maps.length}</b><span>MES modes</span><b>${groups.length}</b><span>groups</span></div></div><section class="defect-studio" aria-label="Defect rule flow"><aside class="defect-studio-source"><div class="defect-pane-title"><span>01</span><div><strong>Source mode</strong><small>MES defect disposition</small></div></div><label class="defect-search-label">Find mode<input id="defectModeSearch" type="search" placeholder="Search code or name" /></label><div id="defectRuleList" class="defect-rule-list">${sourceRows}</div></aside><div class="defect-studio-flow"><div class="defect-flow-line"></div><article class="defect-route-card"><span class="defect-step">02 · Routing rule</span><h3 id="defectSelectedMode">Select a source mode</h3><p>When the MES reports this disposition, send quantity to the selected Yield group.</p><form id="defectSettingForm" novalidate><label>Yield group<select id="defectSettingGroup">${groups.map((group) => `<option value="${escapeHtml(group)}">${escapeHtml(group)}</option>`).join('')}</select></label><label class="defect-include-control"><input id="defectSettingIncluded" type="checkbox" checked /><span><b>Count in Yield</b><small>Include quantity in the defect rate</small></span></label><button type="submit">Save rule</button></form><p id="defectSettingStatus" class="parameter-status" role="status"></p></article></div><aside class="defect-studio-target"><div class="defect-pane-title"><span>03</span><div><strong>Yield outcome</strong><small>Reporting group</small></div></div><div class="defect-group-list">${groupNodes}</div><div class="defect-outcome-preview"><span>Selected route</span><strong id="defectFlowGroup">—</strong><small id="defectFlowState">Select a source rule to inspect its outcome.</small></div></aside></section>`; let selected; const list = byId('defectRuleList'); const selectRule = (mode) => { const item = maps.find((x) => x.mode === mode); if (!item) return; selected = item; view.querySelectorAll('.defect-rule-row').forEach((row) => row.classList.toggle('active', row.dataset.defectMode === mode)); byId('defectSelectedMode').textContent = item.description ? `${item.mode} — ${item.description}` : item.mode; byId('defectSettingGroup').value = item.group; byId('defectSettingIncluded').checked = item.included; byId('defectFlowGroup').textContent = item.group; byId('defectFlowState').textContent = item.included ? 'Included in Yield calculation' : 'Not counted until you map and include it'; }; selectRule(maps[0]?.mode); list.addEventListener('click', (event) => { const row = event.target.closest('[data-defect-mode]'); if (row) selectRule(row.dataset.defectMode); }); byId('defectModeSearch').addEventListener('input', (event) => { const search = event.target.value.trim().toLowerCase(); view.querySelectorAll('.defect-rule-row').forEach((row) => { row.hidden = Boolean(search) && !row.textContent.toLowerCase().includes(search); }); }); view.querySelectorAll('[data-defect-group]').forEach((node) => node.addEventListener('click', () => { if (selected) { byId('defectSettingGroup').value = node.dataset.defectGroup; byId('defectFlowGroup').textContent = node.dataset.defectGroup; } })); byId('defectSettingForm').addEventListener('submit', async (event) => { event.preventDefault(); if (!selected) return; const button = event.currentTarget.querySelector('button'); button.disabled = true; try { const group = byId('defectSettingGroup').value; const included = byId('defectSettingIncluded').checked; await request('/api/defect-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dataset, mode: selected.mode, group, included }) }); Object.assign(selected, { group, included }); byId('defectSettingStatus').textContent = 'Rule saved to ProductionMES. Apply the report filters to recalculate Yield.'; byId('defectSettingStatus').className = 'parameter-status success'; selectRule(selected.mode); } catch (error) { byId('defectSettingStatus').textContent = error.message; } finally { button.disabled = false; } }); }
@@ -1735,16 +1860,23 @@ function renderTaYieldTendencyCharts(rows = latestTaYieldTendencyData, groupRows
   const yieldColumns = buckets.map((row, index) => {
     if (!Number.isFinite(row.yield)) return '';
     const widthValue = Math.min(48, slot * .62); const heightValue = base - yieldY(row.yield); const target = targetsByBucket.get(row.month); const belowTarget = Number.isFinite(target) && row.yield < target;
-    return `<rect class="yield-column${belowTarget ? ' below-target' : ''}" x="${x(index) - widthValue / 2}" y="${yieldY(row.yield)}" width="${widthValue}" height="${heightValue}"><title>${escapeHtml(row.month)}: yield ${row.yield.toFixed(2)}%${Number.isFinite(target) ? `; target ${target.toFixed(2)}%` : '; no saved target'}</title></rect><text class="ta-yield-column-value" x="${x(index)}" y="${Math.max(top + 12, yieldY(row.yield) - 7)}" text-anchor="middle">${row.yield.toFixed(2)}%</text>`;
+    return `<rect class="yield-column${belowTarget ? ' below-target' : ''}" x="${x(index) - widthValue / 2}" y="${yieldY(row.yield)}" width="${widthValue}" height="${heightValue}"><title>${escapeHtml(row.month)}: yield ${row.yield.toFixed(2)}%${Number.isFinite(target) ? `; target ${target.toFixed(2)}%` : '; no saved target'}</title></rect>`;
+  }).join('');
+  const singleSeriesYieldLabels = buckets.map((row, index) => {
+    if (!Number.isFinite(row.yield)) return '';
+    const columnY = yieldY(row.yield); const targetY = Number.isFinite(targetsByBucket.get(row.month)) ? yieldY(targetsByBucket.get(row.month)) : undefined; const adjacentTargetYs = [index - 1, index + 1].map((adjacentIndex) => { const adjacentTarget = targetsByBucket.get(buckets[adjacentIndex]?.month); return Number.isFinite(adjacentTarget) ? yieldY(adjacentTarget) : undefined; });
+    return taYieldColumnValueLabel(x(index), Math.max(top + 12, taYieldColumnValueLabelY(columnY, targetY, base, adjacentTargetYs, slot)), row.yield);
   }).join('');
   const multiSeriesColumnLabels = multiSeriesColumnChart && taYieldInterval !== 'day' ? selectedSeriesMetrics.map((series, seriesIndex) => series.values.map((point, bucketIndex) => { if (!Number.isFinite(point.yield)) return ''; const columnX = x(bucketIndex) - multiSeriesClusterWidth / 2 + (seriesIndex + .5) * multiSeriesClusterWidth / selectedSeriesMetrics.length; const seriesLabel = series.label.replace(/^.*\s/, ''); const labelStart = columnX - (seriesLabel.length * 4.5 + 11) / 2; return `<circle class="ta-yield-series-label-swatch" cx="${labelStart + 3}" cy="${base + 39}" r="3" fill="${series.color}"/><text class="axis ta-yield-series-column-label" x="${labelStart + 9}" y="${base + 42}" text-anchor="start">${escapeHtml(seriesLabel)}</text>`; }).join('')).join('') : '';
-  const multiSeriesYieldColumns = selectedSeriesMetrics.map((series, seriesIndex) => buckets.map((bucket, bucketIndex) => { const point = series.values[bucketIndex]; if (!Number.isFinite(point.yield)) return ''; const clusterWidth = multiSeriesClusterWidth; const widthValue = Math.max(4, Math.min(18, clusterWidth / selectedSeriesMetrics.length - multiSeriesColumnGap)); const columnX = x(bucketIndex) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length; const belowTarget = Number.isFinite(point.target) && point.yield < point.target; return `<rect class="yield-column ta-yield-series-column${belowTarget ? ' below-target' : ''}" style="fill:${series.color};stroke:${belowTarget ? '#c9443d' : series.color};stroke-width:${belowTarget ? 2.5 : 1}" x="${columnX - widthValue / 2}" y="${yieldY(point.yield)}" width="${widthValue}" height="${base - yieldY(point.yield)}"><title>${escapeHtml(bucket.month)} | ${escapeHtml(series.label)}: yield ${point.yield.toFixed(2)}%${Number.isFinite(point.target) ? `; target ${point.target.toFixed(2)}%` : '; no saved target'}</title></rect><text class="ta-yield-column-value" x="${columnX}" y="${Math.max(top + 12, yieldY(point.yield) - 7)}" text-anchor="middle">${point.yield.toFixed(2)}%</text>`; }).join('')).join('');
+  const multiSeriesYieldColumns = selectedSeriesMetrics.map((series, seriesIndex) => buckets.map((bucket, bucketIndex) => { const point = series.values[bucketIndex]; if (!Number.isFinite(point.yield)) return ''; const clusterWidth = multiSeriesClusterWidth; const widthValue = Math.max(4, Math.min(18, clusterWidth / selectedSeriesMetrics.length - multiSeriesColumnGap)); const columnX = x(bucketIndex) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length; const belowTarget = Number.isFinite(point.target) && point.yield < point.target; return `<rect class="yield-column ta-yield-series-column${belowTarget ? ' below-target' : ''}" style="--yield-series-fill:${series.color};--yield-series-stroke:${series.color};fill:var(--yield-series-fill);stroke:var(--yield-series-stroke);stroke-width:1" x="${columnX - widthValue / 2}" y="${yieldY(point.yield)}" width="${widthValue}" height="${base - yieldY(point.yield)}"><title>${escapeHtml(bucket.month)} | ${escapeHtml(series.label)}: yield ${point.yield.toFixed(2)}%${Number.isFinite(point.target) ? `; target ${point.target.toFixed(2)}%` : '; no saved target'}</title></rect>`; }).join('')).join('');
+  const multiSeriesYieldLabels = selectedSeriesMetrics.map((series, seriesIndex) => buckets.map((bucket, bucketIndex) => { const point = series.values[bucketIndex]; if (!Number.isFinite(point.yield)) return ''; const clusterWidth = multiSeriesClusterWidth; const columnX = x(bucketIndex) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length; const columnY = yieldY(point.yield); const targetY = Number.isFinite(point.target) ? yieldY(point.target) : undefined; const adjacentTargetYs = [bucketIndex - 1, bucketIndex + 1].map((adjacentIndex) => { const adjacentTarget = series.values[adjacentIndex]?.target; return Number.isFinite(adjacentTarget) ? yieldY(adjacentTarget) : undefined; }); return taYieldColumnValueLabel(columnX, Math.max(top + 12, taYieldColumnValueLabelY(columnY, targetY, base, adjacentTargetYs, slot)), point.yield, false); }).join('')).join('');
   const multiSeriesTargets = selectedSeriesMetrics.map((series, seriesIndex) => { const clusterWidth = Math.min(slot * .82, 84); const points = taYieldTargetSegments(series.values.map((point) => point.target), (index) => x(index) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length, yieldY).map((segment) => `<polyline class="target-line ta-yield-series-target" style="stroke:${series.color}" points="${segment}"/>`).join(''); const dots = series.values.map((point, bucketIndex) => { if (!Number.isFinite(point.target)) return ''; const pointX = x(bucketIndex) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length; return `<circle class="target-point" style="fill:${series.color}" cx="${pointX}" cy="${yieldY(point.target)}" r="3"><title>${escapeHtml(buckets[bucketIndex].month)} | ${escapeHtml(series.label)}: target ${point.target.toFixed(2)}%</title></circle>`; }).join(''); return `${points}${dots}`; }).join('');
   const yieldVisual = multiSeriesColumnChart ? multiSeriesYieldColumns : yieldColumns;
+  const yieldColumnLabels = multiSeriesColumnChart ? multiSeriesYieldLabels : singleSeriesYieldLabels;
   const targetVisual = multiSeriesColumnChart ? multiSeriesTargets : `${targetPoints}${targetDots}`;
   const yieldLegend = multiSeriesColumnChart ? `<strong>Series</strong>${selectedSeriesMetrics.map((series) => `<span><i style="background:${series.color}"></i>${escapeHtml(series.label)} yield</span>`).join('')}` : '<span><i class="yield-column-key"></i>Yield column</span>';
   const targetLegend = multiSeriesColumnChart ? selectedSeriesMetrics.filter((series) => series.values.some((point) => Number.isFinite(point.target))).map((series) => `<span><i class="target-line-key" style="background:${series.color}"></i>${escapeHtml(series.label)} target</span>`).join('') : targetPoints ? '<span><i class="target-line-key"></i>Target</span>' : '';
-  byId('taYieldYieldChart').innerHTML = `<div class="sc-yield-legend">${yieldLegend}${targetLegend}</div><div class="${taYieldTrendChartClass}"${taYieldDayChartViewportStyle}><svg${taYieldChartSvgStyle} viewBox="0 0 ${width} ${height}" role="img" aria-label="TA ${escapeHtml(taYieldTrendSeriesScope(taYieldTrendSeries).toLowerCase())} yield by ${taYieldInterval}"><text class="axis axis-title" x="${left}" y="18">%Yield</text>${yieldGrid}<line x1="${left}" y1="${base}" x2="${width - right}" y2="${base}" stroke="#b8c7bf"/>${yieldVisual}${targetVisual}${labels}${multiSeriesColumnLabels}</svg></div>`;
+  byId('taYieldYieldChart').innerHTML = `<div class="sc-yield-legend">${yieldLegend}${targetLegend}</div><div class="${taYieldTrendChartClass}"${taYieldDayChartViewportStyle}><svg${taYieldChartSvgStyle} viewBox="0 0 ${width} ${height}" role="img" aria-label="TA ${escapeHtml(taYieldTrendSeriesScope(taYieldTrendSeries).toLowerCase())} yield by ${taYieldInterval}"><text class="axis axis-title" x="${left}" y="18">%Yield</text>${yieldGrid}<line x1="${left}" y1="${base}" x2="${width - right}" y2="${base}" stroke="#b8c7bf"/>${yieldVisual}${targetVisual}${yieldColumnLabels}${labels}${multiSeriesColumnLabels}</svg></div>`;
   if (taYieldTrendChartType === 'multi-line') renderTaYieldMultiSeriesChart(trendRows, buckets, targetsByBucket, label, isTotalTrendScope || taYieldTrendSeries.length > 1, `${isTotalTrendScope ? 'Total' : taYieldTrendSeries.length === 1 ? shortTaSeries(taYieldTrendSeries[0]) : 'Combined'} Target`, isTotalTrendScope ? 'Total Yield' : 'Combined Yield');
   const displayedDefectRates = buckets.map((row) => groups.reduce((total, group) => total + Math.max(0, row.input ? (row.groups[group] || 0) / row.input * 100 : 0), 0)); const multiSeriesDefectRates = selectedSeriesMetrics.flatMap((series) => series.values.map((point) => groups.reduce((total, group) => total + Math.max(0, point.input ? (point.groups[group] || 0) / point.input * 100 : 0), 0))); const defectMaximum = Math.max(1, Math.ceil(Math.max(...(multiSeriesColumnChart ? multiSeriesDefectRates : displayedDefectRates)) * 10) / 10); const defectGrid = [0, .5, 1].map((ratio) => { const y = base - plotHeight * ratio; return `<line class="gridline" x1="${left}" y1="${y}" x2="${width - right}" y2="${y}"/><text class="axis" x="${left - 8}" y="${y + 4}" text-anchor="end">${(defectMaximum * ratio).toFixed(1)}%</text>`; }).join('');
   const bars = buckets.map((row, index) => { const barWidth = Math.min(48, slot * .62); const barX = x(index) - barWidth / 2; let stacked = 0; return groups.map((group, groupIndex) => { const signedRate = row.input ? (row.groups[group] || 0) / row.input * 100 : 0; const rate = Math.max(0, signedRate); const barHeight = rate / defectMaximum * plotHeight; const y = base - stacked - barHeight; stacked += barHeight; return rate ? `<rect x="${barX}" y="${y}" width="${barWidth}" height="${barHeight}" fill="${chartColors[groupIndex % chartColors.length]}"><title>${escapeHtml(row.month)} | ${escapeHtml(group)}: ${signedRate.toFixed(3)}%</title></rect>` : ''; }).join(''); }).join('');
@@ -1757,6 +1889,7 @@ function renderTaYieldTendencyCharts(rows = latestTaYieldTendencyData, groupRows
   const defectLabels = multiSeriesColumnChart ? `${labels}${multiSeriesColumnLabels}` : `${defectTotalLabels}${labels}`;
   const defectSeriesLegend = multiSeriesColumnChart ? `<span class="ta-yield-defect-series-note">Columns left to right: ${escapeHtml(selectedSeriesMetrics.map((series) => series.label).join(' · '))}</span>` : '';
   byId('taYieldDefectChart').innerHTML = `<div class="sc-yield-legend"><strong>Mode group</strong>${legend}${defectSeriesLegend}</div><div class="${taYieldTrendChartClass}"${taYieldDayChartViewportStyle}><svg${taYieldChartSvgStyle} viewBox="0 0 ${width} ${height}" role="img" aria-label="TA defect rate by ${taYieldInterval}"><text class="axis axis-title" x="${left}" y="18">%Defect</text>${defectGrid}<line x1="${left}" y1="${base}" x2="${width - right}" y2="${base}" stroke="#b8c7bf"/>${defectVisual}${defectLabels}</svg></div>`;
+  bindTaYieldTendencyScroll();
   holder.querySelectorAll('.ta-yield-tendency-panel').forEach((panel) => panel.insertAdjacentHTML('beforeend', '<div class="ta-yield-trend-tooltip" role="status" hidden></div>'));
   bindTaYieldTrendTooltips(holder);
   requestAnimationFrame(scrollTaYieldTendencyToLatest);
@@ -2051,6 +2184,7 @@ function acceptDashboardDataMode(next) {
   dashboardDataModeUnavailable = false;
   if (changed) {
     dashboardDataModeGeneration += 1;
+    taYieldMachineGraphs?.reset();
     clientResponseCache.clear();
     dataRequestId += 1;
     scYieldTendencyRequestId += 1;
@@ -2425,7 +2559,7 @@ byId('dailyOutputToggle').addEventListener('click', () => toggleDailyOutputPanel
 byId('taYieldCompareToggle').addEventListener('click', toggleTaYieldCompare);
 document.querySelectorAll('.process-option').forEach((button) => button.addEventListener('click', () => { setSelectedProduct(byId('product').value === button.dataset.product ? '' : button.dataset.product); saveDashboardNavigation(); refreshOptionsForProduct(); requestAnimationFrame(updateReportPendingNotice); }));
 byId('processSelect').addEventListener('change', () => { setSelectedProcess(byId('processSelect').value); refreshOptionsForProcess(); });
-byId('dataSource').addEventListener('change', () => { ensureTaYieldCompareController().setAvailable(selectedDataset() === 'ta-yield'); saveDashboardNavigation(); initialize(); });
+byId('dataSource').addEventListener('change', () => { taYieldMachineGraphs?.reset(); ensureTaYieldCompareController().setAvailable(selectedDataset() === 'ta-yield'); saveDashboardNavigation(); initialize(); });
 byId('dataSource').addEventListener('change', () => { const isScYield = selectedDataset() === 'yield'; const isTaYield = selectedDataset() === 'ta-yield'; byId('scYieldLogTab').hidden = !isScYield; byId('taYieldLogTab').hidden = !isTaYield; byId('taYieldMachineTab').hidden = !isTaYield; byId('taDataTableTab').hidden = !isTaYield; const activeView = document.querySelector('.app-tab.active')?.dataset.view; if ((!isScYield && activeView === 'sc-yield-log') || (!isTaYield && ['ta-yield-log', 'ta-yield-machine', 'ta-data-table'].includes(activeView))) showView('dashboard'); });
 byId('dataSource').addEventListener('change', () => byId('scYieldArSummary')?.setAttribute('hidden', ''));
 byId('pn').addEventListener('focus', () => { pnState.query = byId('pn').value; pnState.loading = false; pnState.error = ''; renderPartNumbers(); byId('pnMenu').hidden = false; byId('pn').setAttribute('aria-expanded', 'true'); });
@@ -2538,6 +2672,9 @@ let taYieldMachineSelectedMachines = new Set();
 let taYieldMachineSelectionScope = '';
 function machineDateLines(rows, order = 'machine-date') {
   taYieldMachineLineRows = rows;
+  return machineDateLinesForGraph(rows, order, taYieldMachineTotalMachines);
+}
+function machineDateLinesForGraph(rows, order = 'machine-date', processMachineCount = 0) {
   const pointsByKey = new Map();
   rows.forEach((row) => {
     const key = `${row.date}|${row.machineName}`;
@@ -2552,7 +2689,7 @@ function machineDateLines(rows, order = 'machine-date') {
   const share = (quantity) => totalQuantity ? quantity / totalQuantity * 100 : 0;
   const maximum = Math.max(...points.map((row) => share(row.quantity)), 1);
   const machines = [...new Set(points.map((row) => row.machineName))].sort();
-  const totalMachines = Math.max(machines.length, Number(taYieldMachineTotalMachines) || 0);
+  const totalMachines = Math.max(machines.length, Number(processMachineCount) || 0);
   const colors = ['#5b17bd', '#ef5b25', '#008b6d', '#1686c3', '#c58100', '#c03b8f', '#3046a4', '#5e8b1c'];
   const colorFor = (machine) => colors[machines.indexOf(machine) % colors.length];
   const width = 1440;
@@ -2629,6 +2766,31 @@ function scrollTaYieldTendencyToLatest() {
     viewport.scrollLeft = Math.max(0, viewport.scrollWidth - viewport.clientWidth);
   });
 }
+function bindTaYieldTendencyScroll() {
+  const yieldViewport = byId('taYieldYieldChart')?.querySelector('.sc-yield-chart-scroll');
+  const defectViewport = byId('taYieldDefectChart')?.querySelector('.sc-yield-chart-scroll');
+  if (!yieldViewport || !defectViewport) return;
+  let expectedYieldScroll;
+  let expectedDefectScroll;
+  const sync = (source, target, setExpectedScroll) => {
+    const sourceMaximum = Math.max(0, source.scrollWidth - source.clientWidth);
+    const targetMaximum = Math.max(0, target.scrollWidth - target.clientWidth);
+    const targetScroll = sourceMaximum ? source.scrollLeft / sourceMaximum * targetMaximum : 0;
+    if (Math.abs(target.scrollLeft - targetScroll) < .5) return;
+    setExpectedScroll(targetScroll);
+    target.scrollLeft = targetScroll;
+  };
+  yieldViewport.addEventListener('scroll', () => {
+    if (Number.isFinite(expectedYieldScroll) && Math.abs(yieldViewport.scrollLeft - expectedYieldScroll) < .5) { expectedYieldScroll = undefined; return; }
+    expectedYieldScroll = undefined;
+    sync(yieldViewport, defectViewport, (value) => { expectedDefectScroll = value; });
+  }, { passive: true });
+  defectViewport.addEventListener('scroll', () => {
+    if (Number.isFinite(expectedDefectScroll) && Math.abs(defectViewport.scrollLeft - expectedDefectScroll) < .5) { expectedDefectScroll = undefined; return; }
+    expectedDefectScroll = undefined;
+    sync(defectViewport, yieldViewport, (value) => { expectedYieldScroll = value; });
+  }, { passive: true });
+}
 const alignTaYieldTrendCharts = () => document.querySelectorAll('#taYieldYieldChart svg, #taYieldDefectChart svg').forEach((chart) => { const width = Number(chart.getAttribute('viewBox')?.split(/\s+/)[2]); chart.setAttribute('preserveAspectRatio', 'xMinYMid meet'); if (Number.isFinite(width) && width > 0) { chart.style.width = `clamp(${width}px, 100%, 1280px)`; chart.style.minWidth = `${width}px`; chart.style.maxWidth = 'none'; chart.style.marginInline = 'auto'; } });
 new MutationObserver(alignTaYieldTrendCharts).observe(byId('taYieldChart'), { childList: true, subtree: true });
 function renderTaMachineGroupByControl() {
@@ -2675,11 +2837,16 @@ function renderTaMachineSelectionControl() {
 const renderTaYieldMachineViewBase = renderTaYieldMachineView;
 let taYieldMachineGroupBy = taYieldMachineState.groupBy || 'day';
 renderTaYieldMachineView = async function renderTaYieldMachineViewWithGrouping() {
-  await renderTaYieldMachineViewBase();
+  if (await renderTaYieldMachineViewBase() === false) return;
   const previousApply = byId('taMachineApply');
   const apply = previousApply.cloneNode(true);
   previousApply.replaceWith(apply);
   apply.addEventListener('click', async () => {
+    const graphs = ensureTaYieldMachineGraphs();
+    const analysisToken = graphs.begin();
+    const chart = byId('taMachineChart');
+    const sourceGeneration = dashboardDataModeGeneration;
+    const isCurrent = () => graphs.isCurrent(analysisToken) && byId('taMachineChart') === chart && byId('taMachineApply') === apply && selectedDataset() === 'ta-yield' && currentConfig.dataset === 'ta-yield' && sourceGeneration === dashboardDataModeGeneration;
     const selectedProcess = byId('taMachineProcess').value;
     const selectedSerie = byId('taMachineSerie').value;
     const selectedPartNumber = byId('taMachinePartNumber').value;
@@ -2693,6 +2860,7 @@ renderTaYieldMachineView = async function renderTaYieldMachineViewWithGrouping()
     taYieldMachineState = { process: selectedProcess, serie: selectedSerie, pn: selectedPartNumber, machine: selectedMachine, defectType: selectedDefectType || '', defect: selectedDefect || '', groupBy: selectedGroupBy };
     if (!selectedProcess || !selectedDefect) { byId('taMachineChart').innerHTML = '<p class="sc-yield-empty">Select a process and defect view before analyzing.</p>'; return; }
     const submittedSnapshot = taYieldMachineControlSnapshot();
+    const appliedScope = { startDate: byId('taMachineStartDate').value, endDate: byId('taMachineEndDate').value, process: selectedProcess, serie: selectedSerie, pn: selectedPartNumber, defectType: selectedDefectType, defect: selectedDefect, groupBy: selectedGroupBy };
     apply.disabled = true; apply.textContent = 'Loading…';
     byId('taMachineChart').innerHTML = '<p class="sc-yield-empty">Loading Machine analysis…</p>';
     const params = new URLSearchParams({ dataset: 'ta-yield', startDate: byId('taMachineStartDate').value, endDate: byId('taMachineEndDate').value, process: selectedProcess, machine: selectedMachine, defectType: selectedDefectType, defect: selectedDefect, groupBy: selectedGroupBy });
@@ -2700,14 +2868,23 @@ renderTaYieldMachineView = async function renderTaYieldMachineViewWithGrouping()
     if (selectedPartNumber) params.set('pn', selectedPartNumber);
     try {
       const data = await request(`/api/ta-yield-machine?${params}`);
+      if (!isCurrent()) return;
       taYieldMachineTotalMachines = Number(data.totalMachines) || 0;
       taYieldMachineRows = [...data.rows];
       byId('taMachineLink').textContent = selectedDefectType === 'category' ? `Linked disposition codes: ${data.linkedModes.join(', ') || 'None'}` : '';
       const visibleRows = taYieldMachineRows.filter((row) => !taYieldMachineSelectedMachines.size || taYieldMachineSelectedMachines.has(row.machineName));
       byId('taMachineChart').innerHTML = visibleRows.length ? machineDateBars(visibleRows) : '<p class="sc-yield-empty">No matching TA Yield defects were found for the selected machines.</p>';
-      if (visibleRows.length) { renderTaMachineGroupByControl(); renderTaMachineSelectionControl(); }
+      if (visibleRows.length) {
+        renderTaMachineGroupByControl(); renderTaMachineSelectionControl();
+        graphs.setAnalysis(analysisToken, appliedScope, chart, () => ({
+          rows: taYieldMachineRows.map((row) => ({ ...row })),
+          totalMachines: taYieldMachineTotalMachines,
+          machines: [...new Set(taYieldMachineRows.filter((row) => !taYieldMachineSelectedMachines.size || taYieldMachineSelectedMachines.has(row.machineName)).map((row) => row.machineName))],
+          order: chart.querySelector('.ta-machine-line-order')?.value || 'machine-date'
+        }));
+      }
       markTaYieldMachineControlsApplied(submittedSnapshot);
-    } catch (error) { byId('taMachineChart').innerHTML = `<p class="sc-yield-empty">${escapeHtml(error.message)}</p>`; } finally { apply.disabled = false; apply.textContent = 'Analyze all machines'; }
+    } catch (error) { if (isCurrent()) chart.innerHTML = `<p class="sc-yield-empty">${escapeHtml(error.message)}</p>`; } finally { if (isCurrent()) { apply.disabled = false; apply.textContent = 'Analyze all machines'; } }
   });
 };
 

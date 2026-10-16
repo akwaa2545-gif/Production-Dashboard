@@ -1,10 +1,50 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { mapTaYieldMachineEvents } from '../src/taYieldMapping.js';
+import { mapTaWorkbookReconciliationRows, mapTaYieldMachineEvents } from '../src/taYieldMapping.js';
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
 describe('TA Yield Machine tab', () => {
+  it('renders added Machine graphs without replacing the main chart rows or machine count', () => {
+    const app = read('public/app.js');
+    const start = app.indexOf('function machineDateLines(rows');
+    const end = app.indexOf('machineDateBars = machineDateLines;', start);
+    const mainRows = [{ date: '2026-10-01', machineName: 'MAIN', quantity: 7 }];
+    const getRenderers = new Function('format', 'escapeHtml', 'taYieldMachineLineRows', 'taYieldMachineTotalMachines', `${app.slice(start, end)}\nreturn { render: machineDateLinesForGraph, mainRows: () => taYieldMachineLineRows, mainTotal: () => taYieldMachineTotalMachines };`);
+    const renderers = getRenderers(new Intl.NumberFormat('en-US'), (value) => String(value), mainRows, 99);
+    const rows = Object.freeze([Object.freeze({ date: '2026-10-02', machineName: 'CARD', quantity: 3 })]);
+
+    const chart = renderers.render(rows, 'date-machine', 4);
+
+    expect(chart).toContain('1 of 4 process machines');
+    expect(chart).toContain('date-machine" selected');
+    expect(chart).toContain('CARD');
+    expect(renderers.mainRows()).toBe(mainRows);
+    expect(renderers.mainTotal()).toBe(99);
+  });
+
+  it('preserves separate production lines for one lot and defect category', () => {
+    const rows = mapTaWorkbookReconciliationRows([
+      { line: 'PSG', lotNo: '6J14N07028', itemName: 'PART', tapingDate: '2026-09-22T07:36:31.523Z', categories: { SH: 161, CO: 3 } },
+      { line: 'PSL', lotNo: '6J14N07028', itemName: 'PART', tapingDate: '2026-09-22T07:36:31.523Z', categories: { SH: 2, CO: 23 } }
+    ], new Map());
+
+    expect(rows.map(({ line, categories }) => ({ line, SH: categories.SH, CO: categories.CO }))).toEqual([
+      { line: 'PSG', SH: 161, CO: 3 },
+      { line: 'PSL', SH: 2, CO: 23 }
+    ]);
+  });
+
+  it('uses a row identity that allows the same lot and defect on separate lines', () => {
+    const creation = read('scripts/migrate-ta-yield-machine-rows.mjs');
+    const repair = read('scripts/repair-ta-yield-machine-lot-key.mjs');
+
+    expect(creation).toContain('MachineLotRowId bigint IDENTITY(1,1) NOT NULL PRIMARY KEY CLUSTERED');
+    expect(creation).not.toContain('PRIMARY KEY CLUSTERED (ScopeMonth, LotNo, YieldCategory, DefectMode)');
+    expect(repair).toContain('ALTER TABLE ${table} ADD [MachineLotRowId] bigint IDENTITY(1,1) NOT NULL');
+    expect(repair).toContain('ALTER TABLE ${table} DROP CONSTRAINT ${quote(before.primaryKeyName)}');
+  });
+
   it('aggregates eligible-lot defects by LotStartLog date, machine, and selected yield category', () => {
     const rows = [
       { lotNo: '6H01N00001', occuredOn: '2026-08-01T03:00:00.000Z', machineName: 'AN-01' },
@@ -35,9 +75,10 @@ describe('TA Yield Machine tab', () => {
     expect(html).toContain('data-view="ta-yield-machine"');
     expect(app).toContain('function ensureTaYieldMachineView()');
     expect(app).toContain('function renderTaYieldMachineView()');
-    expect(app).toContain('1.1stAnodization');
-    expect(app).toContain('2.Welding');
-    expect(app).toContain('3.Ei');
+    expect(app).toContain('/api/ta-yield-machine-processes?');
+    expect(app).not.toContain('<option value="1.1stAnodization">');
+    expect(app).not.toContain('<option value="2.Welding">');
+    expect(app).not.toContain('<option value="3.Ei">');
     expect(app).toContain('id="taMachineGroupBy"');
     expect(app).toContain('id="taMachineSerie"');
     expect(app).toContain('id="taMachinePartNumber"');

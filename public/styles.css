@@ -115,8 +115,9 @@ body { margin: 0; background: #fff; }
 .yield-interval-control { display: grid; gap: 4px; color: #3c4a69; font-size: 10px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }.yield-interval-control select { min-width: 104px; height: 33px; border: 1px solid #bcc7dc; border-radius: 3px; padding: 0 28px 0 9px; color: #25304b; background: #fff; font: 700 12px Bahnschrift, "Aptos", "Segoe UI", sans-serif; }.yield-interval-control select:focus { border-color: #28358c; outline: 2px solid #dfe4ff; outline-offset: 1px; }.ta-yield-tendency-panel { display: grid; gap: 8px; }.ta-yield-tendency-panel + .ta-yield-tendency-panel { margin-top: 16px; }.ta-yield-tendency-panel h4 { margin: 0; color: #25304b; font-size: 16px; }.ta-yield-tendency-panel .sc-yield-chart-scroll { overflow-x: hidden; }.ta-yield-tendency-panel .sc-yield-chart-scroll[style*="overflow-x:auto"] { overflow-x: auto; }.ta-yield-tendency-panel svg { display: block; width: 100%; min-width: 0; height: 250px; }
 #scYieldChart { grid-column: 1 / -1; box-sizing: border-box; min-width: 0; width: 100%; overflow: visible; }#scYieldChart > .table-heading { align-items: end; justify-content: flex-start; flex-wrap: wrap; gap: 12px; }#scYieldChart > .table-heading > div:first-child { margin-right: 10px; }@media (max-width: 760px) { #scYieldChart > .table-heading { align-items: start; } }
 #scYieldChart .sc-yield-chart-scroll:focus-visible, #scYieldChart .sc-yield-chart-data .table-wrap:focus-visible { outline: 3px solid #28358c; outline-offset: -3px; }.sc-yield-chart-data { margin-top: 16px; border: 1px solid #dbe1ed; background: #fff; }.sc-yield-chart-data summary { cursor: pointer; padding: 11px 14px; color: #28358c; font-size: 12px; font-weight: 800; }.sc-yield-chart-data .table-wrap { border-inline: 0; border-bottom: 0; box-shadow: none; }.sc-yield-trend-status, .sc-yield-table-caption { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
-.sc-yield-chart .yield-column { fill: rgba(22, 131, 91, .28); stroke: #16835b; stroke-width: 1; }.sc-yield-legend .yield-column-key { background: rgba(22, 131, 91, .45); border: 1px solid #16835b; }
+.sc-yield-chart .yield-column { --yield-series-fill: rgba(22, 131, 91, .28); --yield-series-stroke: #16835b; --yield-target-alert-fill: rgba(201, 68, 61, .55); --yield-target-alert-stroke: #c9443d; fill: var(--yield-series-fill); stroke: var(--yield-series-stroke); stroke-width: 1; }.sc-yield-legend .yield-column-key { background: rgba(22, 131, 91, .45); border: 1px solid #16835b; }
 .sc-yield-chart .yield-column.below-target { fill: rgba(201, 68, 61, .35); stroke: #c9443d; }
+.ta-yield-tendency-panel .yield-column.below-target{animation:ta-yield-below-target-pulse 1.25s ease-in-out infinite}@keyframes ta-yield-below-target-pulse{0%,100%{fill:var(--yield-series-fill);stroke:var(--yield-series-stroke)}50%{fill:var(--yield-target-alert-fill);stroke:var(--yield-target-alert-stroke)}}@media(prefers-reduced-motion:reduce){.yield-column.below-target{animation:none;fill:var(--yield-target-alert-fill)!important;stroke:var(--yield-target-alert-stroke)!important}}
 .ta-yield-sh-fallback td { background: #fff4d6; color: #7a4a00; font-weight: 800; }.ta-yield-fallback-flag { color: #9a5200; font-size: 11px; }
 .ta-yield-acc-match td { background: #e7f7ef; color: #0f7048; font-weight: 800; }.ta-yield-acc-flag { color: #087443; font-size: 11px; }
 .ta-yield-log-filter { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-top: 16px; border: 1px solid #d9dfec; background: #f7f9fd; padding: 11px 12px; }.ta-yield-log-filter label { display: grid; gap: 5px; color: #3c4a69; font-size: 10px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }.ta-yield-log-filter select, .ta-yield-log-filter input { min-height: 33px; border: 1px solid #bcc7dc; border-radius: 3px; padding: 0 9px; color: #25304b; background: #fff; font: 700 12px Bahnschrift, "Aptos", "Segoe UI", sans-serif; }.ta-yield-log-filter input { width: min(360px, 42vw); }.ta-yield-log-filter span { margin-left: auto; color: #66718a; font-size: 11px; font-weight: 800; }@media (max-width: 620px) { .ta-yield-log-filter { align-items: stretch; flex-direction: column; }.ta-yield-log-filter input { width: 100%; }.ta-yield-log-filter span { margin-left: 0; } }
@@ -248,7 +249,7 @@ body { margin: 0; background: #fff; }
 /* Fit the complete Machine trend in its workspace instead of using an inner horizontal scrollbar. */
 .ta-machine-line-scroll{position:relative;overflow:hidden}
 .ta-machine-date-machine-chart{width:100%!important;height:440px!important;min-width:0}
-.ta-yield-column-value{fill:#25304b;font-size:10px;font-weight:800;paint-order:stroke;stroke:#fff;stroke-width:3px;stroke-linejoin:round;pointer-events:none}
+.ta-yield-column-value-backdrop{fill:#fff;pointer-events:none}.ta-yield-column-value{fill:#25304b;font-size:10px;font-weight:800;paint-order:stroke;stroke:#fff;stroke-width:3px;stroke-linejoin:round;pointer-events:none}
 .ta-yield-series-column-label{fill:#53617d!important;font-size:8px!important;font-weight:800}
 .ta-yield-series-label-swatch{stroke:#fff;stroke-width:1}
 #taYieldYieldChart .sc-yield-legend{align-items:center;gap:8px 12px;border-bottom:1px solid #e2e7f0;padding:8px 10px 11px}#taYieldYieldChart .sc-yield-legend span{border:1px solid #dbe1ed;border-radius:999px;background:#f8faff;padding:4px 8px;color:#28355b;font-size:12px}#taYieldYieldChart .sc-yield-legend i{width:12px;height:12px;border-radius:2px}#taYieldYieldChart .sc-yield-legend .target-line-key{width:18px;height:3px;border-radius:0}
@@ -416,4 +417,44 @@ body { margin: 0; background: #fff; }
 @media (max-width: 420px) { .daily-output-panel-header { padding-left: 10px; }.daily-output-panel-mark { display: none !important; }.daily-output-panel-header .daily-output-panel-identity > div > span { max-width: 150px; }.daily-output-panel-content { padding-inline: 10px; } }
 @media (max-height: 375px) { .daily-output-panel-content { grid-template-rows: auto auto minmax(140px, 1fr); overflow: auto; } }
 @media (prefers-reduced-motion: reduce) { .daily-output-panel { scroll-behavior: auto; } }
+.ta-machine-comparisons { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; min-width: 0; }
+.ta-machine-comparisons[hidden] { display: none; }
+.ta-machine-comparison-card { min-width: 0; overflow: hidden; border: 1px solid #d8dce6; border-top: 4px solid #3b187e; border-radius: 6px; background: #fff; box-shadow: 0 8px 24px rgba(35,48,126,.08); }
+.ta-machine-comparison-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid #e5e9f2; background: #faf8ff; }
+.ta-machine-comparison-header > div { min-width: 0; }
+.ta-machine-comparison-header h3, .ta-machine-comparison-header h4 { margin: 0 0 5px; color: #3b187e; font-size: 14px; }
+.ta-machine-add-graph { display: flex; width: 100%; min-height: 108px; align-items: center; justify-content: center; gap: 14px; box-sizing: border-box; border: 2px dashed #b29acb; border-radius: 6px; background: #faf8ff; padding: 20px; color: #4b168f; font-family: Bahnschrift, "Aptos", "Segoe UI", sans-serif; cursor: pointer; transition: background .15s ease, border-color .15s ease; }
+.ta-machine-add-graph-icon { display: grid; width: 48px; height: 48px; flex: 0 0 auto; place-items: center; border: 1px solid #d4c5e6; border-radius: 50%; background: #fff; font-size: 42px; font-weight: 400; line-height: 1; }
+.ta-machine-add-graph-label { font-size: 16px; font-weight: 800; }
+.ta-machine-add-graph:hover:not(:disabled) { border-color: #4b168f; background: #f1eafb; }
+.ta-machine-add-graph:focus-visible { outline: 3px solid #7d55ad; outline-offset: 3px; }
+.ta-machine-add-graph:disabled { border-color: #d7d1e0; background: #f8f8fb; color: #7f758e; cursor: not-allowed; }
+.ta-machine-add-graph:disabled .ta-machine-add-graph-icon { border-color: #ded9e5; background: #fdfcff; }
+.ta-machine-comparison-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; min-width: 0; margin: 0; border: 0; border-bottom: 1px solid #e5e9f2; border-radius: 0; background: #f7f9fd; padding: 16px; box-shadow: none; }
+.ta-machine-comparison-filters > label { display: grid; min-width: 0; gap: 6px; color: #3c4a69; font-size: 10px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.ta-machine-comparison-filters input:not([type="checkbox"]), .ta-machine-comparison-filters select { width: 100%; min-width: 0; min-height: 36px; box-sizing: border-box; border: 1px solid #bcc7dc; border-radius: 3px; background: #fff; padding: 6px 9px; color: #25304b; font: 700 12px Bahnschrift, "Aptos", "Segoe UI", sans-serif; }
+.ta-machine-comparison-filters input[type="checkbox"] { width: 14px; height: 14px; min-height: 0; flex: 0 0 auto; margin: 0; padding: 0; }
+.ta-machine-comparison-filters input:focus-visible, .ta-machine-comparison-filters select:focus-visible { outline: 2px solid #7d55ad; outline-offset: 2px; }
+.ta-machine-comparison-filters input:disabled, .ta-machine-comparison-filters select:disabled { background: #edf0f6; color: #67728b; }
+.ta-machine-comparison-filter-wide, .ta-machine-comparison-actions { grid-column: 1 / -1; }
+.ta-machine-comparison-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; }
+.ta-machine-comparison-actions > button { min-height: 36px; border: 1px solid #28358c; border-radius: 3px; background: #28358c; padding: 0 14px; color: #fff; font: 800 12px Bahnschrift, "Aptos", "Segoe UI", sans-serif; cursor: pointer; }
+.ta-machine-comparison-actions > button:hover:not(:disabled) { background: #1d2872; }
+.ta-machine-comparison-actions > button:focus-visible { outline: 3px solid #9e83cc; outline-offset: 2px; }
+.ta-machine-comparison-actions > button:disabled { cursor: not-allowed; opacity: .6; }
+.ta-machine-comparison-actions .ta-machine-picker { min-width: 0; max-width: 100%; margin-left: auto; }
+.ta-machine-comparison-actions .ta-machine-picker-menu { width: min(270px, calc(100vw - 72px)); box-sizing: border-box; }
+.ta-machine-comparison-status { flex: 1 1 160px; margin: 0; color: #596783; font-size: 11px; line-height: 1.45; }
+.ta-machine-comparison-remove { flex: 0 0 auto; min-height: 32px; border: 1px solid #cebee9; border-radius: 4px; background: #fff; padding: 0 10px; color: #4b168f; font: 800 11px Bahnschrift, "Aptos", "Segoe UI", sans-serif; cursor: pointer; }
+.ta-machine-comparison-remove:hover { background: #f1eafb; }
+.ta-machine-comparison-remove:focus-visible { outline: 3px solid #9e83cc; outline-offset: 2px; }
+.ta-machine-comparison-chart { min-width: 0; }
+.ta-machine-comparison-chart .ta-machine-chart-wrap { min-height: 0; border: 0; border-radius: 0; padding: 16px; box-shadow: none; }
+.ta-machine-comparison-chart .ta-machine-chart-heading { flex-wrap: wrap; gap: 12px; }
+.ta-machine-comparison-chart .ta-machine-chart-heading .ta-machine-chart-summary { justify-content: flex-start; }
+@media (max-width: 1000px) { .ta-machine-comparisons { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 540px) { .ta-machine-comparison-header { padding: 12px; }.ta-machine-comparison-chart .ta-machine-chart-wrap { padding: 14px 10px; }.ta-machine-comparison-header { gap: 8px; } }
+@media (max-width: 540px) { .ta-machine-comparison-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 10px; padding: 12px; }.ta-machine-comparison-actions .ta-machine-picker { margin-left: 0; }.ta-machine-add-graph { min-height: 96px; padding: 16px; }.ta-machine-comparison-actions .ta-machine-picker-menu { right: auto; left: 0; } }
+@media (max-width: 360px) { .ta-machine-comparison-filters { grid-template-columns: minmax(0, 1fr); } }
+@media (prefers-reduced-motion: reduce) { .ta-machine-add-graph { transition: none; } }
 @media (max-width: 560px) { .daily-output-panel { top: 12px; right: 12px; bottom: auto; min-width: 0; width: calc(100vw - 24px); height: min(720px, calc(100vh - 24px)); min-height: min(360px, calc(100vh - 24px)); } }

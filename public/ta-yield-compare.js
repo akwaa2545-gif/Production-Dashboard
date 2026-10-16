@@ -132,10 +132,10 @@ function taYieldCompareLookupGraphs(data, escapeHtml) {
   return `<section class="ta-lookup-visuals" aria-label="LOOKUP visual analysis">${charts}${adjustments}${signedNote}</section>`;
 }
 
-function taYieldCompareAnalysisTable(rows, escapeHtml, data = {}) {
+function taYieldCompareAnalysisTable(rows, escapeHtml, data = {}, detailId = 'taYieldCompareDetail') {
   if (!rows.length) return '';
   const periods = taYieldComparePeriods(data);
-  return `<div class="ta-compare-table-scroll" tabindex="0" role="region" aria-label="Yield and production volumes"><table class="ta-compare-table"><caption>Yield and production volumes · kpcs. = 1,000 pieces</caption><thead><tr><th scope="col" rowspan="2">Series / case size</th><th scope="colgroup" colspan="3">${escapeHtml(periods.current)} (Report dates)</th><th scope="colgroup" colspan="3">${escapeHtml(periods.compare)} (Compare with)</th><th scope="col" rowspan="2">Change (pp)</th><th scope="col" rowspan="2">Details</th></tr><tr>${['Yield (%)', 'Input (kpcs.)', 'Good (kpcs.)', 'Yield (%)', 'Input (kpcs.)', 'Good (kpcs.)'].map((label) => `<th scope="col">${label}</th>`).join('')}</tr></thead><tbody>${rows.map((row, index) => `<tr><th scope="row">${escapeHtml(row.label)}</th><td>${taYieldCompareValue(row.currentYield, '%')}</td><td>${taYieldCompareQuantity(row.currentInput)}</td><td>${taYieldCompareQuantity(row.currentGood)}</td><td>${taYieldCompareValue(row.compareYield, '%')}</td><td>${taYieldCompareQuantity(row.compareInput)}</td><td>${taYieldCompareQuantity(row.compareGood)}</td><td>${taYieldCompareNumber(row.delta) > 0 ? '+' : ''}${taYieldCompareValue(row.delta)}</td><td><button type="button" data-compare-index="${index}" aria-label="LOOKUP ${escapeHtml(row.label)}" aria-controls="taYieldCompareDetail" aria-expanded="false">LOOKUP</button></td></tr>`).join('')}</tbody></table></div>`;
+  return `<div class="ta-compare-table-scroll" tabindex="0" role="region" aria-label="Yield and production volumes"><table class="ta-compare-table"><caption>Yield and production volumes · kpcs. = 1,000 pieces</caption><thead><tr><th scope="col" rowspan="2">Series / case size</th><th scope="colgroup" colspan="3">${escapeHtml(periods.current)} (Report dates)</th><th scope="colgroup" colspan="3">${escapeHtml(periods.compare)} (Compare with)</th><th scope="col" rowspan="2">Change (pp)</th><th scope="col" rowspan="2">Details</th></tr><tr>${['Yield (%)', 'Input (kpcs.)', 'Good (kpcs.)', 'Yield (%)', 'Input (kpcs.)', 'Good (kpcs.)'].map((label) => `<th scope="col">${label}</th>`).join('')}</tr></thead><tbody>${rows.map((row, index) => `<tr><th scope="row">${escapeHtml(row.label)}</th><td>${taYieldCompareValue(row.currentYield, '%')}</td><td>${taYieldCompareQuantity(row.currentInput)}</td><td>${taYieldCompareQuantity(row.currentGood)}</td><td>${taYieldCompareValue(row.compareYield, '%')}</td><td>${taYieldCompareQuantity(row.compareInput)}</td><td>${taYieldCompareQuantity(row.compareGood)}</td><td>${taYieldCompareNumber(row.delta) > 0 ? '+' : ''}${taYieldCompareValue(row.delta)}</td><td><button type="button" data-compare-index="${index}" aria-label="LOOKUP ${escapeHtml(row.label)}" aria-controls="${escapeHtml(detailId)}" aria-expanded="false">LOOKUP</button></td></tr>`).join('')}</tbody></table></div>`;
 }
 
 function taYieldCompareInvestigation(data, offset, escapeHtml) {
@@ -159,7 +159,7 @@ function taYieldCompareInvestigation(data, offset, escapeHtml) {
   return `<p class="ta-compare-detail-note">Staged data only. Rates use adjusted input; changes are percentage points. Other2 is a reconciliation adjustment, can be negative, and is not a confirmed physical defect or root cause.</p>${taYieldCompareLookupGraphs(data, escapeHtml)}<div class="ta-compare-table-scroll" tabindex="0" role="region" aria-label="Defect group quantity and rate changes"><table class="ta-compare-table"><caption>Defect groups and reconciliation adjustments</caption><thead><tr><th scope="col" rowspan="2">Group</th><th scope="colgroup" colspan="2">${escapeHtml(periods.current)} (Report dates)</th><th scope="colgroup" colspan="2">${escapeHtml(periods.compare)} (Compare with)</th><th scope="col" rowspan="2">Rate change (pp)</th></tr><tr>${['Qty (kpcs.)', 'Rate (%)', 'Qty (kpcs.)', 'Rate (%)'].map((label) => `<th scope="col">${label}</th>`).join('')}</tr></thead><tbody>${groups || '<tr><td colspan="6">No staged defect groups or adjustments.</td></tr>'}</tbody></table></div>${jobs}`;
 }
 
-function taYieldCompareChart(rows, escapeHtml, availableWidth = 900, data = {}) {
+function taYieldCompareChart(rows, escapeHtml, availableWidth = 900, data = {}, detailId = 'taYieldCompareDetail') {
   if (!rows.length) return '<p class="ta-compare-message">No matching production data for these periods.</p>';
   const periods = taYieldComparePeriods(data);
   const width = Math.max(900, 90 + rows.length * 50, Number.isFinite(availableWidth) ? Math.floor(availableWidth) : 900);
@@ -190,14 +190,22 @@ function taYieldCompareChart(rows, escapeHtml, availableWidth = 900, data = {}) 
     const mark = delta === null ? '' : delta === 0
       ? `<line x1="${x - barWidth / 2}" x2="${x + barWidth / 2}" y1="${zero}" y2="${zero}" stroke="${color}" stroke-width="3"/>`
       : `<rect x="${x - barWidth / 2}" y="${Math.min(valueY, zero)}" width="${barWidth}" height="${Math.abs(valueY - zero)}" fill="${color}"/>`;
-    return `<g class="ta-compare-bar" tabindex="0" role="button" aria-label="LOOKUP ${escapeHtml(tip)}" aria-controls="taYieldCompareDetail" aria-expanded="false" data-compare-index="${index}" data-compare-tooltip="${escapeHtml(tip)}"><title>${escapeHtml(tip)}</title><rect class="ta-compare-hit" x="${x - slot / 2}" y="${top}" width="${slot}" height="${bottom - top}" fill="transparent"/>${mark}<text class="ta-compare-value" x="${x}" y="${labelY}" text-anchor="middle">${taYieldCompareValue(delta)}</text><text class="ta-compare-label" transform="translate(${x + 4} ${height - 20}) rotate(-90)" text-anchor="start">${escapeHtml(labels[index])}</text></g>`;
+    return `<g class="ta-compare-bar" tabindex="0" role="button" aria-label="LOOKUP ${escapeHtml(tip)}" aria-controls="${escapeHtml(detailId)}" aria-expanded="false" data-compare-index="${index}" data-compare-tooltip="${escapeHtml(tip)}"><title>${escapeHtml(tip)}</title><rect class="ta-compare-hit" x="${x - slot / 2}" y="${top}" width="${slot}" height="${bottom - top}" fill="transparent"/>${mark}<text class="ta-compare-value" x="${x}" y="${labelY}" text-anchor="middle">${taYieldCompareValue(delta)}</text><text class="ta-compare-label" transform="translate(${x + 4} ${height - 20}) rotate(-90)" text-anchor="start">${escapeHtml(labels[index])}</text></g>`;
   }).join('');
   return `<svg viewBox="0 0 ${width} ${height}" style="min-width:${width}px" role="group" aria-label="Compare: accumulated yield change by series and case size, in percentage points">${grid}${bars}</svg>`;
 }
 
 window.createTaYieldCompareWindow = function createTaYieldCompareWindow(options) {
   const { request, bindResize, escapeHtml } = options;
-  const toggleButton = options.toggleButton || document.getElementById('taYieldCompareToggle');
+  const toggleButton = options.toggleButton === undefined ? document.getElementById('taYieldCompareToggle') : options.toggleButton;
+  const primary = !options.group;
+  const group = options.group || { children: new Set(), nextId: 1, focusFallback: toggleButton };
+  const suffix = primary ? '' : `-${++group.nextId}`;
+  const id = (name) => `taYieldCompare${name}${suffix}`;
+  let controller;
+  let destroyed = false;
+  let observer;
+  let disposeResize;
   let available = false;
   let enabled = false;
   let panel;
@@ -205,9 +213,9 @@ window.createTaYieldCompareWindow = function createTaYieldCompareWindow(options)
   let sequence = 0;
   let lastKey = '';
   let bounds;
-  let compareMonth = taYieldCompareMonths().previous;
-  let compareMonthExplicit = false;
-  let comparisonMode = 'same-dates';
+  let compareMonth = options.initialMonth || taYieldCompareMonths().previous;
+  let compareMonthExplicit = Boolean(options.initialMonth);
+  let comparisonMode = options.initialMode || 'same-dates';
   let applied;
   let detailSequence = 0;
   let investigation;
@@ -250,7 +258,7 @@ window.createTaYieldCompareWindow = function createTaYieldCompareWindow(options)
     toggleButton.textContent = `Compare: ${enabled ? 'On' : 'Off'}`;
     toggleButton.setAttribute('aria-pressed', String(enabled));
     toggleButton.setAttribute('aria-expanded', String(enabled));
-    toggleButton.setAttribute('aria-controls', 'taYieldComparePanel');
+    toggleButton.setAttribute('aria-controls', id('Panel'));
   };
   const closeInvestigation = (returnFocus = false) => {
     detailSequence += 1;
@@ -276,8 +284,30 @@ window.createTaYieldCompareWindow = function createTaYieldCompareWindow(options)
     enabled = false;
     invalidate();
     if (panel) panel.hidden = true;
+    if (primary) [...group.children].forEach((child) => child.destroy());
+    else dispose();
     updateToggle();
-    if (returnFocus) toggleButton?.focus();
+    const focusTarget = toggleButton || options.returnFocusTo;
+    if (returnFocus) (focusTarget?.isConnected !== false ? focusTarget : group.focusFallback)?.focus();
+  };
+  const dispose = () => {
+    if (destroyed) return;
+    destroyed = true;
+    observer?.disconnect();
+    if (typeof disposeResize === 'function') disposeResize();
+    panel?.remove();
+    group.children.delete(controller);
+  };
+  const addGraph = () => {
+    if (!enabled || !available || destroyed) return;
+    const selected = query('month').value;
+    const initialMonth = /^\d{4}-(0[1-9]|1[0-2])$/.test(selected) && selected > '1900-01'
+      ? taYieldCompareMonths(new Date(`${selected}-01T00:00:00+07:00`)).previous : compareMonth;
+    const child = createTaYieldCompareWindow({ ...options, group, toggleButton: null, returnFocusTo: query('add-graph'), initialMonth, initialMode: query('mode').value });
+    group.children.add(child);
+    child.setAvailable(true);
+    child.refresh(filters);
+    child.toggle();
   };
   const saveBounds = () => { const rect = panel.getBoundingClientRect(); bounds = { left: rect.left, top: rect.top, width: rect.width, height: rect.height }; };
   const restoreBounds = () => {
@@ -285,6 +315,13 @@ window.createTaYieldCompareWindow = function createTaYieldCompareWindow(options)
     Object.entries(bounds).forEach(([name, value]) => { panel.style[name] = `${value}px`; });
     panel.style.right = 'auto';
     panel.style.bottom = 'auto';
+  };
+  const constrainBounds = () => {
+    if (primary || !enabled || panel.classList.contains('is-maximized')) return;
+    const rect = panel.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    panel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - rect.width - 8))}px`;
+    panel.style.top = `${Math.max(8, Math.min(rect.top, window.innerHeight - rect.height - 8))}px`;
   };
   const updateWindowButtons = () => {
     const minimized = panel.classList.contains('is-minimized');
@@ -405,7 +442,7 @@ window.createTaYieldCompareWindow = function createTaYieldCompareWindow(options)
     chartWidth = width;
     const focusedIndex = chart.contains?.(document.activeElement) ? document.activeElement.dataset?.compareIndex : undefined;
     const originIndex = chart.contains?.(detailOrigin) ? detailOrigin.dataset?.compareIndex : undefined;
-    chart.innerHTML = taYieldCompareChart(applied.rows, escapeHtml, width, applied);
+    chart.innerHTML = taYieldCompareChart(applied.rows, escapeHtml, width, applied, id('Detail'));
     query('tooltip').hidden = true;
     bindTooltips();
     setSelectionExpanded(investigation?.row);
@@ -499,24 +536,34 @@ window.createTaYieldCompareWindow = function createTaYieldCompareWindow(options)
   function ensurePanel() {
     if (panel) return;
     panel = document.createElement('section');
-    panel.id = 'taYieldComparePanel';
+    panel.id = id('Panel');
+    panel.dataset.compareInstance = panel.id;
     panel.className = 'daily-output-panel ta-yield-compare-panel';
     panel.setAttribute('role', 'region');
-    panel.setAttribute('aria-labelledby', 'taYieldCompareHeading');
+    panel.setAttribute('aria-labelledby', id('Heading'));
     panel.hidden = true;
     panel.innerHTML = `<header class="daily-output-panel-header" data-compare-drag>
       <div class="daily-output-panel-identity"><span class="daily-output-panel-mark" aria-hidden="true"><i></i><i></i><i></i></span><div><strong id="taYieldCompareHeading">Compare</strong><span>Accumulated yield / series + case size</span></div></div>
       <div class="daily-output-panel-actions"><button type="button" data-compare-maximize aria-pressed="false" aria-label="Maximize Compare panel" title="Maximize panel"><span class="daily-output-action-icon" aria-hidden="true">[ ]</span></button><button type="button" data-compare-minimize aria-expanded="true" aria-controls="taYieldCompareContent" aria-label="Minimize Compare panel" title="Minimize panel"><span class="daily-output-action-icon" aria-hidden="true">_</span></button><button type="button" data-compare-close class="daily-output-panel-close" aria-label="Close Compare panel" title="Close panel"><span aria-hidden="true">x</span></button></div>
       </header><div id="taYieldCompareContent" class="daily-output-panel-content ta-compare-content">
-      <div class="ta-compare-controls"><div class="ta-compare-current"><span>Report dates</span><strong data-compare-current></strong></div><label for="taYieldCompareMonth">Compare with<input type="month" id="taYieldCompareMonth" data-compare-month required></label><label for="taYieldCompareMode">Period alignment<select id="taYieldCompareMode" data-compare-mode aria-describedby="taYieldCompareScope"><option value="same-dates">Same dates in chosen month</option><option value="full-month">Full month</option></select></label><button type="button" data-compare-apply>Apply</button><button type="button" data-compare-export disabled title="Export Compare tables and graphs, plus the currently open LOOKUP with all affected job records" aria-describedby="taYieldCompareExportStatus">Export Excel</button></div>
+      <div class="ta-compare-controls"><div class="ta-compare-current"><span>Report dates</span><strong data-compare-current></strong></div><label for="taYieldCompareMonth">Compare with<input type="month" id="taYieldCompareMonth" data-compare-month required></label><label for="taYieldCompareMode">Period alignment<select id="taYieldCompareMode" data-compare-mode aria-describedby="taYieldCompareScope"><option value="same-dates">Same dates in chosen month</option><option value="full-month">Full month</option></select></label><button type="button" data-compare-apply>Apply</button><button type="button" data-compare-add-graph>Add graph</button><button type="button" data-compare-export disabled title="Export Compare tables and graphs, plus the currently open LOOKUP with all affected job records" aria-describedby="taYieldCompareExportStatus">Export Excel</button></div>
+      <p class="ta-compare-shared-scope">All graphs share the selected dates, series and part numbers. Each graph has its own comparison period.</p>
       <p id="taYieldCompareExportStatus" class="ta-compare-export-status" data-compare-export-status role="status" aria-live="polite"></p>
       <p id="taYieldCompareScope" class="daily-output-panel-scope" data-compare-scope></p><p class="ta-compare-range-note" data-compare-notes></p><p class="ta-compare-status" data-compare-status role="status" aria-live="polite"></p>
       <div class="ta-compare-chart-card"><div class="ta-compare-chart-heading"><strong>Compare</strong><span></span></div><div class="ta-compare-chart" data-compare-chart></div><div class="ta-compare-footer"><span><i class="ta-compare-positive"></i>Green (+)</span><span><i class="ta-compare-negative"></i>Red (−)</span><span>Change in percentage points</span><span>N/A = no yield in one or both periods</span></div><div class="ta-compare-tooltip" data-compare-tooltip role="tooltip" hidden></div></div>
       <div data-compare-summary></div>
       <section id="taYieldCompareDetail" class="ta-compare-detail" data-compare-detail aria-labelledby="taYieldCompareDetailHeading" hidden><div class="ta-compare-detail-header"><h3 id="taYieldCompareDetailHeading" tabindex="-1" data-compare-detail-heading></h3><button type="button" data-compare-detail-close>Close LOOKUP</button></div><div data-compare-detail-body></div><div class="ta-compare-detail-pagination"><button type="button" data-compare-detail-previous>Previous 50 job records</button><button type="button" data-compare-detail-next>Next 50 job records</button><button type="button" data-compare-detail-retry hidden>Retry LOOKUP</button></div></section>
       </div><span class="daily-output-resize-hint" aria-hidden="true"></span>`;
+    if (!primary) panel.innerHTML = panel.innerHTML.replace(/taYieldCompare[A-Za-z]+/g, (value) => `${value}${suffix}`);
     document.body.append(panel);
-    bindResize(panel, 'Compare');
+    if (!primary) {
+      const offset = ((group.nextId - 2) % 6 + 1) * 28;
+      const mobile = window.innerWidth <= 560;
+      const width = Math.min(1080, window.innerWidth - (mobile ? 24 : 32)), height = mobile ? window.innerHeight - 24 : Math.min(640, window.innerHeight - 32);
+      panel.style.left = `${Math.max(8, Math.min(window.innerWidth - width - 8, (window.innerWidth - width) / 2 + offset))}px`;
+      panel.style.top = `${Math.max(8, Math.min(window.innerHeight - height - 8, (window.innerHeight - height) / 2 + offset))}px`;
+    }
+    disposeResize = bindResize(panel, 'Compare');
     bindDrag();
     panel.addEventListener('pointerdown', bringToFront, true);
     panel.addEventListener('keydown', (event) => {
@@ -528,10 +575,12 @@ window.createTaYieldCompareWindow = function createTaYieldCompareWindow(options)
     query('minimize').addEventListener('click', minimize);
     query('maximize').addEventListener('click', maximize);
     query('export').addEventListener('click', exportExcel);
+    query('add-graph').addEventListener('click', addGraph);
     updateExportButton();
     bindInvestigationSelection();
     if (typeof ResizeObserver !== 'undefined') {
-      const observer = new ResizeObserver(() => { renderChart(); renderLookupCharts(); });
+      observer = new ResizeObserver(() => { constrainBounds(); renderChart(); renderLookupCharts(); });
+      observer.observe(panel);
       observer.observe(query('chart'));
       observer.observe(query('detail'));
     }
@@ -616,7 +665,7 @@ window.createTaYieldCompareWindow = function createTaYieldCompareWindow(options)
       applied = { params: appliedParams.toString(), rows: data.rows || [], currentRange: data.currentRange, compareRange: data.compareRange };
       updateExportButton();
       renderChart(true);
-      query('summary').innerHTML = taYieldCompareAnalysisTable(data.rows || [], escapeHtml, data);
+      query('summary').innerHTML = taYieldCompareAnalysisTable(data.rows || [], escapeHtml, data, id('Detail'));
       query('status').textContent = `Compare loaded: ${taYieldComparePeriods(data).current} minus ${taYieldComparePeriods(data).compare}. ${(data.rows || []).length} yield categories. Select a bar or LOOKUP button for staged detail.`;
     } catch (error) {
       if (token !== sequence || !enabled || !available) return;
@@ -641,6 +690,8 @@ window.createTaYieldCompareWindow = function createTaYieldCompareWindow(options)
   }
 
   function syncFilters(nextFilters = {}) {
+    if (destroyed) return;
+    if (primary) group.children.forEach((child) => child.syncFilters(nextFilters));
     const previous = JSON.stringify(filters);
     updateFilters(nextFilters);
     if (JSON.stringify(filters) === previous) return;
@@ -654,10 +705,10 @@ window.createTaYieldCompareWindow = function createTaYieldCompareWindow(options)
   }
 
   updateToggle();
-  return {
+  controller = {
     get enabled() { return enabled; },
     toggle() {
-      if (!available) return;
+      if (!available || destroyed) return;
       if (enabled) { close(); return; }
       if (options.getFilters) updateFilters(options.getFilters());
       enabled = true;
@@ -669,14 +720,19 @@ window.createTaYieldCompareWindow = function createTaYieldCompareWindow(options)
       load();
     },
     setAvailable(value) {
+      if (destroyed) return;
       available = Boolean(value);
       if (!available) close(false);
       updateToggle();
     },
     refresh(nextFilters = {}, force = false) {
+      if (destroyed) return;
+      if (primary) group.children.forEach((child) => child.refresh(nextFilters, force));
       updateFilters(nextFilters);
       return load(force);
     },
-    syncFilters
+    syncFilters,
+    destroy() { if (!destroyed) { close(false); dispose(); } }
   };
+  return controller;
 };

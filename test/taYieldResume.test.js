@@ -25,7 +25,7 @@ describe('TA Yield staging resume', () => {
     expect(resume).toContain('refreshCurrent');
     expect(resume).toContain('DASHBOARD_TA_YIELD_LATE_ARRIVAL_DAYS');
     expect(resume).toContain('replaceDates: refreshedDates');
-    expect(resume).toContain('source.getMachineEvents(resumeFilters');
+    expect(resume).toContain('source.getMachineEvents(fullFilters');
     expect(app).toContain('previousMonthLateArrivalDates');
     expect(app).toContain('app.refreshTaYieldStagingDay({ date, timeoutMs: 900000 })');
     expect(app).toContain('TA Yield late-arrival repair skipped for ${date}');
@@ -36,8 +36,9 @@ describe('TA Yield staging resume', () => {
 
   it('removes resumed machine lots with SQL parameters instead of OPENJSON', () => {
     const repository = read('src/taYieldStagingRepository.js');
-    expect(repository).not.toContain('OPENJSON');
-    expect(repository).toContain('LotNo IN (${parameters.join(\', \')})');
+    const deleteLots = repository.slice(repository.indexOf('export async function deleteMachineLotsForScope'), repository.indexOf('export class TaYieldStagingRepository'));
+    expect(deleteLots).not.toContain('OPENJSON');
+    expect(deleteLots).toContain('LotNo IN (${parameters.join(\', \')})');
   });
 
   it('batches more than 500 resumed lots into parameterized transactional deletes', async () => {

@@ -38,7 +38,28 @@ import { TtlCache } from './ttlCache.js';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
 const filterNames = ['product', 'process', 'serie', 'case', 'pn'];
-const taMachineProcesses = new Map([['1.1stAnodization', 'Anodization'], ['2.Welding', 'Welding'], ['3.Ei', 'EI']]);
+const taMachineLegacyProcesses = new Map([
+  ['1.1stAnodization', { pattern: '%1st%Anodization%', names: ['1.1stAnodization', '1stAnodization', '1stA_Anodization'] }],
+  ['2.Welding', { pattern: '%Welding%', names: ['2.Welding', 'Welding'] }],
+  ['3.Ei', { pattern: '%EI%', names: ['3.Ei', 'EI'] }]
+]);
+
+function taMachineProcessMatches(operationName, options) {
+  const operation = String(operationName || '').trim().toLowerCase();
+  if (!options.processName && !options.processPattern) return true;
+  const legacy = taMachineLegacyProcesses.get(options.legacyProcess);
+  return legacy ? legacy.names.some((name) => name.toLowerCase() === operation) : operation === options.processName?.toLowerCase();
+}
+
+function scopedTaMachineData(lots, events, filters, options) {
+  const eligibleLots = new Set(lots.map((lot) => lot.lotNo));
+  return { lots, events: events.filter((event) => {
+    const date = thailandCalendarDate(event.occuredOn);
+    return eligibleLots.has(event.lotNo) && date >= filters.startDate && date <= filters.endDate
+      && taMachineProcessMatches(event.operationName, options)
+      && (!options.machine || String(event.machineName || '').trim() === options.machine);
+  }) };
+}
 
 function isCompleteCalendarMonthRange({ startDate, endDate }) {
   if (!startDate.endsWith('-01')) return false;
@@ -164,11 +185,13 @@ function validatedTaMachineQuery(query, { requireMachine = false, requireDefect 
   const defectType = typeof query.defectType === 'string' ? query.defectType.trim() : '';
   const defect = typeof query.defect === 'string' ? query.defect.trim() : '';
   const groupBy = typeof query.groupBy === 'string' ? query.groupBy.trim() : 'day';
-  if (!taMachineProcesses.has(process)) return { error: 'Select a valid TA Machine process.' };
+  if (!process || process.length > 200 || /[\x00-\x1f\x7f]/.test(process)) return { error: 'Select a valid TA Machine process.' };
   if ((requireMachine && !requestedMachine) || machine.length > 200) return { error: 'Select a valid machine.' };
   if (requireDefect && (!['code', 'category'].includes(defectType) || !defect || defect.length > 200)) return { error: 'Select a valid disposition code or Yield Category.' };
   if (!['day', 'week', 'month'].includes(groupBy)) return { error: 'Select Week or Month for the Machine grouping.' };
-  return { filters: validation.filters, process, processPattern: `%${taMachineProcesses.get(process)}%`, machine, defectType, defect, groupBy };
+  const legacy = taMachineLegacyProcesses.get(process);
+  const processSelection = legacy ? { legacyProcess: process, processPattern: legacy.pattern } : { processName: process };
+  return { filters: validation.filters, process, ...processSelection, machine, defectType, defect, groupBy };
 }
 
 async function completionWorkbook(rows) {
@@ -449,7 +472,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const [completion, wip, scYield, taWorkbook, taMachine, taMonthlySummary] = await settleAll([staging901 ? loadActivity(staging901) : undefined, stagingWip ? loadActivity(stagingWip) : undefined, scYieldStaging ? loadActivity(scYieldStaging) : undefined, taYieldStaging ? loadActivity(taYieldStaging) : undefined, taYieldStaging ? loadActivity(taYieldStaging, 'getMachineActivity', undefined, 'Normalized Machine staging tables are not installed. Run npm run migrate:ta-yield-machine-rows.', 'Machine staging refresh is still in progress. Check again shortly.') : undefined, taYieldStaging ? loadActivity(taYieldStaging, 'getMonthlySummaryActivity') : undefined]);
     const row = (name, table, source, activity, enabled, interval, extra = {}) => ({ name, table, source, enabled, intervalMs: interval, activityAvailable: Boolean(activity && !activity.unavailable), activityError: activity?.error, rowCount: Number(activity?.rowCount || 0), firstDataDate: activity?.firstDataDate, lastDataDate: activity?.lastDataDate, lastRefreshedAt: activity?.lastRefreshedAt, ...extra });
     const wipProcessActivity = wip?.unavailable ? wip : wip ? { rowCount: wip.processRowCount, lastRefreshedAt: wip.processLastRefreshedAt, firstDataDate: wip.firstDataDate, lastDataDate: wip.lastDataDate } : undefined;
-    const status = [row('Completion 901', staging901Config.table, 'MES Closed Batch → staging', completion, Boolean(staging901), intervalMs), row('WIP daily quantity', stagingWipConfig.table, 'MES Lot Complete Log → staging', wip, Boolean(stagingWip), wipIntervalMs), row('WIP process chart', stagingWipConfig.processTable, 'MES Lot Complete Log → staging', wipProcessActivity, Boolean(stagingWip), wipIntervalMs), row('SC Yield', scYieldStagingConfig.table, 'MES normalized SC Yield input/defect rows → staging', scYield, Boolean(scYieldStaging), Math.max(Number(environment.DASHBOARD_SC_YIELD_STAGING_INTERVAL_MS) || 300000, 60000), { plan: 'Monthly input and defect snapshots preserve the direct MES row shape before mapping.' }), row('TA Yield DataTable', taYieldStagingConfig.workbookTable, 'MES workbook reconciliation → staging', taWorkbook, Boolean(taYieldStaging), wipIntervalMs, { plan: 'Workbook rows retain the Excel reference conditions before mapping.' }), row('TA Yield Machine events', taYieldStagingConfig.machineRowTable, 'MES normalized machine events → staging', taMachine, Boolean(taYieldStaging), wipIntervalMs, { plan: 'Anodization, Welding, and EI events joined to normalized TA lot defects.' }), row('TA Yield Monthly summary', taYieldStagingConfig.monthlySummaryTable, 'TA workbook yield aggregates → staging', taMonthlySummary, Boolean(taYieldStaging), wipIntervalMs, { plan: 'Monthly yield and defect aggregates for all parts and individual part numbers.' })];
+    const status = [row('Completion 901', staging901Config.table, 'MES Closed Batch → staging', completion, Boolean(staging901), intervalMs), row('WIP daily quantity', stagingWipConfig.table, 'MES Lot Complete Log → staging', wip, Boolean(stagingWip), wipIntervalMs), row('WIP process chart', stagingWipConfig.processTable, 'MES Lot Complete Log → staging', wipProcessActivity, Boolean(stagingWip), wipIntervalMs), row('SC Yield', scYieldStagingConfig.table, 'MES normalized SC Yield input/defect rows → staging', scYield, Boolean(scYieldStaging), Math.max(Number(environment.DASHBOARD_SC_YIELD_STAGING_INTERVAL_MS) || 300000, 60000), { plan: 'Monthly input and defect snapshots preserve the direct MES row shape before mapping.' }), row('TA Yield DataTable', taYieldStagingConfig.workbookTable, 'MES workbook reconciliation → staging', taWorkbook, Boolean(taYieldStaging), wipIntervalMs, { plan: 'Workbook rows retain the Excel reference conditions before mapping.' }), row('TA Yield Machine events', taYieldStagingConfig.machineRowTable, 'MES normalized machine events → staging', taMachine, Boolean(taYieldStaging), wipIntervalMs, { plan: 'All process events restricted to calculated TA Yield lots.' }), row('TA Yield Monthly summary', taYieldStagingConfig.monthlySummaryTable, 'TA workbook yield aggregates → staging', taMonthlySummary, Boolean(taYieldStaging), wipIntervalMs, { plan: 'Monthly yield and defect aggregates for all parts and individual part numbers.' })];
     const configuredTables = new Set([
       configuredStaging.staging901 && staging901Config.table,
       configuredStaging.stagingWip && stagingWipConfig.table,
@@ -611,7 +634,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     updateTaYieldPipeline('RUNNING', `Writing ${monthlySummary.length} monthly summary rows for ${scope}.`);
     await taYieldStaging.replaceMonthlySummary(monthlySummary, filters);
     updateTaYieldPipeline('RUNNING', `Loading machine events for ${scope}.`);
-    const machineEvents = (await settleAll(['%Anodization%', '%Welding%', '%EI%'].map((processPattern) => source.getMachineEvents(filters, { lotNumbers: workbookLots.map((lot) => lot.lotNo), processPattern })))).flat();
+    const machineEvents = await source.getMachineEvents(filters, { lotNumbers: workbookLots.map((lot) => lot.lotNo) });
     updateTaYieldPipeline('RUNNING', `Writing ${machineEvents.length} machine events for ${scope}.`);
     await taYieldStaging.replaceMachineRows(machineEvents, workbookLots, filters);
     updateTaYieldPipeline('RUNNING', `Publishing ${workbookLots.length} workbook rows for ${scope}.`);
@@ -658,7 +681,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
       updateTaYieldPipeline('RUNNING', `Writing ${monthlySummary.length} merged monthly summary rows.`);
       await taYieldStaging.replaceMonthlySummary(monthlySummary, fullFilters);
       updateTaYieldPipeline('RUNNING', `Loading machine events for ${freshLots.length} resumed lots.`);
-      const machineEvents = (await settleAll(['%Anodization%', '%Welding%', '%EI%'].map((processPattern) => source.getMachineEvents(resumeFilters, { lotNumbers: freshLots.map((lot) => lot.lotNo), processPattern, timeoutMs: requestTimeout })))).flat();
+      const machineEvents = await source.getMachineEvents(fullFilters, { lotNumbers: freshLots.map((lot) => lot.lotNo), timeoutMs: requestTimeout });
       await taYieldStaging.replaceMachineRowsForLots(machineEvents, freshLots, fullFilters, { lotNumbersToRemove: previousRefreshedLots.map((lot) => lot.lotNo) });
       updateTaYieldPipeline('RUNNING', `Publishing ${mergedLots.length} merged workbook rows for ${fullFilters.startDate} to ${fullFilters.endDate}.`);
       await taYieldStaging.replaceWorkbookRows(mergedLots, fullFilters);
@@ -699,8 +722,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
       await taYieldStaging.replaceMonthlySummary(monthlySummary, monthFilters);
       if (includeMachineEvents) {
         updateTaYieldPipeline('RUNNING', `Loading machine events for ${freshLots.length} repaired lots.`);
-        const machineEvents = [];
-        for (const processPattern of ['%Anodization%', '%Welding%', '%EI%']) machineEvents.push(...await source.getMachineEvents(monthFilters, { lotNumbers: freshLots.map((lot) => lot.lotNo), processPattern, timeoutMs: requestTimeout }));
+        const machineEvents = await source.getMachineEvents(monthFilters, { lotNumbers: freshLots.map((lot) => lot.lotNo), timeoutMs: requestTimeout });
         await taYieldStaging.replaceMachineRowsForLots(machineEvents, freshLots, monthFilters, { lotNumbersToRemove: previousDayLots.map((lot) => lot.lotNo) });
       }
       updateTaYieldPipeline('RUNNING', `Publishing ${mergedLots.length} merged workbook rows for ${publishFilters.startDate} to ${publishFilters.endDate}.`);
@@ -946,14 +968,47 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     if (taYieldStaging && typeof taYieldStaging.getMachineLots === 'function') {
       try {
         const cached = await responseCache.getOrSet(`ta-yield:machine-lots:normalized:${JSON.stringify(filters)}`, 300000, () => taYieldStaging.getMachineLots(filters));
-        return { lots: cached.value, events: await taYieldStaging.getMachineEvents(filters, options) };
+        return scopedTaMachineData(cached.value, await taYieldStaging.getMachineEvents(filters, options), filters, options);
       } catch (error) {
+        if (typeof taYieldStaging.getWorkbookRows === 'function') {
+          const data = await sharedTaMachineProcessEvents(context, filters);
+          return scopedTaMachineData(data.lots, data.events, filters, options);
+        }
         if (typeof taYieldStaging.getMachineEventsSnapshot !== 'function') throw error;
       }
     }
     const lots = await sharedTaMachineSnapshotLots(context, filters);
     const source = taYieldStaging?.getMachineEventsSnapshot ? taYieldStaging : context.database;
-    return { lots, events: await (source.getMachineEventsSnapshot || source.getMachineEvents).call(source, filters, { ...options, lotNumbers: lots.map((lot) => lot.lotNo) }) };
+    return scopedTaMachineData(lots, await (source.getMachineEventsSnapshot || source.getMachineEvents).call(source, filters, { ...options, lotNumbers: lots.map((lot) => lot.lotNo) }), filters, options);
+  }
+  async function sharedTaMachineProcessEvents(context, filters) {
+    if (taYieldStaging && typeof taYieldStaging.getWorkbookRows !== 'function') return sharedTaMachineAnalysis(context, filters, {});
+    // Workbook eligibility includes calculated lots with no defect rows in Machine staging.
+    const lots = await sharedTaMachineSnapshotLots(context, filters);
+    if (!lots.length) return { lots, events: [] };
+    const options = { lotNumbers: [...new Set(lots.map((lot) => lot.lotNo))] };
+    const source = taYieldStaging || context.database;
+    let events;
+    try { events = await source.getMachineEvents(filters, options); }
+    catch (error) {
+      if (typeof taYieldStaging?.getMachineEventsSnapshot !== 'function') throw error;
+      events = await taYieldStaging.getMachineEventsSnapshot(filters, options);
+    }
+    return scopedTaMachineData(lots, events, filters, {});
+  }
+  async function sharedTaMachineProcessNames(context, filters) {
+    if (typeof taYieldStaging?.getMachineProcesses !== 'function') {
+      return (await sharedTaMachineProcessEvents(context, filters)).events.map((event) => event.operationName);
+    }
+    const lots = await sharedTaMachineSnapshotLots(context, filters);
+    if (!lots.length) return [];
+    const options = { lotNumbers: [...new Set(lots.map((lot) => lot.lotNo))] };
+    try { return await taYieldStaging.getMachineProcesses(filters, options); }
+    catch (error) {
+      if (typeof taYieldStaging.getMachineEventsSnapshot !== 'function') throw error;
+      const events = await taYieldStaging.getMachineEventsSnapshot(filters, options);
+      return scopedTaMachineData(lots, events, filters, {}).events.map((event) => event.operationName);
+    }
   }
   const taYieldDashboardCacheKey = (filters, period) => `ta-yield:dashboard:${period}:${JSON.stringify(filters)}`;
   async function sharedTaYieldDashboardResult(context, filters, period = 'month') {
@@ -1173,6 +1228,17 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     if (context.dataset !== 'ta-yield') return response.status(400).json({ success: false, error: 'TA Yield lot detail is available for the TA Yield data source only.' });
     return useDatabase(async () => { const [maps, rows] = await settleAll([configuredTaYieldMapping(), sharedTaYieldRows(context, validation.filters)]); return mapTaYieldLotDetails(rows, maps); }, response, context.config, false, undefined, context.dataset);
   });
+  app.get('/api/ta-yield-machine-processes', (request, response) => {
+    const validation = validatedFilters(request.query); if (validation.error) return response.status(400).json({ success: false, error: validation.error });
+    const context = contextFor(request, response); if (!context) return undefined;
+    if (context.dataset !== 'ta-yield') return response.status(400).json({ success: false, error: 'TA Machine analysis is available for the TA Yield data source only.' });
+    return useDatabase(async () => {
+      const names = await sharedTaMachineProcessNames(context, validation.filters);
+      const processes = [...new Set(names.map((name) => String(name || '').trim())
+        .filter((name) => name && name.length <= 200 && !/[\x00-\x1f\x7f]/.test(name)))];
+      return { processes: processes.sort((left, right) => left.localeCompare(right, undefined, { numeric: true })) };
+    }, response, context.config, false, { key: `ta-yield:machine-processes:v2:${JSON.stringify(validation.filters)}`, ttlMs: 300000 }, context.dataset);
+  });
   app.get('/api/ta-yield-machine-options', (request, response) => {
     const validation = validatedTaMachineQuery(request.query); if (validation.error) return response.status(400).json({ success: false, error: validation.error }); const context = contextFor(request, response); if (!context) return undefined;
     if (context.dataset !== 'ta-yield') return response.status(400).json({ success: false, error: 'TA Machine analysis is available for the TA Yield data source only.' });
@@ -1184,7 +1250,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     const validation = validatedTaMachineQuery(request.query, { requireMachine: true, requireDefect: true }); if (validation.error) return response.status(400).json({ success: false, error: validation.error }); const context = contextFor(request, response); if (!context) return undefined;
     if (context.dataset !== 'ta-yield') return response.status(400).json({ success: false, error: 'TA Machine analysis is available for the TA Yield data source only.' });
     return useDatabase(async () => {
-      const [mapping, machineData] = await settleAll([configuredTaYieldMapping(), sharedTaMachineAnalysis(context, validation.filters, { processPattern: validation.processPattern, machine: validation.machine })]);
+      const [mapping, machineData] = await settleAll([configuredTaYieldMapping(), sharedTaMachineAnalysis(context, validation.filters, { processName: validation.processName, processPattern: validation.processPattern, legacyProcess: validation.legacyProcess, machine: validation.machine })]);
       const { lots, events } = machineData;
       const eventCounts = events.reduce((counts, event) => ({ ...counts, [event.machineName]: Number(counts[event.machineName] || 0) + 1 }), {});
       if (validation.defectType === 'code') {
@@ -1194,7 +1260,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
         return { linkedModes: [validation.defect], totalMachines: Object.keys(eventCounts).length, rows: result.rows.map((row) => ({ ...row, mode: validation.defect })) };
       }
       return { ...mapTaYieldMachineEvents(events, lots, { type: validation.defectType, value: validation.defect }, validation.groupBy), totalMachines: Object.keys(eventCounts).length };
-    }, response, context.config, false, { key: `ta-yield:machine:v2:${JSON.stringify(validation)}`, ttlMs: 300000 }, context.dataset);
+    }, response, context.config, false, { key: `ta-yield:machine:v3:${JSON.stringify(validation)}`, ttlMs: 300000 }, context.dataset);
   });
   app.get('/api/ta-yield-workbook-reconciliation', (request, response) => {
     const validation = validatedFilters(request.query); if (validation.error) return response.status(400).json({ success: false, error: validation.error }); const context = contextFor(request, response); if (!context) return undefined;

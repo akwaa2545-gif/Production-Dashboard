@@ -6,7 +6,7 @@ const source = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8'
 function harness() {
   let mode = { mode: 'staging', requestedMode: 'staging', revision: 0, transitioning: false, controlConfigured: true };
   const fetch = vi.fn(async (url) => ({ ok: true, status: 200, headers: { get: (name) => name === 'X-Dashboard-Data-Mode' ? mode.mode : name === 'X-Dashboard-Data-Revision' ? String(mode.revision) : 'max-age=120' }, json: async () => ({ success: true, data: url === '/api/data-mode' ? { ...mode } : ['fresh'] }) }));
-  const context = vm.createContext({ fetch, URLSearchParams, setTimeout: vi.fn(), clearTimeout: vi.fn(), setInterval: vi.fn(), clientResponseCache: new Map(), clientCacheLimit: 20, dataRequestId: 1, scYieldTendencyRequestId: 0, latestTaYieldLotsRequestId: 0, latestTaYieldLotsUrl: '', stagingWipCompletedAt: undefined, isWipCacheRequest: () => false, byId: () => null, document: { querySelector: () => null, querySelectorAll: () => [] }, window: { addEventListener: vi.fn() }, setStatus: vi.fn(), readApiPayload: (response) => response.json() });
+  const context = vm.createContext({ fetch, URLSearchParams, setTimeout: vi.fn(), clearTimeout: vi.fn(), setInterval: vi.fn(), clientResponseCache: new Map(), clientCacheLimit: 20, dataRequestId: 1, scYieldTendencyRequestId: 0, latestTaYieldLotsRequestId: 0, latestTaYieldLotsUrl: '', taYieldMachineGraphs: { reset: vi.fn() }, stagingWipCompletedAt: undefined, isWipCacheRequest: () => false, byId: () => null, document: { querySelector: () => null, querySelectorAll: () => [] }, window: { addEventListener: vi.fn() }, setStatus: vi.fn(), readApiPayload: (response) => response.json() });
   const start = source.indexOf('// Global dashboard data mode.');
   expect(start).toBeGreaterThan(-1);
   vm.runInContext(source.slice(start, source.indexOf('async function loadData()', start)), context);
@@ -83,6 +83,20 @@ describe('dashboard source indicator', () => {
 });
 
 describe('global dashboard data mode', () => {
+  it('clears Machine comparison graphs only when the confirmed source changes', async () => {
+    const ui = harness();
+    await ui.context.checkDashboardDataMode();
+    await ui.context.checkDashboardDataMode();
+    expect(ui.context.taYieldMachineGraphs.reset).not.toHaveBeenCalled();
+    ui.setMode({ mode: 'live', revision: 1 });
+    await ui.context.checkDashboardDataMode();
+    await ui.context.checkDashboardDataMode();
+    expect(ui.context.taYieldMachineGraphs.reset).toHaveBeenCalledTimes(1);
+    ui.setMode({ mode: 'staging', revision: 2 });
+    await ui.context.checkDashboardDataMode();
+    expect(ui.context.taYieldMachineGraphs.reset).toHaveBeenCalledTimes(2);
+  });
+
   it('checks mode before cache hits and bypasses caches for every live Apply', async () => {
     const ui = harness();
     const url = '/api/quantity?dataset=closed';

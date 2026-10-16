@@ -1,0 +1,174 @@
+:root {
+  --dropdown-motion-duration: 170ms;
+}
+
+/* Native pickers keep their keyboard, option and disabled behaviour. */
+@supports (appearance: base-select) and selector(select::picker(select)) {
+  select:not([multiple], [hidden], [size]:not([size="0"], [size="1"])),
+  select:not([multiple], [hidden], [size]:not([size="0"], [size="1"]))::picker(select) {
+    appearance: base-select;
+  }
+
+  select:not([multiple], [hidden], [size]:not([size="0"], [size="1"])) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  select:not([multiple], [hidden], [size]:not([size="0"], [size="1"]))::picker(select) {
+    max-inline-size: calc(100vw - 24px);
+    max-block-size: min(320px, calc(100dvh - 24px));
+    overflow: auto;
+    border: 1px solid #cbd1df;
+    border-radius: 5px;
+    background: #fff;
+    padding: 4px;
+    color: #20283a;
+    box-shadow: 0 12px 30px rgba(35, 48, 126, .16);
+    font: 700 13px/1.35 Bahnschrift, "Aptos", "Segoe UI", sans-serif;
+    letter-spacing: normal;
+    text-transform: none;
+    opacity: 0;
+    translate: 0 -4px;
+    pointer-events: none;
+    transition:
+      opacity var(--dropdown-motion-duration) ease,
+      translate var(--dropdown-motion-duration) ease,
+      display var(--dropdown-motion-duration) allow-discrete,
+      overlay var(--dropdown-motion-duration) allow-discrete;
+  }
+
+  select:not([multiple], [hidden], [size]:not([size="0"], [size="1"])):open::picker(select) {
+    opacity: 1;
+    translate: 0 0;
+    pointer-events: auto;
+  }
+
+  select:not([multiple], [hidden], [size]:not([size="0"], [size="1"])) optgroup {
+    background: #fff;
+    color: #53617d;
+  }
+
+  select:not([multiple], [hidden], [size]:not([size="0"], [size="1"])) option {
+    border-radius: 3px;
+    background: #fff;
+    padding: 8px 10px;
+    color: #20283a;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  select:not([multiple], [hidden], [size]:not([size="0"], [size="1"])) option:is(:hover, :focus-visible, :checked) {
+    background: #edf0ff;
+    color: #28358c;
+  }
+
+  select:not([multiple], [hidden], [size]:not([size="0"], [size="1"])) option:disabled {
+    color: #7c8498;
+  }
+
+  .source-control select::picker-icon {
+    display: none;
+  }
+
+  @starting-style {
+    select:not([multiple], [hidden], [size]:not([size="0"], [size="1"])):open::picker(select) {
+      opacity: 0;
+      translate: 0 -4px;
+    }
+  }
+}
+
+:is(.pn-menu, .serie-menu) {
+  opacity: 0;
+  translate: 0 -4px;
+  transition:
+    opacity var(--dropdown-motion-duration) ease,
+    translate var(--dropdown-motion-duration) ease;
+}
+
+:is(.pn-menu, .serie-menu):not([hidden]) {
+  opacity: 1;
+  translate: 0 0;
+}
+
+:is(.pn-menu, .serie-menu)[hidden] {
+  pointer-events: none;
+  interactivity: inert;
+}
+
+@starting-style {
+  :is(.pn-menu, .serie-menu):not([hidden]) {
+    opacity: 0;
+    translate: 0 -4px;
+  }
+}
+
+/* Only retain closing content when it can become inert immediately. */
+@supports (interactivity: inert) {
+  :is(.pn-menu, .serie-menu) {
+    transition:
+      opacity var(--dropdown-motion-duration) ease,
+      translate var(--dropdown-motion-duration) ease,
+      display var(--dropdown-motion-duration) allow-discrete;
+  }
+
+  @supports selector(details::details-content) {
+    :is(.ta-machine-picker, .ta-yield-series-picker)::details-content {
+      opacity: 0;
+      content-visibility: hidden;
+      interactivity: inert;
+      pointer-events: none;
+      transition:
+        opacity var(--dropdown-motion-duration) ease,
+        content-visibility var(--dropdown-motion-duration) allow-discrete;
+    }
+
+    :is(.ta-machine-picker, .ta-yield-series-picker)[open]::details-content {
+      opacity: 1;
+      content-visibility: visible;
+      interactivity: auto;
+      pointer-events: auto;
+    }
+
+    :is(.ta-machine-picker-menu, .ta-yield-series-picker-menu) {
+      translate: 0 -4px;
+      transition: translate var(--dropdown-motion-duration) ease;
+    }
+
+    :is(.ta-machine-picker, .ta-yield-series-picker)[open] > :is(.ta-machine-picker-menu, .ta-yield-series-picker-menu) {
+      translate: 0 0;
+    }
+
+    @starting-style {
+      :is(.ta-machine-picker, .ta-yield-series-picker)[open]::details-content {
+        opacity: 0;
+      }
+
+      :is(.ta-machine-picker, .ta-yield-series-picker)[open] > :is(.ta-machine-picker-menu, .ta-yield-series-picker-menu) {
+        translate: 0 -4px;
+      }
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :is(.pn-menu, .serie-menu),
+  :is(.ta-machine-picker-menu, .ta-yield-series-picker-menu) {
+    transition: none;
+    translate: none;
+  }
+
+  @supports (appearance: base-select) and selector(select::picker(select)) {
+    select:not([multiple], [hidden], [size]:not([size="0"], [size="1"]))::picker(select) {
+      transition: none;
+      translate: none;
+    }
+  }
+
+  @supports selector(details::details-content) {
+    :is(.ta-machine-picker, .ta-yield-series-picker)::details-content {
+      transition: none;
+    }
+  }
+}

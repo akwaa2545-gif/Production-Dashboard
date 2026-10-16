@@ -268,13 +268,15 @@ export class TaYieldRepository extends SqlRepository {
     return { process: [], serie: result.recordset.map((row) => row.value), case: [], pn: [] };
   }
 
-  async getMachineEvents(filters, { lotNumbers, processPattern, machine, timeoutMs } = {}) {
+  async getMachineEvents(filters, { lotNumbers, processName, processPattern, machine, timeoutMs } = {}) {
     if (!Array.isArray(lotNumbers) || !lotNumbers.length) return [];
     const request = (await this.getPool()).request();
     request.timeout = taYieldRequestTimeout(this.config, timeoutMs);
     request.input('startDate', sql.Date, filters.startDate);
     request.input('endDate', sql.Date, filters.endDate);
-    request.input('processPattern', sql.NVarChar(4000), processPattern);
+    const selectedProcess = String(processName || '').trim();
+    if (selectedProcess) request.input('processName', sql.NVarChar(4000), selectedProcess);
+    else if (processPattern) request.input('processPattern', sql.NVarChar(4000), processPattern);
     request.input('lots', sql.NVarChar(sql.MAX), JSON.stringify([...new Set(lotNumbers)]));
     if (machine) request.input('machine', sql.NVarChar(4000), machine);
     const result = await request.query(`
@@ -282,9 +284,9 @@ export class TaYieldRepository extends SqlRepository {
       SELECT CAST([log].[JobName] AS nvarchar(4000)) AS lotNo, CAST([log].[MachineName] AS nvarchar(4000)) AS machineName, CAST([log].[From_OperationName] AS nvarchar(4000)) AS operationName, [log].[OccuredOn] AS occuredOn
       FROM ${quoted(this.config.lotStartLogView)} AS [log]
       INNER JOIN [selectedLots] AS [lots] ON CAST([log].[JobName] AS nvarchar(4000)) = [lots].[lotNo]
-      WHERE LTRIM(RTRIM(CAST([log].[From_OperationName] AS nvarchar(4000)))) LIKE @processPattern
-        AND [log].[OccuredOn] >= ${thaiUtcBoundary('@startDate')}
+      WHERE [log].[OccuredOn] >= ${thaiUtcBoundary('@startDate')}
         AND [log].[OccuredOn] < ${thaiUtcBoundary('DATEADD(day, 1, @endDate)')}
+        ${selectedProcess ? 'AND LTRIM(RTRIM(CAST([log].[From_OperationName] AS nvarchar(4000)))) = @processName' : processPattern ? 'AND LTRIM(RTRIM(CAST([log].[From_OperationName] AS nvarchar(4000)))) LIKE @processPattern' : ''}
         ${machine ? 'AND LTRIM(RTRIM(CAST([log].[MachineName] AS nvarchar(4000)))) = @machine' : ''}
     `);
     return result.recordset;

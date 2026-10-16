@@ -67,9 +67,23 @@ After setting `DATE_COLUMN` to a known safe temporary candidate and starting the
 
 All filter values use SQL parameters. Configured view and column identifiers are allowlisted before query construction. Database errors are not returned to dashboard users.
 
+## TA Yield Machine processes
+
+The Machine tab loads process names from machine events belonging to the calculated TA Yield lot population for the selected report dates, series, and part number. Calculated lots with zero defects also contribute process options. Selecting a process uses its exact operation name, so first and second anodization stay separate. Analysis retains the existing Yield calculations and defect grouping.
+
+After **Analyze all machines**, use the large **+ Add graph** button below the latest Machine graph. You can add up to four graphs in addition to the main chart; remove one to add another. Each added graph starts with the analyzed selection and has its own dates, series, process, part number, defect view, grouping, order and machine selection. Use that graph's **Analyze** button to apply its filters; the main chart and other graphs are unaffected. Process and defect options remain restricted to calculated TA Yield lots matching that graph's date/series/part scope. Added graphs retain their selections across ordinary Machine filter/tab changes and clear when the data source or mode changes.
+
+Full refreshes, resumed refreshes, and day repairs now collect all operations for their calculated lots. Previously staged months still contain only the original three processes until their Machine rows are refreshed. Inventory an explicit month range first:
+
+```powershell
+node scripts/backfill-ta-yield-machine-processes.mjs --start=2026-09 --end=2026-10
+```
+
+Add `--apply` to rebuild normalized Machine rows for those months using the existing staged workbook lot population. This command does not recalculate Yield or replace workbook snapshots or monthly summaries. Historical months require complete workbook coverage; the current month uses its latest staged scope. It supports at most 12 months, requires normalized Machine tables and existing MES access, and does not open interactive sign-in. Legacy JSON Machine snapshots are not updated. Restart the dashboard after an external backfill to clear process and analysis caches.
+
 ## TA Yield Compare
 
-Last updated: 2026-10-01.
+Last updated: 2026-10-16.
 
 Open **Compare** on the TA Yield dashboard. The draggable, resizable window uses the selected **Report dates**, and **Compare with** initially selects the preceding report month. Choose a comparison month and apply one of these period modes:
 
@@ -77,6 +91,8 @@ Open **Compare** on the TA Yield dashboard. The draggable, resizable window uses
 - **Full month** compares the selected Report range with the entire comparison month. A current-month comparison ends at today's Bangkok date, not a future month-end. Use this mode for multi-month Report ranges; the periods can have different lengths.
 
 The chart and production-volume table show selected-period and comparison-period yield, the yield change in **percentage points (pp)**, adjusted input, and good output. Quantities are displayed in **kpcs.** (1,000 pieces). Total/group yields use summed good output divided by summed adjusted input, not an average of individual series yields. Green chart bars indicate increased yield; red bars indicate decreased yield. Missing or zero-input yields show **N/A**, not zero.
+
+Use **Add graph** inside Compare to open another comparison window. Each graph has its own comparison month, period alignment, LOOKUP and Excel export, while following the main Report dates and series/part filters. Extra graphs can be moved, resized and closed independently. Turning Compare off or leaving TA Yield closes all comparison graphs.
 
 Click a chart bar, activate it with the keyboard, or use its table row's **LOOKUP** button to load staged defect-group quantities/rates and affected job records for both periods. Rates use each period's adjusted input. Existing staged `lotNo` values are JobName codes; total job counts count distinct nonblank `lotNo` values. The paged list contains affected records, so one job can appear more than once with different parts or taping dates. **Other2** is a reconciliation adjustment that can be negative, not a confirmed physical defect. These observations do not establish a root cause.
 

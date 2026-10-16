@@ -19,7 +19,44 @@ const tendencyTargets = (targets, selection, trendRows, buckets = [{ month: '202
   );
 };
 
+const taYieldColumnValueLabelY = () => {
+  const app = read('public/app.js');
+  const start = app.indexOf('function taYieldColumnValueLabelY');
+  const end = app.indexOf('\nlet currentConfig', start);
+  return new Function(`${app.slice(start, end)}\nreturn taYieldColumnValueLabelY;`)();
+};
+
+const taYieldColumnValueLabel = () => {
+  const app = read('public/app.js');
+  const start = app.indexOf('function taYieldColumnValueLabel(');
+  const end = app.indexOf('\nlet currentConfig', start);
+  return new Function(`${app.slice(start, end)}\nreturn taYieldColumnValueLabel;`)();
+};
+
+const bindTaYieldTendencyScroll = (yieldViewport, defectViewport) => {
+  const app = read('public/app.js');
+  const start = app.indexOf('function bindTaYieldTendencyScroll()');
+  const end = app.indexOf('\nconst alignTaYieldTrendCharts', start);
+  return new Function('byId', `${app.slice(start, end)}\nreturn bindTaYieldTendencyScroll;`)((id) => ({
+    querySelector: () => id === 'taYieldYieldChart' ? yieldViewport : defectViewport
+  }));
+};
+
 describe('TA yield tendency', () => {
+
+  it('moves a yield percentage into its column when the target line would cross the label', () => {
+    const labelY = taYieldColumnValueLabelY();
+
+    expect(labelY(100, 84, 202)).toBe(116);
+    expect(labelY(100, 130, 202)).toBe(93);
+    expect(labelY(190, 183, 202)).toBe(167);
+    expect(labelY(127, 145, 202, [30], 86)).toBe(104);
+  });
+
+  it('renders an opaque backdrop that keeps a percentage legible over any target segment', () => {
+    expect(taYieldColumnValueLabel()(100, 42, 93.84)).toContain('class="ta-yield-column-value-backdrop"');
+    expect(read('public/styles.css')).toContain('.ta-yield-column-value-backdrop{fill:#fff;pointer-events:none}');
+  });
 
   it('splits total yield and defect charts with one Day, Week, or Month interval control', () => {
     const html = read('public/index.html');
@@ -106,13 +143,23 @@ describe('TA yield tendency', () => {
     expect(app).toContain('class="target-line ta-yield-series-target"');
     expect(app).toContain('taYieldTargetFor(serie, bucket.month)');
     expect(app).toContain('<strong>Series</strong>');
-    expect(app).toContain("stroke:${belowTarget ? '#c9443d' : series.color}");
+    expect(app).toContain('--yield-series-fill:${series.color}');
     expect(app).toContain('const multiSeriesColumnLabels = multiSeriesColumnChart');
     expect(app).toContain('class="axis ta-yield-series-column-label"');
     expect(app).toContain('class="ta-yield-series-label-swatch"');
     expect(app).toContain('const multiSeriesColumnGap = 9;');
     expect(app).toContain('const multiSeriesClusterWidth = Math.min(slot * .82, 84);');
     expect(app.match(/clusterWidth \/ selectedSeriesMetrics\.length - multiSeriesColumnGap/g)).toHaveLength(2);
+  });
+
+  it('pulses below-target yield columns between their series colour and red', () => {
+    const styles = read('public/styles.css');
+
+    expect(styles).toContain('.yield-column.below-target{animation:ta-yield-below-target-pulse');
+    expect(styles).toContain('@keyframes ta-yield-below-target-pulse');
+    expect(styles).toContain('fill:var(--yield-series-fill)');
+    expect(styles).toContain('fill:var(--yield-target-alert-fill)');
+    expect(styles).toContain('@media(prefers-reduced-motion:reduce){.yield-column.below-target{animation:none;fill:var(--yield-target-alert-fill)!important;stroke:var(--yield-target-alert-stroke)!important}}');
   });
 
   it('draws a separate stacked defect column for every selected series', () => {
@@ -153,6 +200,44 @@ describe('TA yield tendency', () => {
     expect(styles).toContain('#taYieldSection .sc-yield-summary{grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr))}');
     expect(styles).not.toContain('@container (min-width: 760px) { .ta-yield-tendency-panel .sc-yield-chart-scroll { display: flex; justify-content: center; } }');
     expect(read('public/app.js')).toContain('width:clamp(${width}px, 100%, 1280px); min-width:${width}px; max-width:none; margin-inline:auto');
+  });
+
+  it('keeps the TA Yield and Defect chart scrollbars synchronized', () => {
+    const app = read('public/app.js');
+
+    expect(app).toContain('function bindTaYieldTendencyScroll()');
+    expect(app).toContain("byId('taYieldYieldChart')?.querySelector('.sc-yield-chart-scroll')");
+    expect(app).toContain("byId('taYieldDefectChart')?.querySelector('.sc-yield-chart-scroll')");
+    expect(app).toContain("yieldViewport.addEventListener('scroll'");
+    expect(app).toContain("defectViewport.addEventListener('scroll'");
+    expect(app).toContain('bindTaYieldTendencyScroll();');
+  });
+
+  it('does not feed a programmatic synchronized scroll back into its source chart', () => {
+    const viewport = (scrollWidth, clientWidth) => {
+      const listeners = new Map();
+      let scrollLeft = 0;
+      let writes = 0;
+      return {
+        scrollWidth,
+        clientWidth,
+        get scrollLeft() { return scrollLeft; },
+        set scrollLeft(value) { scrollLeft = value; writes += 1; },
+        get writes() { return writes; },
+        addEventListener: (name, listener) => listeners.set(name, listener),
+        emitScroll: () => listeners.get('scroll')()
+      };
+    };
+    const yieldViewport = viewport(1100, 100);
+    const defectViewport = viewport(1600, 100);
+
+    bindTaYieldTendencyScroll(yieldViewport, defectViewport)();
+    yieldViewport.scrollLeft = 500;
+    yieldViewport.emitScroll();
+    defectViewport.emitScroll();
+
+    expect(defectViewport.scrollLeft).toBe(750);
+    expect(yieldViewport.writes).toBe(1);
   });
 
   it('centers the TA Yield Line chart with the same fit-or-scroll behavior as Column view', () => {

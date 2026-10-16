@@ -24,6 +24,7 @@ await pool.request().query(`
   CREATE INDEX IX_DashboardTaYieldMachineEventRow_Lookup ON ${eventTable} (EventDate, OperationName, MachineName, LotNo) INCLUDE (ScopeMonth, RefreshedAt);
   IF OBJECT_ID(N'${config.machineLotTable}', N'U') IS NULL
   CREATE TABLE ${lotTable} (
+    MachineLotRowId bigint IDENTITY(1,1) NOT NULL PRIMARY KEY CLUSTERED,
     ScopeMonth date NOT NULL,
     LotNo nvarchar(4000) NOT NULL,
     Serie nvarchar(4000) NOT NULL,
@@ -32,9 +33,12 @@ await pool.request().query(`
     YieldCategory nvarchar(200) NOT NULL,
     DefectMode nvarchar(4000) NOT NULL,
     Quantity decimal(18,4) NOT NULL,
-    RefreshedAt datetime2 NOT NULL DEFAULT SYSUTCDATETIME(),
-    PRIMARY KEY CLUSTERED (ScopeMonth, LotNo, YieldCategory, DefectMode)
+    RefreshedAt datetime2 NOT NULL DEFAULT SYSUTCDATETIME()
   );
+  IF COL_LENGTH(N'${config.machineLotTable}', N'MachineLotRowId') IS NULL
+  BEGIN
+    THROW 50000, N'Machine lot table uses the legacy key. Run node scripts/repair-ta-yield-machine-lot-key.mjs --apply.', 1;
+  END;
   IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name=N'IX_DashboardTaYieldMachineLotDefect_Lookup' AND object_id=OBJECT_ID(N'${config.machineLotTable}'))
   CREATE INDEX IX_DashboardTaYieldMachineLotDefect_Lookup ON ${lotTable} (TapingDate, Serie, PartNumber, LotNo) INCLUDE (YieldCategory, DefectMode, Quantity, ScopeMonth, RefreshedAt);
 `);

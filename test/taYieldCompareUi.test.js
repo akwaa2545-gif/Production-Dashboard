@@ -21,6 +21,8 @@ function element() {
 
 function context(request = vi.fn().mockResolvedValue(payload()), options = {}) {
   const elements = new Map();
+  const panels = [];
+  const observers = [];
   const downloads = [];
   const objectUrls = { createObjectURL: vi.fn(() => 'blob:compare-export'), revokeObjectURL: vi.fn() };
   const document = {
@@ -28,21 +30,30 @@ function context(request = vi.fn().mockResolvedValue(payload()), options = {}) {
     createElement(tag) {
       if (tag === 'a') { const link = { click: vi.fn(), remove: vi.fn() }; downloads.push(link); return link; }
       const panel = element();
+      panel.elements = new Map();
+      panel.remove = vi.fn(() => { panel.isConnected = false; });
       panel.querySelector = (selector) => {
-        if (!elements.has(selector)) elements.set(selector, element());
-        return elements.get(selector);
+        if (!panel.elements.has(selector)) panel.elements.set(selector, element());
+        return panel.elements.get(selector);
       };
-      elements.set('panel', panel);
+      if (!panels.length) {
+        elements.set('panel', panel);
+        panel.elements = elements;
+      }
+      panels.push(panel);
       return panel;
     },
     body: { append: vi.fn() }
   };
   const toggleButton = element();
-  const globals = vm.createContext({ document, window: { innerWidth: 1400, innerHeight: 900 }, URL: objectUrls, URLSearchParams, Intl, Date, getComputedStyle: () => ({ zIndex: '80' }) });
+  class ResizeObserver {
+    constructor(callback) { this.callback = callback; this.observe = vi.fn(); this.disconnect = vi.fn(); observers.push(this); }
+  }
+  const globals = vm.createContext({ document, window: { innerWidth: 1400, innerHeight: 900 }, URL: objectUrls, URLSearchParams, Intl, Date, ResizeObserver, getComputedStyle: () => ({ zIndex: '80' }) });
   vm.runInContext(fs.readFileSync(path, 'utf8'), globals);
   const bindResize = vi.fn();
   const controller = globals.window.createTaYieldCompareWindow({ request, escapeHtml, bindResize, toggleButton, ...options });
-  return { globals, elements, controller, toggleButton, request, bindResize, downloads, objectUrls };
+  return { globals, elements, panels, observers, controller, toggleButton, request, bindResize, downloads, objectUrls };
 }
 
 function payload(extra = {}) {
@@ -56,6 +67,145 @@ function detailsPayload(extra = {}) {
 }
 const selectEvent = (index = 0) => ({ target: { closest: () => ({ dataset: { compareIndex: String(index) } }) } });
 const settle = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
+
+describe('Multiple Compare graphs', () => {
+  const get = (panel, name) => panel.querySelector(`[data-compare-${name}]`);
+  const paramsFor = (call) => new URLSearchParams(call[0].split('?')[1]);
+  async function open(request, options) {
+    const fixture = context(request, options);
+    fixture.controller.setAvailable(true);
+    fixture.controller.refresh({ startDate: '2026-10-05', endDate: '2026-10-16', serie: ['FPS'], pn: ['PN1'], product: 'TA' });
+    fixture.controller.toggle(); await settle();
+    return fixture;
+  }
+  const scopedRequest = (url) => {
+    const params = new URLSearchParams(url.split('?')[1]);
+    return Promise.resolve(url.includes('-details?') ? detailsPayload() : payload({ compareMonth: params.get('compareMonth'), currentRange: { startDate: params.get('startDate'), endDate: params.get('endDate') } }));
+  };
+
+  it('adds independently configurable graphs and exports/LOOKUP only their applied scope', async () => {
+    const request = vi.fn(scopedRequest);
+    const fetchExport = vi.fn().mockResolvedValue({ ok: true, blob: async () => ({}) });
+    const fixture = await open(request, { fetchExport });
+    const primary = fixture.panels[0];
+    get(primary, 'add-graph').listeners.click(); await settle();
+    const child = fixture.panels[1];
+    expect(child).toBeDefined();
+    expect(paramsFor(request.mock.calls[1]).get('compareMonth')).toBe('2026-08');
+    get(child, 'month').value = '2026-07'; get(child, 'month').listeners.input();
+    get(child, 'mode').value = 'full-month'; get(child, 'mode').listeners.change();
+    get(child, 'apply').listeners.click(); await settle();
+    const selected = paramsFor(request.mock.calls[2]);
+    expect(selected.get('compareMonth')).toBe('2026-07'); expect(selected.get('comparisonMode')).toBe('full-month');
+    expect(selected.getAll('serie')).toEqual(['FPS']); expect(selected.getAll('pn')).toEqual(['PN1']);
+    expect(get(primary, 'month').value).toBe('2026-09'); expect(get(primary, 'mode').value).toBe('same-dates');
+    get(child, 'chart').listeners.click(selectEvent()); await settle();
+    expect(paramsFor(request.mock.calls[3]).get('compareMonth')).toBe('2026-07');
+    await get(child, 'export').listeners.click();
+    expect(paramsFor(fetchExport.mock.calls[0]).get('compareMonth')).toBe('2026-07');
+    expect(paramsFor(fetchExport.mock.calls[0]).get('kind')).toBe('series');
+    expect(get(primary, 'detail').hidden).toBe(true);
+    get(child, 'add-graph').listeners.click(); await settle();
+    expect(paramsFor(request.mock.calls[4]).get('compareMonth')).toBe('2026-06');
+    expect(paramsFor(request.mock.calls[4]).get('comparisonMode')).toBe('full-month');
+    expect(fixture.toggleButton.textContent).toBe('Compare: On');
+  });
+
+  it('shares pending and applied report scope while preserving each explicit comparison month', async () => {
+    const request = vi.fn(scopedRequest); const fixture = await open(request);
+    get(fixture.panels[0], 'add-graph').listeners.click(); await settle();
+    const child = fixture.panels[1]; const count = request.mock.calls.length;
+    fixture.controller.syncFilters({ startDate: '2026-09-02', endDate: '2026-09-08', serie: ['FPL'], pn: ['PN2'], dataMode: 'source' });
+    expect(request).toHaveBeenCalledTimes(count);
+    for (const panel of fixture.panels) expect(get(panel, 'chart').innerHTML).toContain('Report selection changed');
+    fixture.controller.refresh({ startDate: '2026-09-02', endDate: '2026-09-08', serie: ['FPL'], pn: ['PN2'], dataMode: 'source' }); await settle();
+    expect(request).toHaveBeenCalledTimes(count + 2);
+    expect(get(child, 'month').value).toBe('2026-08');
+    for (const call of request.mock.calls.slice(count)) {
+      const params = paramsFor(call); expect(params.get('startDate')).toBe('2026-09-02'); expect(params.getAll('serie')).toEqual(['FPL']); expect(params.getAll('pn')).toEqual(['PN2']);
+    }
+  });
+
+  it('uses unique accessibility targets and disposes only the closed child, then all extras on Off or unavailable', async () => {
+    const fixture = await open(vi.fn(scopedRequest)); const primary = fixture.panels[0];
+    get(primary, 'add-graph').listeners.click(); await settle(); const child = fixture.panels[1];
+    expect(primary.id).toBe('taYieldComparePanel'); expect(child.id).not.toBe(primary.id);
+    const primaryIds = [...primary.innerHTML.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
+    const childIds = [...child.innerHTML.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
+    expect(childIds.some((id) => primaryIds.includes(id))).toBe(false);
+    for (const match of child.innerHTML.matchAll(/(?:for|aria-controls|aria-labelledby|aria-describedby)="([^"]+)"/g)) expect(childIds).toContain(match[1]);
+    expect(Number.parseFloat(child.style.top)).toBeGreaterThanOrEqual(8);
+    expect(Number.parseFloat(child.style.top)).toBeLessThanOrEqual(252);
+    const childDetail = childIds.find((id) => id.startsWith('taYieldCompareDetail') && !id.startsWith('taYieldCompareDetailHeading'));
+    expect(get(child, 'chart').innerHTML).toContain(`aria-controls="${childDetail}"`);
+    expect(get(child, 'summary').innerHTML).toContain(`aria-controls="${childDetail}"`);
+    get(child, 'close').listeners.click();
+    expect(child.remove).toHaveBeenCalledOnce(); expect(fixture.observers[1].disconnect).toHaveBeenCalledOnce();
+    expect(get(primary, 'add-graph').focus).toHaveBeenCalledOnce();
+    expect(fixture.controller.enabled).toBe(true); expect(primary.hidden).toBe(false);
+    get(primary, 'add-graph').listeners.click(); await settle(); const extra = fixture.panels[2];
+    fixture.controller.toggle(); expect(extra.remove).toHaveBeenCalledOnce(); expect(primary.hidden).toBe(true);
+    fixture.controller.toggle(); await settle(); get(primary, 'add-graph').listeners.click(); await settle();
+    fixture.controller.setAvailable(false); expect(fixture.panels[3].remove).toHaveBeenCalledOnce();
+    fixture.controller.destroy(); expect(primary.remove).toHaveBeenCalledOnce(); expect(fixture.observers[0].disconnect).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the primary pending request alive when closing a child and rejects pending report scopes in every graph', async () => {
+    const request = vi.fn(scopedRequest); const fixture = await open(request);
+    const primary = fixture.panels[0]; get(primary, 'add-graph').listeners.click(); await settle(); const child = fixture.panels[1];
+    const pending = [];
+    request.mockImplementation(() => new Promise((resolve) => { pending.push(resolve); }));
+    fixture.controller.refresh({ startDate: '2026-10-07', endDate: '2026-10-08' });
+    expect(pending).toHaveLength(2);
+    fixture.controller.syncFilters({ startDate: '2026-10-09', endDate: '2026-10-10' });
+    pending.forEach((resolve) => resolve(payload())); await settle();
+    for (const panel of fixture.panels) expect(get(panel, 'chart').innerHTML).toContain('Report selection changed');
+    pending.length = 0;
+    fixture.controller.refresh({ startDate: '2026-10-09', endDate: '2026-10-10' });
+    get(child, 'close').listeners.click();
+    pending.forEach((resolve) => resolve(payload())); await settle();
+    expect(get(primary, 'chart').innerHTML).toContain('<svg');
+    expect(get(child, 'chart').innerHTML).toContain('Loading comparison');
+    expect(fixture.controller.enabled).toBe(true);
+    const count = request.mock.calls.length; get(child, 'add-graph').listeners.click(); expect(request).toHaveBeenCalledTimes(count);
+  });
+
+  it('returns child focus to the dashboard toggle when its Add graph origin was removed', async () => {
+    const fixture = await open(vi.fn(scopedRequest));
+    get(fixture.panels[0], 'add-graph').listeners.click(); await settle(); const child = fixture.panels[1];
+    get(child, 'add-graph').listeners.click(); await settle(); const extra = fixture.panels[2];
+    get(child, 'close').listeners.click(); get(child, 'add-graph').isConnected = false;
+    get(extra, 'close').listeners.click(); expect(fixture.toggleButton.focus).toHaveBeenCalledOnce();
+  });
+
+  it('keeps an existing child within the viewport after shrinking to a mobile screen', async () => {
+    const fixture = await open(vi.fn(scopedRequest));
+    get(fixture.panels[0], 'add-graph').listeners.click(); await settle(); const child = fixture.panels[1];
+    fixture.globals.window.innerWidth = 390; fixture.globals.window.innerHeight = 600;
+    child.getBoundingClientRect = () => ({ left: 128, top: 158, width: 366, height: 576 });
+    fixture.observers[1].callback();
+    expect(Number.parseFloat(child.style.left) + 366).toBeLessThanOrEqual(390);
+    expect(Number.parseFloat(child.style.top) + 576).toBeLessThanOrEqual(600);
+    expect(fixture.request).toHaveBeenCalledTimes(2);
+  });
+
+  it('discards pending child chart, LOOKUP and export results after source change or removal', async () => {
+    for (const kind of ['chart', 'lookup', 'export']) {
+      let resolve;
+      const request = vi.fn(scopedRequest); const fetchExport = vi.fn(() => new Promise((done) => { resolve = done; }));
+      const fixture = await open(request, { fetchExport });
+      if (kind === 'chart') request.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+      get(fixture.panels[0], 'add-graph').listeners.click(); await settle(); const child = fixture.panels[1];
+      if (kind === 'lookup') { request.mockImplementationOnce(() => new Promise((done) => { resolve = done; })); get(child, 'chart').listeners.click(selectEvent()); }
+      if (kind === 'export') get(child, 'export').listeners.click();
+      fixture.controller.setAvailable(false);
+      const previous = get(child, kind === 'lookup' ? 'detail-body' : 'chart').innerHTML;
+      resolve(kind === 'lookup' ? detailsPayload() : kind === 'chart' ? payload() : { ok: true, blob: async () => ({}) }); await settle();
+      expect(child.remove).toHaveBeenCalledOnce(); expect(fixture.downloads).toHaveLength(0);
+      expect(get(child, kind === 'lookup' ? 'detail-body' : 'chart').innerHTML).toBe(previous);
+    }
+  });
+});
 
 describe('Compare Excel export', () => {
   const get = (fixture, name) => fixture.elements.get(`[data-compare-${name}]`);
