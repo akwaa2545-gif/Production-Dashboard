@@ -1411,6 +1411,26 @@ function bindScYieldWeeklyTooltips(holder) {
   });
 }
 
+function taYieldTooltipAppearance(mark) {
+  const style = getComputedStyle(mark);
+  const background = [style.getPropertyValue('--yield-series-fill').trim(), style.fill, style.stroke]
+    .find((color) => color && color !== 'none' && color !== 'transparent') || '#303c98';
+  return { background, color: '#ffffff' };
+}
+
+function taYieldTooltipTargetStatus(mark, detail) {
+  if (!mark.classList.contains('yield-column') || !mark.classList.contains('below-target')) return '';
+  const rawValues = [mark.dataset?.yieldValue, mark.dataset?.yieldTarget]
+    .map((value) => value === undefined || value.trim() === '' ? NaN : Number(value));
+  const values = rawValues.every(Number.isFinite) ? rawValues
+    : detail.match(/\byield\s+(-?\d+(?:\.\d+)?)%\s*;\s*target\s+(-?\d+(?:\.\d+)?)%/i)?.slice(1).map(Number);
+  if (!values) return '';
+  const gap = values[1] - values[0];
+  if (gap <= 0) return '';
+  const displayedGap = gap.toFixed(2);
+  return displayedGap === '0.00' ? 'Below target <0.01%' : `Below target ${displayedGap}%`;
+}
+
 function bindTaYieldTrendTooltips(holder) {
   holder.querySelectorAll('.ta-yield-tendency-panel .yield-column, .ta-yield-tendency-panel .yield-point, .ta-yield-tendency-panel .target-point, .ta-yield-tendency-panel .ta-yield-line-point, .ta-yield-tendency-panel rect[fill]').forEach((mark) => {
     const panel = mark.closest('.ta-yield-tendency-panel');
@@ -1422,10 +1442,19 @@ function bindTaYieldTrendTooltips(holder) {
       const y = event?.clientY ?? markBounds.top + markBounds.height / 2;
       const detail = mark.querySelector('title')?.textContent || '';
       const [period, value] = detail.split(/:\s(.+)/, 2);
-      tooltip.innerHTML = `<strong>${escapeHtml(panel.querySelector('h4')?.textContent || 'TA Yield')}</strong><span>${escapeHtml(period)}</span><b>${escapeHtml(value || detail)}</b>`;
+      const titleFields = period.split(/\s*\|\s*/);
+      const isYieldMark = ['yield-column', 'yield-point', 'target-point', 'ta-yield-line-point'].some((name) => mark.classList.contains(name));
+      const seriesTitle = mark.dataset.seriesLabel || (titleFields.length > 1 && (isYieldMark || titleFields.length > 2) ? titleFields[1] : '');
+      const heading = seriesTitle || panel.querySelector('h4')?.textContent || 'TA Yield';
+      const appearance = taYieldTooltipAppearance(mark);
+      const targetStatus = taYieldTooltipTargetStatus(mark, detail);
+      tooltip.innerHTML = `<strong>${escapeHtml(heading)}</strong><span>${escapeHtml(period)}</span><b>${escapeHtml(value || detail)}</b>${targetStatus ? `<span class="ta-yield-tooltip-target-status">${escapeHtml(targetStatus)}</span>` : ''}`;
+      tooltip.style.backgroundColor = appearance.background;
+      tooltip.style.color = appearance.color;
+      tooltip.dataset.seriesColor = appearance.background;
       tooltip.hidden = false;
-      tooltip.style.left = `${Math.min(Math.max(x - bounds.left + 12, 8), Math.max(bounds.width - 210, 8))}px`;
-      tooltip.style.top = `${Math.max(y - bounds.top - 94, 34)}px`;
+      tooltip.style.left = `${Math.min(Math.max(x - bounds.left + 12, 8), Math.max(bounds.width - (tooltip.offsetWidth || 210) - 8, 8))}px`;
+      tooltip.style.top = `${Math.max(y - bounds.top - (tooltip.offsetHeight || 82) - 12, 34)}px`;
     };
     mark.addEventListener('mousemove', show);
     mark.addEventListener('mouseleave', () => { tooltip.hidden = true; });
@@ -1816,9 +1845,13 @@ function renderTaYieldTendencyLoadError(message) {
 }
 
 function renderTaYieldTendencyCharts(rows = latestTaYieldTendencyData, groupRows = latestTaYieldGroupTendencyData) {
+  const previousChartViewport = globalThis.taYieldTrendViewport?.snapshot();
+  globalThis.taYieldTrendViewport?.destroy();
+  globalThis.taYieldTrendViewport = undefined;
   latestTaYieldTendencyData = rows;
   latestTaYieldGroupTendencyData = groupRows;
   const holder = byId('taYieldChart');
+  holder.classList?.add('ta-chart-explorer');
   const trendSeries = [...new Map(rows.map((row) => [row.line, shortTaSeries(row.line)])).entries()].sort((left, right) => left[1].localeCompare(right[1]));
   taYieldTrendPartNumbers = [...new Set(groupRows.flatMap((row) => row.partNumbers || []))].sort();
   if (taYieldTrendPartNumber !== 'All' && !taYieldTrendPartNumbers.includes(taYieldTrendPartNumber)) taYieldTrendPartNumber = 'All';
@@ -1860,7 +1893,7 @@ function renderTaYieldTendencyCharts(rows = latestTaYieldTendencyData, groupRows
   const yieldColumns = buckets.map((row, index) => {
     if (!Number.isFinite(row.yield)) return '';
     const widthValue = Math.min(48, slot * .62); const heightValue = base - yieldY(row.yield); const target = targetsByBucket.get(row.month); const belowTarget = Number.isFinite(target) && row.yield < target;
-    return `<rect class="yield-column${belowTarget ? ' below-target' : ''}" x="${x(index) - widthValue / 2}" y="${yieldY(row.yield)}" width="${widthValue}" height="${heightValue}"><title>${escapeHtml(row.month)}: yield ${row.yield.toFixed(2)}%${Number.isFinite(target) ? `; target ${target.toFixed(2)}%` : '; no saved target'}</title></rect>`;
+    return `<rect class="yield-column${belowTarget ? ' below-target' : ''}" data-yield-value="${row.yield}" data-yield-target="${Number.isFinite(target) ? target : ''}" x="${x(index) - widthValue / 2}" y="${yieldY(row.yield)}" width="${widthValue}" height="${heightValue}"><title>${escapeHtml(row.month)}: yield ${row.yield.toFixed(2)}%${Number.isFinite(target) ? `; target ${target.toFixed(2)}%` : '; no saved target'}</title></rect>`;
   }).join('');
   const singleSeriesYieldLabels = buckets.map((row, index) => {
     if (!Number.isFinite(row.yield)) return '';
@@ -1868,7 +1901,7 @@ function renderTaYieldTendencyCharts(rows = latestTaYieldTendencyData, groupRows
     return taYieldColumnValueLabel(x(index), Math.max(top + 12, taYieldColumnValueLabelY(columnY, targetY, base, adjacentTargetYs, slot)), row.yield);
   }).join('');
   const multiSeriesColumnLabels = multiSeriesColumnChart && taYieldInterval !== 'day' ? selectedSeriesMetrics.map((series, seriesIndex) => series.values.map((point, bucketIndex) => { if (!Number.isFinite(point.yield)) return ''; const columnX = x(bucketIndex) - multiSeriesClusterWidth / 2 + (seriesIndex + .5) * multiSeriesClusterWidth / selectedSeriesMetrics.length; const seriesLabel = series.label.replace(/^.*\s/, ''); const labelStart = columnX - (seriesLabel.length * 4.5 + 11) / 2; return `<circle class="ta-yield-series-label-swatch" cx="${labelStart + 3}" cy="${base + 39}" r="3" fill="${series.color}"/><text class="axis ta-yield-series-column-label" x="${labelStart + 9}" y="${base + 42}" text-anchor="start">${escapeHtml(seriesLabel)}</text>`; }).join('')).join('') : '';
-  const multiSeriesYieldColumns = selectedSeriesMetrics.map((series, seriesIndex) => buckets.map((bucket, bucketIndex) => { const point = series.values[bucketIndex]; if (!Number.isFinite(point.yield)) return ''; const clusterWidth = multiSeriesClusterWidth; const widthValue = Math.max(4, Math.min(18, clusterWidth / selectedSeriesMetrics.length - multiSeriesColumnGap)); const columnX = x(bucketIndex) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length; const belowTarget = Number.isFinite(point.target) && point.yield < point.target; return `<rect class="yield-column ta-yield-series-column${belowTarget ? ' below-target' : ''}" style="--yield-series-fill:${series.color};--yield-series-stroke:${series.color};fill:var(--yield-series-fill);stroke:var(--yield-series-stroke);stroke-width:1" x="${columnX - widthValue / 2}" y="${yieldY(point.yield)}" width="${widthValue}" height="${base - yieldY(point.yield)}"><title>${escapeHtml(bucket.month)} | ${escapeHtml(series.label)}: yield ${point.yield.toFixed(2)}%${Number.isFinite(point.target) ? `; target ${point.target.toFixed(2)}%` : '; no saved target'}</title></rect>`; }).join('')).join('');
+  const multiSeriesYieldColumns = selectedSeriesMetrics.map((series, seriesIndex) => buckets.map((bucket, bucketIndex) => { const point = series.values[bucketIndex]; if (!Number.isFinite(point.yield)) return ''; const clusterWidth = multiSeriesClusterWidth; const widthValue = Math.max(4, Math.min(18, clusterWidth / selectedSeriesMetrics.length - multiSeriesColumnGap)); const columnX = x(bucketIndex) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length; const belowTarget = Number.isFinite(point.target) && point.yield < point.target; return `<rect class="yield-column ta-yield-series-column${belowTarget ? ' below-target' : ''}" data-yield-value="${point.yield}" data-yield-target="${Number.isFinite(point.target) ? point.target : ''}" style="--yield-series-fill:${series.color};--yield-series-stroke:${series.color};fill:var(--yield-series-fill);stroke:var(--yield-series-stroke);stroke-width:1" x="${columnX - widthValue / 2}" y="${yieldY(point.yield)}" width="${widthValue}" height="${base - yieldY(point.yield)}"><title>${escapeHtml(bucket.month)} | ${escapeHtml(series.label)}: yield ${point.yield.toFixed(2)}%${Number.isFinite(point.target) ? `; target ${point.target.toFixed(2)}%` : '; no saved target'}</title></rect>`; }).join('')).join('');
   const multiSeriesYieldLabels = selectedSeriesMetrics.map((series, seriesIndex) => buckets.map((bucket, bucketIndex) => { const point = series.values[bucketIndex]; if (!Number.isFinite(point.yield)) return ''; const clusterWidth = multiSeriesClusterWidth; const columnX = x(bucketIndex) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length; const columnY = yieldY(point.yield); const targetY = Number.isFinite(point.target) ? yieldY(point.target) : undefined; const adjacentTargetYs = [bucketIndex - 1, bucketIndex + 1].map((adjacentIndex) => { const adjacentTarget = series.values[adjacentIndex]?.target; return Number.isFinite(adjacentTarget) ? yieldY(adjacentTarget) : undefined; }); return taYieldColumnValueLabel(columnX, Math.max(top + 12, taYieldColumnValueLabelY(columnY, targetY, base, adjacentTargetYs, slot)), point.yield, false); }).join('')).join('');
   const multiSeriesTargets = selectedSeriesMetrics.map((series, seriesIndex) => { const clusterWidth = Math.min(slot * .82, 84); const points = taYieldTargetSegments(series.values.map((point) => point.target), (index) => x(index) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length, yieldY).map((segment) => `<polyline class="target-line ta-yield-series-target" style="stroke:${series.color}" points="${segment}"/>`).join(''); const dots = series.values.map((point, bucketIndex) => { if (!Number.isFinite(point.target)) return ''; const pointX = x(bucketIndex) - clusterWidth / 2 + (seriesIndex + .5) * clusterWidth / selectedSeriesMetrics.length; return `<circle class="target-point" style="fill:${series.color}" cx="${pointX}" cy="${yieldY(point.target)}" r="3"><title>${escapeHtml(buckets[bucketIndex].month)} | ${escapeHtml(series.label)}: target ${point.target.toFixed(2)}%</title></circle>`; }).join(''); return `${points}${dots}`; }).join('');
   const yieldVisual = multiSeriesColumnChart ? multiSeriesYieldColumns : yieldColumns;
@@ -1889,10 +1922,24 @@ function renderTaYieldTendencyCharts(rows = latestTaYieldTendencyData, groupRows
   const defectLabels = multiSeriesColumnChart ? `${labels}${multiSeriesColumnLabels}` : `${defectTotalLabels}${labels}`;
   const defectSeriesLegend = multiSeriesColumnChart ? `<span class="ta-yield-defect-series-note">Columns left to right: ${escapeHtml(selectedSeriesMetrics.map((series) => series.label).join(' · '))}</span>` : '';
   byId('taYieldDefectChart').innerHTML = `<div class="sc-yield-legend"><strong>Mode group</strong>${legend}${defectSeriesLegend}</div><div class="${taYieldTrendChartClass}"${taYieldDayChartViewportStyle}><svg${taYieldChartSvgStyle} viewBox="0 0 ${width} ${height}" role="img" aria-label="TA defect rate by ${taYieldInterval}"><text class="axis axis-title" x="${left}" y="18">%Defect</text>${defectGrid}<line x1="${left}" y1="${base}" x2="${width - right}" y2="${base}" stroke="#b8c7bf"/>${defectVisual}${defectLabels}</svg></div>`;
-  bindTaYieldTendencyScroll();
   holder.querySelectorAll('.ta-yield-tendency-panel').forEach((panel) => panel.insertAdjacentHTML('beforeend', '<div class="ta-yield-trend-tooltip" role="status" hidden></div>'));
   bindTaYieldTrendTooltips(holder);
-  requestAnimationFrame(scrollTaYieldTendencyToLatest);
+  if (globalThis.TaYieldChartInteractions?.create) {
+    globalThis.taYieldTrendViewport = globalThis.TaYieldChartInteractions.create({
+      holder,
+      charts: [
+        { container: byId('taYieldYieldChart'), positioning: taYieldTrendChartType === 'multi-line' ? 'endpoints' : 'center' },
+        { container: byId('taYieldDefectChart'), positioning: 'center' }
+      ],
+      periods: buckets.map((row) => row.month),
+      interval: taYieldInterval,
+      scopeKey: JSON.stringify([taYieldInterval, taYieldTrendPartNumber, taYieldTrendSeries, buckets.map((row) => row.month)]),
+      initialState: previousChartViewport
+    });
+  } else {
+    bindTaYieldTendencyScroll();
+    requestAnimationFrame(scrollTaYieldTendencyToLatest);
+  }
 }
 function taYieldTargetTimeline(target, period) { return target.period === period ? 'current' : target.period > period ? 'upcoming' : 'history'; }
 function renderTaYieldTargetSavedList(targets) {
@@ -2734,7 +2781,7 @@ document.addEventListener('pointerover', (event) => { const point = event.target
 document.addEventListener('pointerout', (event) => { const point = event.target.closest('.ta-machine-date-machine-chart circle'); if (point && !point.contains(event.relatedTarget)) hideMachinePointTooltip(point); });
 document.addEventListener('focusin', (event) => { const point = event.target.closest('.ta-machine-date-machine-chart circle'); if (point) { const bounds = point.getBoundingClientRect(); showMachinePointTooltip(point, bounds.left + bounds.width / 2, bounds.top + bounds.height / 2); } });
 document.addEventListener('focusout', (event) => { const point = event.target.closest('.ta-machine-date-machine-chart circle'); if (point) hideMachinePointTooltip(point); });
-const enableMachinePointTooltips = () => document.querySelectorAll('.ta-machine-date-machine-chart circle').forEach((point) => { point.tabIndex = 0; point.setAttribute('aria-label', point.querySelector('title')?.textContent || 'Machine chart point'); });
+const enableMachinePointTooltips = () => document.querySelectorAll('.ta-machine-date-machine-chart circle').forEach((point) => { point.tabIndex = point.getAttribute('aria-hidden') === 'true' ? -1 : 0; point.setAttribute('aria-label', point.querySelector('title')?.textContent || 'Machine chart point'); });
 new MutationObserver(enableMachinePointTooltips).observe(document.body, { childList: true, subtree: true });
 enableMachinePointTooltips();
 
@@ -2791,7 +2838,7 @@ function bindTaYieldTendencyScroll() {
     sync(defectViewport, yieldViewport, (value) => { expectedYieldScroll = value; });
   }, { passive: true });
 }
-const alignTaYieldTrendCharts = () => document.querySelectorAll('#taYieldYieldChart svg, #taYieldDefectChart svg').forEach((chart) => { const width = Number(chart.getAttribute('viewBox')?.split(/\s+/)[2]); chart.setAttribute('preserveAspectRatio', 'xMinYMid meet'); if (Number.isFinite(width) && width > 0) { chart.style.width = `clamp(${width}px, 100%, 1280px)`; chart.style.minWidth = `${width}px`; chart.style.maxWidth = 'none'; chart.style.marginInline = 'auto'; } });
+const alignTaYieldTrendCharts = () => document.querySelectorAll('#taYieldYieldChart svg, #taYieldDefectChart svg').forEach((chart) => { if (chart.hasAttribute('data-chart-enhanced')) return; const width = Number(chart.getAttribute('viewBox')?.split(/\s+/)[2]); chart.setAttribute('preserveAspectRatio', 'xMinYMid meet'); if (Number.isFinite(width) && width > 0) { chart.style.width = `clamp(${width}px, 100%, 1280px)`; chart.style.minWidth = `${width}px`; chart.style.maxWidth = 'none'; chart.style.marginInline = 'auto'; } });
 new MutationObserver(alignTaYieldTrendCharts).observe(byId('taYieldChart'), { childList: true, subtree: true });
 function renderTaMachineGroupByControl() {
   const summary = byId('taMachineChart')?.querySelector('.ta-machine-chart-summary');

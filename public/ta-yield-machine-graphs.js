@@ -32,8 +32,16 @@ window.createTaYieldMachineGraphs = function createTaYieldMachineGraphs({ reques
     button.disabled = !canAdd();
     button.title = cards.size >= maxGraphs ? 'Maximum 4 added graphs. Remove a graph to add another.' : '';
   }
-  function staticChart(chart) {
-    const copy = chart.cloneNode(true);
+  function staticChart(chart, display) {
+    let source = chart;
+    if (chart.querySelector('svg[data-machine-chart-enhanced]') && renderChart && display.rows?.length) {
+      const selected = new Set(display.machines || display.rows.map((row) => row.machineName));
+      const rendered = renderChart(display.rows.filter((row) => selected.has(row.machineName)), display.order || 'machine-date', display.totalMachines);
+      source = element('div', 'ta-machine-chart-wrap');
+      if (typeof rendered === 'string') source.innerHTML = rendered;
+      else if (rendered) source.append(rendered);
+    }
+    const copy = source.cloneNode(true);
     copy.querySelectorAll('details, label, button, input, select, .ta-machine-tooltip, .ta-machine-point-tooltip').forEach((node) => node.remove());
     [copy, ...copy.querySelectorAll('*')].forEach((node) => {
       [...node.attributes].forEach(({ name }) => {
@@ -60,7 +68,7 @@ window.createTaYieldMachineGraphs = function createTaYieldMachineGraphs({ reques
     header.append(element('h3', '', `Graph ${id}`), remove);
     const filters = element('div', 'ta-machine-comparison-filters');
     const status = element('p', 'ta-machine-comparison-status'); status.setAttribute('role', 'status');
-    const content = element('div', 'ta-machine-comparison-chart'); content.append(staticChart(chart));
+    const content = element('div', 'ta-machine-comparison-chart'); content.append(staticChart(chart, display));
     const controls = {};
     let rows = (display.rows || []).map((row) => ({ ...row }));
     let totalMachines = Number(display.totalMachines) || 0;

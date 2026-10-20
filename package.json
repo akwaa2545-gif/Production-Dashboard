@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js",
+    "dev": "node scripts/dev-server.mjs",
     "refresh:901-staging": "node src/refresh901Staging.js",
     "refresh:wip-staging": "node src/refreshWipStaging.js",
     "refresh:ta-yield-staging": "node src/refreshTaYieldStaging.js",

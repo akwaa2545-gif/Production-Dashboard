@@ -41,6 +41,28 @@ const control = (card, name) => card.querySelector(`[data-machine-filter="${name
 const change = async (card, name, value) => { const node = control(card, name); node.value = value; await node.listeners.change?.({ target: node }); await flush(); };
 const analyze = async (card) => { await card.querySelector('.ta-machine-comparison-analyze').listeners.click(); await flush(); };
 describe('independent Machine comparison graphs', () => {
+  it('renders a fresh full-range graph from selected rows when the main SVG is already enhanced', async () => {
+    const h = setup();
+    const query = h.chart.querySelector.bind(h.chart);
+    h.chart.querySelector = (selector) => selector === 'svg[data-machine-chart-enhanced]' ? {} : query(selector);
+    h.seed();
+    await h.add();
+    expect(h.renderChart).toHaveBeenCalledWith([rows[1]], 'date-machine', 2);
+  });
+
+  it('keeps clipped Machine points out of keyboard navigation when tooltip bindings refresh', () => {
+    const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+    const start = app.indexOf('const enableMachinePointTooltips =');
+    const end = app.indexOf('\nnew MutationObserver(enableMachinePointTooltips)', start);
+    const points = [true, false].map((hidden) => ({
+      getAttribute: () => hidden ? 'true' : null,
+      querySelector: () => ({ textContent: 'Machine point' }),
+      setAttribute: vi.fn(),
+    }));
+    new Function('document', `${app.slice(start, end)}\nenableMachinePointTooltips();`)({ querySelectorAll: () => points });
+    expect(points.map((point) => point.tabIndex)).toEqual([-1, 0]);
+  });
+
   it('keeps Add graph below the latest card after additions, removals and reattachment', async () => {
     const h = setup(); h.seed(); const first = await h.add(); const second = await h.add();
     const shelf = first.parentNode;

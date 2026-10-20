@@ -10,7 +10,15 @@ const stagingIntervalMs = Math.max(Number(process.env.DASHBOARD_901_STAGING_INTE
 const wipStagingIntervalMs = Math.max(Number(process.env.DASHBOARD_WIP_STAGING_INTERVAL_MS) || 300000, 60000);
 const scYieldStagingIntervalMs = Math.max(Number(process.env.DASHBOARD_SC_YIELD_STAGING_INTERVAL_MS) || 300000, 60000);
 const defectModeStagingIntervalMs = Math.max(Number(process.env.DASHBOARD_DEFECT_MODE_STAGING_INTERVAL_MS) || 300000, 60000);
-app.listen(port, host, () => {
+app.listen(port, host, (error) => {
+  if (error) {
+    const reason = error.code === 'EADDRINUSE'
+      ? `Port ${port} is already in use. Stop the other dashboard server or choose a different PORT.`
+      : `${error.code || 'LISTEN_ERROR'}: ${error.message}`;
+    console.error(`OneMES dashboard failed to start on http://${host}:${port}. ${reason}`);
+    process.exitCode = 1;
+    return;
+  }
   console.log(`OneMES dashboard listening on http://${host}:${port}`);
   const warm = () => app.warmCurrentMonthCaches().catch((error) => console.warn(`Dashboard cache warmer skipped: ${error.message}`));
   if (warmEnabled) {
