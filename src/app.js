@@ -397,7 +397,7 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   async function configuredTaYieldMapping() { taYieldMapping ||= loadTaYieldMapping(taYieldConfig.mappingFile); const [base, overrides] = await settleAll([taYieldMapping, yieldDefectSettings ? yieldDefectSettings.list() : []]); const byMode = new Map(overrides.filter((item) => item.dataset === 'TA').map((item) => [item.mode.toUpperCase(), item])); const configure = (entries) => new Map([...entries].map(([code, value]) => { const override = byMode.get(code.toUpperCase()); return [code, override ? { ...value, main: override.group, included: override.included } : value]; })); return { neo: configure(base.neo), gps: configure(base.gps) }; }
   async function taMachineDefectViews() { taYieldMachineDefectViews ||= loadTaYieldMapping(taYieldConfig.mappingFile).then((mapping) => { const entries = [...mapping.neo.entries(), ...mapping.gps.entries()]; return { codes: [...new Set(entries.map(([code]) => code))].sort(), categories: [...new Set(entries.map(([, entry]) => entry.category).filter(Boolean))].sort() }; }); return taYieldMachineDefectViews; }
   const app = express();
-  app.use(express.json({ limit: '8kb' }));
+  app.use(express.json({ limit: '8kb', inflate: false }));
   app.use((request, response, next) => {
     if (request.path.toLowerCase().startsWith('/api/')) {
       const state = dataMode.status();

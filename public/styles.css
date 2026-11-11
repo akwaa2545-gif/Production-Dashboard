@@ -290,6 +290,13 @@ body { margin: 0; background: #fff; }
 /* Screenshot-style report range picker. The native values stay in the form for existing report requests. */
 .date-range-field { position: relative; display: grid; gap: 7px; min-width: 0; }
 .filter-toolbar .serie-field { display: none !important; }
+.filter-toolbar .serie-field.sc-completion-series:not([hidden]) { display: grid !important; }
+.sc-completion-series .serie-menu { min-width: 260px; max-width: calc(100vw - 40px); }
+.sc-completion-series .serie-option { display: flex; align-items: center; gap: 9px; }
+.serie-menu-actions { display: flex; justify-content: flex-end; padding: 8px 10px; }
+#serieSelectAll { width: auto; min-height: 28px; height: auto; margin: 0; border: 1px solid #cbd1df; border-radius: 3px; background: #f0f2fa; padding: 5px 10px; color: #28358c; font: 700 12px/1.2 Bahnschrift, "Aptos", "Segoe UI", sans-serif; cursor: pointer; }
+#serieSelectAll:hover { background: #e5e9fb; }
+.sc-completion-series .serie-option:has(input:disabled) { color: #5b657b; }
 .date-range-label { color: #4f5c77; font-size: 11px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
 .filters .date-range-field > input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .filters .date-range-trigger { display: flex; width: 100%; height: 42px; align-items: center; justify-content: space-between; border: 1px solid #cbd1df; border-radius: 3px; background: #fff; padding: 0 12px; color: #20283a; font: 700 13px/1 Bahnschrift, "Aptos", "Segoe UI", sans-serif; letter-spacing: 0; text-align: left; cursor: pointer; text-transform: none; }

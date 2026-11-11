@@ -13,7 +13,7 @@ function dailyOutputContext() {
   return context;
 }
 
-function dailyOutputToggleContext(enabled = true) {
+function dailyOutputToggleContext(enabled = true, dataset = 'ta-yield') {
   const elements = {
     dailyOutputPanel: { hidden: false },
     dailyOutputToggle: {
@@ -27,9 +27,10 @@ function dailyOutputToggleContext(enabled = true) {
   };
   const start = source.indexOf('function updateDailyOutputToggle');
   const end = source.indexOf('function ensureDailyOutputPanel', start);
-  const declarations = `let dailyOutputPanelEnabled = ${Boolean(enabled)}; let currentConfig = { dataset: 'closed' };`;
+  const declarations = `let dailyOutputPanelEnabled = ${Boolean(enabled)}; let currentConfig = { dataset: ${JSON.stringify(dataset)} };`;
   const context = vm.createContext({
     byId: (id) => elements[id] || null,
+    selectedDataset: () => dataset,
     latestTaYieldData: {},
     latestDailyOutputData: [],
       renderTaYield: () => {},
@@ -41,6 +42,31 @@ function dailyOutputToggleContext(enabled = true) {
 }
 
 describe('Daily output floating panel data', () => {
+  it.each(['closed', 'lot', 'yield', 'ta-yield'])('shows the toggle only for TA Yield, not %s', (dataset) => {
+    const { context, elements } = dailyOutputToggleContext(false, dataset);
+    context.updateDailyOutputToggle();
+    expect(elements.dailyOutputToggle.hidden).toBe(dataset !== 'ta-yield');
+  });
+
+  it.each(['closed', 'lot', 'yield'])('immediately hides an open panel when selecting %s before loading data', (dataset) => {
+    const { context, elements } = dailyOutputToggleContext(true, dataset);
+    expect(typeof context.syncDailyOutputDatasetVisibility).toBe('function');
+    context.syncDailyOutputDatasetVisibility();
+    expect(elements.dailyOutputToggle.hidden).toBe(true);
+    expect(elements.dailyOutputPanel.hidden).toBe(true);
+  });
+
+  it.each(['closed', 'lot', 'yield'])('hides an enabled floating panel when the active dashboard is %s', (dataset) => {
+    const start = source.indexOf('function renderDailyOutputPanel(');
+    const end = source.indexOf('\n}', start) + 2;
+    const panel = { hidden: false };
+    const context = vm.createContext({ currentConfig: { dataset }, dailyOutputPanelEnabled: true,
+      ensureDailyOutputPanel: () => panel, updateDailyOutputToggle: () => {} });
+    vm.runInContext(source.slice(start, end), context);
+    context.renderDailyOutputPanel([]);
+    expect(panel.hidden).toBe(true);
+  });
+
   it.each(['closed', 'lot'])('uses existing quantity rows for %s output without depending on new repository methods', async (dataset) => {
     const data = [{ itemName: 'FPS', quantityMoved: 2500, bucketDate: '2026-09-01' }];
     const elements = { startDate: { value: '2026-09-01' }, endDate: { value: '2026-09-30' }, product: { value: 'NEO' }, apply: {} };
@@ -275,7 +301,7 @@ describe('Daily output floating panel contracts', () => {
   });
 
   it('renders in TA Yield from staged lot detail instead of hiding the floating panel', () => {
-    expect(source).toContain("['closed', 'lot', 'ta-yield'].includes(currentConfig.dataset)");
+    expect(source).toContain("const supported = currentConfig.dataset === 'ta-yield';");
     expect(source).toContain('function taYieldDailyOutputRows');
     expect(source).toContain('function taYieldSummaryOutputRows');
     expect(source).toContain('taYieldDailyOutputRows(details)');

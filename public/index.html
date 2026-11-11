@@ -6,7 +6,7 @@
     <title>TOKIN Production Dashboard</title>
     <link rel="icon" type="image/png" href="/assets/tokin-icon.png?v=1" />
     <link rel="apple-touch-icon" href="/assets/tokin-icon.png?v=1" />
-  <link rel="stylesheet" href="/styles.css?v=20261016-machine-independent-2" />
+  <link rel="stylesheet" href="/styles.css?v=20261111-sc901-controls-1" />
     <link rel="stylesheet" href="/ta-yield-compare.css?v=20261016-add-graph-1" />
     <link rel="stylesheet" href="/ta-yield-chart-interactions.css?v=20261020-machine-navigation-1" />
     <link rel="stylesheet" href="/dropdown-motion.css?v=20261016-dropdown-motion-2" />
@@ -80,11 +80,11 @@
             </section>
           </div>
           <label id="lotProcessField" hidden>Operation<select id="processSelect"><option value="">All operations</option></select><input id="process" type="hidden" value="" /></label>
-          <label class="serie-field" hidden aria-hidden="true">Serie<select id="serie" multiple hidden aria-label="Selected series"></select><div class="serie-picker"><button id="serieTrigger" type="button" aria-expanded="false" aria-controls="serieMenu">All series</button><div id="serieMenu" class="serie-menu" hidden><div id="serieOptions"></div></div></div></label>
+          <label class="serie-field" hidden aria-hidden="true">Series<select id="serie" multiple hidden aria-label="Selected series"></select><div class="serie-picker"><button id="serieTrigger" type="button" aria-expanded="false" aria-controls="serieMenu">All series</button><div id="serieMenu" class="serie-menu" hidden><div class="serie-menu-actions"><button id="serieSelectAll" type="button" hidden>Include all</button></div><div id="serieOptions"></div></div></div></label>
           <label>Case<select id="case"><option value="">All cases</option></select></label>
           <label class="pn-field">PN<div class="pn-picker"><div id="pnSelected" class="pn-selected" aria-label="Selected part numbers"></div><input id="pn" type="search" placeholder="All part numbers - search" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="pnMenu" /><div id="pnMenu" class="pn-menu" role="listbox" hidden><div id="pnOptions"></div><button id="pnLoadMore" type="button">Load more</button></div></div></label>
           <button id="apply" type="button">Apply</button>
-          <button id="dailyOutputToggle" class="daily-output-toggle" type="button" aria-pressed="false" title="Show or hide the Daily Output floating panel">Daily output: Off</button>
+          <button id="dailyOutputToggle" class="daily-output-toggle" type="button" hidden aria-pressed="false" title="Show or hide the Daily Output floating panel">Daily output: Off</button>
           <button id="taYieldCompareToggle" class="daily-output-toggle" type="button" hidden aria-pressed="false" title="Compare accumulated monthly TA yield">Compare: Off</button>
         </div>
       </section>
@@ -131,6 +131,6 @@
   <script src="/ta-yield-machine-graphs.js?v=20261020-machine-navigation-1"></script>
   <script src="/ta-yield-chart-interactions.js?v=20261020-machine-navigation-1"></script>
   <script src="/ta-machine-chart-interactions.js?v=20261020-machine-navigation-1"></script>
-  <script src="/app.js?v=20261020-machine-navigation-1"></script>
+  <script src="/app.js?v=20261111-sc901-controls-1"></script>
   </body>
 </html>

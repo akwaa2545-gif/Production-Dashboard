@@ -360,13 +360,96 @@ function setStatus(message, loading = false) {
   status.className = loading ? 'status loading' : 'status';
 }
 
-function setReportControlsLoading(loading) { reportLoadingCount = Math.max(0, reportLoadingCount + (loading ? 1 : -1)); const active = reportLoadingCount > 0; const toolbar = byId('reportControls'); byId('reportLoading').hidden = !active; toolbar.setAttribute('aria-busy', String(active)); const scTrendControlIds = ['scYieldTrendSeries', 'scYieldInterval', 'scYieldTrendChartType']; scTrendControlIds.forEach((id) => { const control = byId(id); if (control) control.disabled = active; }); if (active) { ['startDate', 'endDate', 'reportDateRangeTrigger', 'processSelect', 'serie', 'serieTrigger', 'case', 'pn', 'apply', 'dataSource'].forEach((id) => { byId(id).disabled = true; }); closeReportDateRangePicker(false); document.querySelectorAll('.process-option').forEach((button) => { button.disabled = true; }); return; } const filters = currentConfig.filters || {}; byId('startDate').disabled = false; byId('endDate').disabled = false; byId('reportDateRangeTrigger').disabled = false; byId('dataSource').disabled = false; byId('apply').disabled = false; document.querySelectorAll('.process-option').forEach((button) => { button.disabled = false; }); byId('processSelect').disabled = selectedDataset() !== 'lot' || filters.process === false; byId('serie').disabled = filters.serie === false; byId('serieTrigger').disabled = filters.serie === false; byId('case').disabled = filters.case === false; byId('pn').disabled = filters.pn === false; }
+function setReportControlsLoading(loading) { reportLoadingCount = Math.max(0, reportLoadingCount + (loading ? 1 : -1)); const active = reportLoadingCount > 0; const toolbar = byId('reportControls'); byId('reportLoading').hidden = !active; toolbar.setAttribute('aria-busy', String(active)); const scTrendControlIds = ['scYieldTrendSeries', 'scYieldInterval', 'scYieldTrendChartType']; scTrendControlIds.forEach((id) => { const control = byId(id); if (control) control.disabled = active; }); if (active) { byId('serieMenu').hidden = true; byId('serieTrigger').setAttribute('aria-expanded', 'false'); ['startDate', 'endDate', 'reportDateRangeTrigger', 'processSelect', 'serie', 'serieTrigger', 'case', 'pn', 'apply', 'dataSource'].forEach((id) => { byId(id).disabled = true; }); closeReportDateRangePicker(false); document.querySelectorAll('.process-option').forEach((button) => { button.disabled = true; }); return; } const filters = currentConfig.filters || {}; byId('startDate').disabled = false; byId('endDate').disabled = false; byId('reportDateRangeTrigger').disabled = false; byId('dataSource').disabled = false; byId('apply').disabled = false; document.querySelectorAll('.process-option').forEach((button) => { button.disabled = false; }); byId('processSelect').disabled = selectedDataset() !== 'lot' || filters.process === false; byId('serie').disabled = filters.serie === false; byId('serieTrigger').disabled = filters.serie === false; byId('case').disabled = filters.case === false; byId('pn').disabled = filters.pn === false; }
 
 function selectedSeries() { return [...byId('serie').selectedOptions].map((option) => option.value); }
-function updateSerieTrigger() { const selected = selectedSeries(); byId('serieTrigger').textContent = selected.length ? (selected.length === 1 ? selected[0] : `${selected.length} series selected`) : 'All series'; }
+function usesScCompletionSeries() {
+  return selectedDataset() === 'closed' && byId('product').value === 'SC';
+}
+function syncSerieFilterVisibility() {
+  const visible = usesScCompletionSeries() && currentConfig.filters?.serie !== false;
+  const field = byId('serie').closest('label');
+  field.hidden = !visible;
+  field.setAttribute('aria-hidden', String(!visible));
+  field.classList.toggle('sc-completion-series', visible);
+  byId('serieSelectAll').hidden = !visible;
+  if (!visible) {
+    byId('serieMenu').hidden = true;
+    byId('serieTrigger').setAttribute('aria-expanded', 'false');
+  }
+}
+function updateSerieTrigger() {
+  const selected = selectedSeries();
+  const allIncluded = usesScCompletionSeries() && selected.length === byId('serie').options.length;
+  byId('serieTrigger').textContent = !selected.length || allIncluded ? 'All series' : selected.length === 1 ? selected[0] : `${selected.length} series selected`;
+}
 function serieFamily(value) { return value.trim().match(/^[A-Za-z]+/)?.[0].toUpperCase() || 'Other'; }
-function seriePickerOption(option, selected, nested = false) { const label = document.createElement('label'); label.className = `serie-option${nested ? ' serie-variant' : ''}`; const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.checked = selected.has(option.value); checkbox.addEventListener('change', () => { option.selected = checkbox.checked; renderSeriePicker(); refreshOptionsForSerie(); }); label.append(checkbox, document.createTextNode(option.text)); return label; }
-function renderSeriePicker() { const select = byId('serie'); const menu = byId('serieOptions'); const sourceOptions = [...select.options]; const selected = new Set(selectedSeries()); if (byId('product').value !== 'NEO') { menu.replaceChildren(...sourceOptions.map((option) => seriePickerOption(option, selected))); updateSerieTrigger(); return; } const groups = sourceOptions.reduce((result, option) => { const family = serieFamily(option.value); return { ...result, [family]: [...(result[family] || []), option] }; }, {}); const nodes = Object.entries(groups).sort(([left], [right]) => left.localeCompare(right)).flatMap(([family, variants]) => { if (variants.length === 1) return [seriePickerOption(variants[0], selected)]; const group = document.createElement('div'); group.className = 'serie-group'; const label = document.createElement('label'); label.className = 'serie-group-label'; const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; const selectedCount = variants.filter((option) => selected.has(option.value)).length; checkbox.checked = selectedCount === variants.length; checkbox.indeterminate = selectedCount > 0 && selectedCount < variants.length; checkbox.addEventListener('change', () => { variants.forEach((option) => { option.selected = checkbox.checked; }); renderSeriePicker(); refreshOptionsForSerie(); }); label.append(checkbox, document.createTextNode(`${family} (${variants.length})`)); group.append(label, ...variants.map((option) => seriePickerOption(option, selected, true))); return [group]; }); menu.replaceChildren(...nodes); updateSerieTrigger(); }
+function seriePickerOption(option, selected, nested = false) {
+  const label = document.createElement('label');
+  label.className = `serie-option${nested ? ' serie-variant' : ''}`;
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.value = option.value;
+  checkbox.checked = selected.has(option.value);
+  checkbox.disabled = usesScCompletionSeries() && checkbox.checked && selected.size === 1;
+  checkbox.addEventListener('change', () => {
+    if (usesScCompletionSeries() && !checkbox.checked && option.selected && selectedSeries().length <= 1) {
+      checkbox.checked = true;
+      return;
+    }
+    option.selected = checkbox.checked;
+    renderSeriePicker(option.value);
+    refreshOptionsForSerie();
+    updateReportPendingNotice();
+  });
+  label.append(checkbox, document.createTextNode(option.text));
+  return label;
+}
+function renderSeriePicker(focusValue) {
+  const select = byId('serie');
+  const menu = byId('serieOptions');
+  const sourceOptions = [...select.options];
+  const selected = new Set(selectedSeries());
+  if (byId('product').value !== 'NEO') {
+    menu.replaceChildren(...sourceOptions.map((option) => seriePickerOption(option, selected)));
+    updateSerieTrigger();
+    if (focusValue) [...menu.querySelectorAll('input')].find((input) => input.value === focusValue)?.focus();
+    return;
+  }
+  const groups = sourceOptions.reduce((result, option) => {
+    const family = serieFamily(option.value);
+    return { ...result, [family]: [...(result[family] || []), option] };
+  }, {});
+  const nodes = Object.entries(groups).sort(([left], [right]) => left.localeCompare(right)).flatMap(([family, variants]) => {
+    if (variants.length === 1) return [seriePickerOption(variants[0], selected)];
+    const group = document.createElement('div');
+    group.className = 'serie-group';
+    const label = document.createElement('label');
+    label.className = 'serie-group-label';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    const selectedCount = variants.filter((option) => selected.has(option.value)).length;
+    checkbox.checked = selectedCount === variants.length;
+    checkbox.indeterminate = selectedCount > 0 && selectedCount < variants.length;
+    checkbox.addEventListener('change', () => {
+      variants.forEach((option) => { option.selected = checkbox.checked; });
+      renderSeriePicker();
+      refreshOptionsForSerie();
+    });
+    label.append(checkbox, document.createTextNode(`${family} (${variants.length})`));
+    group.append(label, ...variants.map((option) => seriePickerOption(option, selected, true)));
+    return [group];
+  });
+  menu.replaceChildren(...nodes);
+  updateSerieTrigger();
+}
+function selectAllCompletionSeries() {
+  if (!usesScCompletionSeries()) return;
+  [...byId('serie').options].forEach((option) => { option.selected = true; });
+  renderSeriePicker();
+  refreshOptionsForSerie();
+  updateReportPendingNotice();
+}
 function localTargetSettings() { try { const value = JSON.parse(localStorage.getItem(targetSettingsKey) || '{}'); return value && typeof value === 'object' ? value : {}; } catch { return {}; } }
 function localWipInsightVisibility() { try { const value = JSON.parse(localStorage.getItem(wipInsightVisibilityKey) || '{}'); return { flow: value.flow !== false, yield: value.yield !== false }; } catch { return { flow: true, yield: true }; } }
 function readTargetSettings() { return targetSettings; }
@@ -776,7 +859,9 @@ function populateOptions(options, selected = {}) {
   ids.forEach((id) => {
     const select = byId(id);
     if (id === 'pn') return;
-    const values = options[id] || [];
+    const values = id === 'serie' && usesScCompletionSeries()
+      ? [...new Set([...(options[id] || []), ...Object.keys(readTargetSettings().SC || {})])]
+      : options[id] || [];
     const currentValue = selected[id] || '';
     if (id === 'process') {
       const usesLotOperation = selectedDataset() === 'lot';
@@ -791,11 +876,18 @@ function populateOptions(options, selected = {}) {
       setSelectedProcess(validValue);
       return;
     }
-    if (id === 'serie') { const selectedValues = Array.isArray(currentValue) ? currentValue : currentValue ? [currentValue] : []; select.replaceChildren(...values.map((value) => new Option(value, value, false, selectedValues.includes(value)))); renderSeriePicker(); return; }
+    if (id === 'serie') {
+      const selectedValues = (Array.isArray(currentValue) ? currentValue : currentValue ? [currentValue] : []).filter((value) => values.includes(value));
+      const includeAll = usesScCompletionSeries() && !selectedValues.length;
+      select.replaceChildren(...values.map((value) => new Option(value, value, false, includeAll || selectedValues.includes(value))));
+      renderSeriePicker();
+      return;
+    }
     select.replaceChildren(new Option(placeholders[id], ''));
     values.forEach((value) => select.add(new Option(value, value)));
     select.value = values.includes(currentValue) ? currentValue : '';
   });
+  syncSerieFilterVisibility();
 }
 
 function setSelectedProcess(value) {
@@ -861,6 +953,7 @@ function setFilterAvailability(filters) {
     byId(id).closest('label, .process-field').hidden = !available;
     if (id === 'serie') byId('serieTrigger').disabled = !available;
   });
+  syncSerieFilterVisibility();
 }
 
 const chartColors = ['#28358c', '#4c6edb', '#38a3d1', '#ec8f34', '#7d62b4', '#c7546d', '#16835b', '#c19b20', '#1c7e8c', '#b8572a', '#975c91', '#6b7489', '#e05285', '#417141', '#a55f31', '#3c5a9b', '#008b8b', '#8a692e', '#ae3c4e', '#6464b8'];
@@ -1086,10 +1179,17 @@ function toggleTaYieldCompare() {
 function updateDailyOutputToggle() {
   const button = byId('dailyOutputToggle');
   if (!button) return;
-  const supported = ['closed', 'lot', 'ta-yield'].includes(currentConfig.dataset);
+  const supported = currentConfig.dataset === 'ta-yield';
   button.hidden = !supported;
   button.setAttribute('aria-pressed', String(dailyOutputPanelEnabled));
   button.textContent = `Daily output: ${dailyOutputPanelEnabled ? 'On' : 'Off'}`;
+}
+
+function syncDailyOutputDatasetVisibility() {
+  if (selectedDataset() === 'ta-yield') return;
+  byId('dailyOutputToggle').hidden = true;
+  const panel = byId('dailyOutputPanel');
+  if (panel) panel.hidden = true;
 }
 
 function setDailyOutputPanelEnabled(enabled, restorePanel) {
@@ -1275,7 +1375,7 @@ function renderDailyOutputPanel(rows, error = '', loading = false, reportScope) 
   latestDailyOutputPanelLoading = loading;
   latestDailyOutputPanelScope = reportScope;
   const panel = ensureDailyOutputPanel();
-  const supported = ['closed', 'lot', 'ta-yield'].includes(currentConfig.dataset);
+  const supported = currentConfig.dataset === 'ta-yield';
   panel.hidden = !supported || !dailyOutputPanelEnabled;
   updateDailyOutputToggle();
   if (!supported || !dailyOutputPanelEnabled) return;
@@ -2541,7 +2641,22 @@ async function loadData() {
     if (requestId !== dataRequestId) return; renderData(data, chartData, mtdData, data); setStatus('');
   } catch (error) { loadFailed = true; if (requestId === dataRequestId) { if (isTaYield) renderTaYieldTendencyLoadError(error.message); setStatus(error.message); } } finally { setReportControlsLoading(false); if (requestId === dataRequestId) { apply.textContent = 'Apply'; if (!loadFailed) markReportControlsApplied(); } }
 }
-async function refreshOptionsForProduct() { const product = byId('product').value; setReportControlsLoading(true); setStatus('Refreshing available series...', true); try { const options = await request(`/api/options?${new URLSearchParams({ dataset: selectedDataset(), ...(product ? { product } : {}) })}`); populateOptions(options); resetPartNumbers(); setStatus(''); } catch (error) { setStatus(error.message); } finally { setReportControlsLoading(false); } }
+async function refreshOptionsForProduct() {
+  const product = byId('product').value;
+  setReportControlsLoading(true);
+  setStatus('Refreshing available series...', true);
+  try {
+    const options = await request(`/api/options?${new URLSearchParams({ dataset: selectedDataset(), ...(product ? { product } : {}) })}`);
+    populateOptions(options);
+    resetPartNumbers();
+    setStatus('');
+    await loadData();
+  } catch (error) {
+    setStatus(error.message);
+  } finally {
+    setReportControlsLoading(false);
+  }
+}
 async function refreshOptionsForProcess() { const process = byId('process').value; const product = byId('product').value; setReportControlsLoading(true); setStatus('Refreshing available series...', true); try { const options = await request(`/api/options?${new URLSearchParams({ dataset: selectedDataset(), ...(product ? { product } : {}), ...(process ? { process } : {}) })}`); populateOptions(options, { process }); setSelectedProcess(process); resetPartNumbers(); setStatus(''); } catch (error) { setStatus(error.message); } finally { setReportControlsLoading(false); } }
 function refreshOptionsForSerie() { resetPartNumbers(); setStatus(''); }
 async function initialize() { if (!hasInitializedDashboard && !restoredDashboardProduct && !byId('product').value) setSelectedProduct('NEO'); hasInitializedDashboard = true; const isLot = selectedDataset() === 'lot'; const isScYield = selectedDataset() === 'yield'; const isTaYield = selectedDataset() === 'ta-yield'; if (isScYield) setSelectedProduct('SC'); if (isTaYield) setSelectedProduct('NEO'); const todayString = bangkokToday(); const initialEndDate = isTaYield ? await latestTaYieldStagingDate(todayString) : todayString; if (isTaYield && selectedDataset() !== 'ta-yield') return; byId('endDate').value = initialEndDate; byId('startDate').value = `${initialEndDate.slice(0, 7)}-01`; syncReportDateRangePicker(); if (!byId('parameterPeriod').value) byId('parameterPeriod').value = todayString.slice(0, 7); byId('lotProcessField').hidden = !isLot; document.querySelector('.process-field').hidden = isScYield || isTaYield; try { const config = await request(`/api/config?dataset=${selectedDataset()}`); if (!config.ready) throw new Error(`Dashboard configuration is incomplete: ${config.missing.join(', ')}.`); currentConfig = config; commentsEnabled = Boolean(config.commentStorage?.enabled); const usesSharedTargetStorage = Boolean(config.mtdTargetStorage?.enabled); targetStorageRemote = usesSharedTargetStorage; if (config.dataset === 'closed') await loadTargetSettings(usesSharedTargetStorage); const supportsMtd = config.dataset === 'closed'; byId('mtdSection').hidden = !supportsMtd; byId('dailyTargetControl').hidden = !supportsMtd; document.querySelector('.app-tab[data-view="parameters"]').hidden = !supportsMtd && !isScYield && !isTaYield; document.querySelector('.app-tab[data-view="parameters"]').textContent = isTaYield ? 'TA Yield target setting' : isScYield ? 'Yield target setting' : 'MTD Parameter setting'; byId('scYieldLogTab').hidden = !isScYield; byId('taYieldLogTab').hidden = !isTaYield; byId('taYieldMachineTab').hidden = !isTaYield; byId('taDataTableTab').hidden = !isTaYield; document.querySelector('.app-tab[data-view="comments"]').hidden = !commentsEnabled; const activeView = document.querySelector('.app-tab.active')?.dataset.view; if ((!supportsMtd && !isScYield && !isTaYield && activeView === 'parameters') || (!isScYield && activeView === 'sc-yield-log') || (!isTaYield && ['ta-yield-log', 'ta-yield-machine', 'ta-data-table'].includes(activeView)) || (!commentsEnabled && activeView === 'comments')) showView('dashboard'); byId('dashboardTitle').textContent = isScYield ? 'SC Yield Control' : isTaYield ? 'TA Yield Control' : config.dataset === 'lot' ? 'WIP Production Volume' : 'Completion 901'; byId('chart-title').textContent = config.chartAxis === 'process' ? 'Quantity moved by process' : 'Completed qty by day'; document.querySelector('.report-top').hidden = isScYield || isTaYield; document.querySelector('.table-section').hidden = isScYield || isTaYield; byId('scYieldSection').hidden = !isScYield; byId('taYieldSection').hidden = !isTaYield; setFilterAvailability(config.filters); const optionParams = new URLSearchParams({ dataset: selectedDataset(), ...(byId('product').value ? { product: byId('product').value } : {}) }); populateOptions(await request(`/api/options?${optionParams}`)); resetPartNumbers(); await loadData(); } catch (error) { setStatus(error.message); } }
@@ -2578,6 +2693,22 @@ byId('parameterEditCancel').addEventListener('click', closeParameterEditModal);
 byId('parameterEditModal').addEventListener('click', (event) => { if (event.target === byId('parameterEditModal')) closeParameterEditModal(); });
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !byId('parameterEditModal').hidden) closeParameterEditModal(); });
 byId('serieTrigger').addEventListener('click', () => { const menu = byId('serieMenu'); menu.hidden = !menu.hidden; byId('serieTrigger').setAttribute('aria-expanded', String(!menu.hidden)); });
+byId('serieMenu').addEventListener('click', (event) => { event.stopPropagation(); });
+byId('serieTrigger').addEventListener('keydown', (event) => {
+  if (event.key !== 'ArrowDown') return;
+  event.preventDefault();
+  byId('serieMenu').hidden = false;
+  byId('serieTrigger').setAttribute('aria-expanded', 'true');
+  byId('serieOptions').querySelector('input:not(:disabled)')?.focus();
+});
+byId('serieMenu').addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  event.stopPropagation();
+  byId('serieMenu').hidden = true;
+  byId('serieTrigger').setAttribute('aria-expanded', 'false');
+  byId('serieTrigger').focus();
+});
+byId('serieSelectAll').addEventListener('click', selectAllCompletionSeries);
 document.querySelectorAll('.chart-mode').forEach((button) => button.addEventListener('click', () => { chartMode = button.dataset.chartMode; saveDashboardSubtab('productionChart', chartMode); document.querySelectorAll('.chart-mode').forEach((mode) => { const active = mode === button; mode.classList.toggle('active', active); mode.setAttribute('aria-pressed', String(active)); }); renderChart(latestData, latestChartData); }));
 document.querySelectorAll('.ta-yield-table-mode').forEach((button) => button.addEventListener('click', () => { taYieldTableView = button.dataset.taYieldTable; saveDashboardSubtab('taTable', taYieldTableView); document.querySelectorAll('.ta-yield-table-mode').forEach((mode) => { const active = mode === button; mode.classList.toggle('active', active); mode.setAttribute('aria-pressed', String(active)); }); renderTaYield(latestTaYieldData); loadTaYieldLotsTable(); }));
 byId('taYieldLotSearch').addEventListener('input', () => { taYieldLotSearch = byId('taYieldLotSearch').value; if (taYieldTableView === 'lots') renderTaYield(latestTaYieldData); });
@@ -2606,6 +2737,7 @@ byId('dailyOutputToggle').addEventListener('click', () => toggleDailyOutputPanel
 byId('taYieldCompareToggle').addEventListener('click', toggleTaYieldCompare);
 document.querySelectorAll('.process-option').forEach((button) => button.addEventListener('click', () => { setSelectedProduct(byId('product').value === button.dataset.product ? '' : button.dataset.product); saveDashboardNavigation(); refreshOptionsForProduct(); requestAnimationFrame(updateReportPendingNotice); }));
 byId('processSelect').addEventListener('change', () => { setSelectedProcess(byId('processSelect').value); refreshOptionsForProcess(); });
+byId('dataSource').addEventListener('change', syncDailyOutputDatasetVisibility);
 byId('dataSource').addEventListener('change', () => { taYieldMachineGraphs?.reset(); ensureTaYieldCompareController().setAvailable(selectedDataset() === 'ta-yield'); saveDashboardNavigation(); initialize(); });
 byId('dataSource').addEventListener('change', () => { const isScYield = selectedDataset() === 'yield'; const isTaYield = selectedDataset() === 'ta-yield'; byId('scYieldLogTab').hidden = !isScYield; byId('taYieldLogTab').hidden = !isTaYield; byId('taYieldMachineTab').hidden = !isTaYield; byId('taDataTableTab').hidden = !isTaYield; const activeView = document.querySelector('.app-tab.active')?.dataset.view; if ((!isScYield && activeView === 'sc-yield-log') || (!isTaYield && ['ta-yield-log', 'ta-yield-machine', 'ta-data-table'].includes(activeView))) showView('dashboard'); });
 byId('dataSource').addEventListener('change', () => byId('scYieldArSummary')?.setAttribute('hidden', ''));
