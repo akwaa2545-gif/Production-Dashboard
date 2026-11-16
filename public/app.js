@@ -2119,7 +2119,8 @@ function ensureTaYieldActionModal() {
 
 function openTaYieldActionModal(action) {
   const modal = ensureTaYieldActionModal(); const set = (id, value) => { byId(id).value = value || ''; };
-  set('taActionId', action?.id); set('taActionDate', action?.actionDate || byId('endDate').value); set('taActionSerie', action?.serie || ''); set('taActionStatus', action?.status || 'OPEN'); set('taActionDueDate', action?.dueDate); set('taActionProblem', action?.problem); set('taActionAnalysis', action?.analysisAction); set('taActionPic', action?.pic); set('taActionProgress', action?.progress); byId('taActionModalTitle').textContent = action ? 'Edit action' : 'Add action'; byId('taActionModalStatus').textContent = ''; modal.hidden = false; byId('taActionProblem').focus();
+  const dateValue = (value) => value ? String(value).slice(0, 10) : '';
+  set('taActionId', action?.id); set('taActionDate', dateValue(action?.actionDate) || byId('endDate').value); set('taActionSerie', action?.serie || ''); set('taActionStatus', action?.status || 'OPEN'); set('taActionDueDate', dateValue(action?.dueDate)); set('taActionProblem', action?.problem); set('taActionAnalysis', action?.analysisAction); set('taActionPic', action?.pic); set('taActionProgress', action?.progress); byId('taActionModalTitle').textContent = action ? 'Edit action' : 'Add action'; byId('taActionModalStatus').textContent = ''; modal.hidden = false; byId('taActionProblem').focus();
 }
 
 async function saveTaYieldAction(event) {

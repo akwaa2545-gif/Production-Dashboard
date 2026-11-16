@@ -1271,6 +1271,17 @@ export function createApp({ environment = process.env, repository, scYieldReposi
     if (!taYieldActions) return response.status(503).json({ success: false, error: 'TA Yield action storage is not configured.' });
     try { return response.json({ success: true, data: await taYieldActions.list() }); } catch { return response.status(503).json({ success: false, error: 'TA Yield actions are currently unavailable.' }); }
   });
+  app.get('/api/ta-yield-actions/:id', async (request, response) => {
+    const id = Number(request.params.id);
+    if (!Number.isInteger(id) || id < 1 || id > 2147483647) return response.status(400).json({ success: false, error: 'Provide a valid action id.' });
+    if (!taYieldActions) return response.status(503).json({ success: false, error: 'TA Yield action storage is not configured.' });
+    try {
+      const action = await taYieldActions.getById(id);
+      return action ? response.json({ success: true, data: action }) : response.status(404).json({ success: false, error: 'TA Yield action was not found.' });
+    } catch {
+      return response.status(503).json({ success: false, error: 'TA Yield action is currently unavailable.' });
+    }
+  });
   app.post('/api/ta-yield-actions', async (request, response) => {
     const action = validTaYieldAction(request.body);
     if (!action) return response.status(400).json({ success: false, error: 'Provide a valid date, series, problem, optional action details, and status.' });

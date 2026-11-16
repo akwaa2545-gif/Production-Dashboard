@@ -20,6 +20,13 @@ export class TaYieldActionRepository {
     return result.recordset;
   }
 
+  async getById(id) {
+    const request = (await this.getPool()).request();
+    request.input('id', sql.Int, id);
+    const result = await request.query(`SELECT id, actionDate, serie, problem, analysisAction, pic, progress, dueDate, status, createdBy, createdAt, updatedAt FROM ${quoted(this.config.table)} WHERE id = @id AND deletedAt IS NULL;`);
+    return result.recordset[0];
+  }
+
   async create(action) {
     const request = (await this.getPool()).request();
     request.input('actionDate', sql.Date, action.actionDate); request.input('serie', sql.NVarChar(100), action.serie); request.input('problem', sql.NVarChar(2000), action.problem); request.input('analysisAction', sql.NVarChar(sql.MAX), action.analysisAction || null); request.input('pic', sql.NVarChar(255), action.pic || null); request.input('progress', sql.NVarChar(sql.MAX), action.progress || null); request.input('dueDate', sql.Date, action.dueDate || null); request.input('status', sql.NVarChar(20), action.status); request.input('createdBy', sql.NVarChar(255), action.createdBy);
