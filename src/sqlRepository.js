@@ -2,6 +2,8 @@ import { settleAll } from './settleAll.js';
 import sql from 'mssql';
 import { InteractiveBrowserCredential, useIdentityPlugin } from '@azure/identity';
 import { cachePersistencePlugin } from '@azure/identity-cache-persistence';
+import { mesAuthenticationRecords } from './mesAuthenticationRecord.js';
+import { readMesAuthenticationState, updateMesAuthenticationState } from './mesAuthenticationState.js';
 import { classifyWipMovements, wipQuantityRows, wipChartRows } from './wipMovementClassification.js';
 
 useIdentityPlugin(cachePersistencePlugin);
@@ -14,6 +16,7 @@ const credentialOperations = new Map();
 const interactiveTokenRequests = new Map();
 const authenticationRequests = new Map();
 const connectionPools = new Map();
+const connectionStates = new Map();
 const connectionRequests = new Map();
 const connectionGenerations = new Map();
 const connectionExpiresAt = new Map();
@@ -189,12 +192,14 @@ function isPersistentCacheLockError(error) {
   return false;
 }
 
-function createCredentialState(tenantId, persistent) {
+async function createCredentialState(tenantId, persistent) {
+  const authenticationRecord = persistent ? await mesAuthenticationRecords.load(tenantId) : undefined;
   return {
     persistent,
     credential: new InteractiveBrowserCredential({
       tenantId,
       disableAutomaticAuthentication: true,
+      ...(authenticationRecord ? { authenticationRecord } : {}),
       browserCustomizationOptions: { successMessage: authenticationSuccessPage() },
       ...(persistent ? { tokenCachePersistenceOptions: { enabled: true, name: `onemes-quantity-dashboard-${tenantId || 'common'}` } } : {})
     })
@@ -206,13 +211,13 @@ function withCredential(tenantId, persistent, operation) {
   // Serialize silent renewal and explicit sign-in: both access the same SDK cache.
   const previous = credentialOperations.get(key) || Promise.resolve();
   const request = previous.catch(() => undefined).then(async () => {
-    const state = credentialCache.get(key) || createCredentialState(tenantId, persistent);
+    const state = credentialCache.get(key) || await createCredentialState(tenantId, persistent);
     credentialCache.set(key, state);
     try {
       return await operation(state.credential);
     } catch (error) {
       if (!state.persistent || !isPersistentCacheLockError(error)) throw error;
-      const fallback = createCredentialState(tenantId, false);
+      const fallback = await createCredentialState(tenantId, false);
       credentialCache.set(key, fallback);
       tokenCache.delete(key);
       console.warn('MES token cache is locked. Using an in-memory sign-in session until the server restarts; cache files were left unchanged.');
@@ -239,8 +244,16 @@ async function getAccessToken(tenantId, appUrl, tokenCachePersistence, forceRefr
   // Ordinary requests only renew silently; browser sign-in is an explicit action.
   if (tokenRequests.has(key)) return tokenRequests.get(key);
   const request = withCredential(tenantId, tokenCachePersistence, async (credential) => {
-    const token = await credential.getToken('https://database.windows.net//.default');
-    return rememberAccessToken(key, token);
+    updateMesAuthenticationState(tenantId, 'RECONNECTING');
+    try {
+      const token = await credential.getToken('https://database.windows.net//.default');
+      const value = rememberAccessToken(key, token);
+      updateMesAuthenticationState(tenantId, 'CONNECTED');
+      return value;
+    } catch (error) {
+      updateMesAuthenticationState(tenantId, error.name === 'AuthenticationRequiredError' ? 'AUTH_REQUIRED' : 'UNAVAILABLE');
+      throw error;
+    }
   }).finally(() => tokenRequests.delete(key));
   tokenRequests.set(key, request);
   return request;
@@ -255,8 +268,16 @@ async function authenticateTenant(config) {
     } catch (error) {
       if (error.name !== 'AuthenticationRequiredError') throw error;
       await withCredential(config.tenantId, config.tokenCachePersistence === true, async (credential) => {
-        await credential.authenticate('https://database.windows.net//.default');
-        rememberAccessToken(key, await credential.getToken('https://database.windows.net//.default'));
+        updateMesAuthenticationState(config.tenantId, 'SIGNING_IN');
+        try {
+          const record = await credential.authenticate('https://database.windows.net//.default');
+          rememberAccessToken(key, await credential.getToken('https://database.windows.net//.default'));
+          if (config.tokenCachePersistence === true && credentialCache.get(key)?.persistent) await mesAuthenticationRecords.save(config.tenantId, record);
+          updateMesAuthenticationState(config.tenantId, 'CONNECTED');
+        } catch (error) {
+          updateMesAuthenticationState(config.tenantId, 'AUTH_REQUIRED');
+          throw error;
+        }
       });
     }
   })().finally(() => interactiveTokenRequests.delete(key));
@@ -303,6 +324,7 @@ async function getSharedPool(config, forceRefresh = false) {
   // awaiting its close so every report shares the same renewal.
   const closing = existing ? closeSharedPool(key) : Promise.resolve();
   const requestGeneration = connectionGeneration(key);
+  connectionStates.set(key, 'RECONNECTING');
   const request = (async () => {
     let pool;
     try {
@@ -316,7 +338,10 @@ async function getSharedPool(config, forceRefresh = false) {
         authentication: { type: 'azure-active-directory-access-token', options: { token } }
       });
       pool.on('error', () => {
-        if (connectionPools.get(key) === pool) connectionPools.delete(key);
+        if (connectionPools.get(key) === pool) {
+          connectionPools.delete(key);
+          connectionStates.set(key, 'UNAVAILABLE');
+        }
       });
       await pool.connect();
       if (requestGeneration !== connectionGeneration(key)) {
@@ -324,11 +349,13 @@ async function getSharedPool(config, forceRefresh = false) {
         if (connectionRequests.get(key)?.promise === request) connectionRequests.delete(key);
         return getSharedPool(config);
       }
+      connectionStates.set(key, 'CONNECTED');
       connectionPools.set(key, pool);
       connectionExpiresAt.set(key, tokenCache.get(config.tenantId || 'common')?.expiresOnTimestamp || Date.now() + 300000);
       return { key, pool, generation: requestGeneration };
     } catch (error) {
       if (pool) await pool.close().catch(() => undefined);
+      if (requestGeneration === connectionGeneration(key)) connectionStates.set(key, error.name === 'AuthenticationRequiredError' || error.code === 'ELOGIN' ? 'AUTH_REQUIRED' : 'UNAVAILABLE');
       throw error;
     }
   })();
@@ -377,6 +404,45 @@ export class SqlRepository {
     authenticationRequests.set(key, request);
     return request;
   }
+
+  getAuthenticationStatus() {
+    const session = readMesAuthenticationState(this.config.tenantId);
+    const connection = connectionStates.get(connectionKey(this.config));
+    if (['SIGNING_IN', 'AUTH_REQUIRED'].includes(session.state)) return session;
+    if (['AUTH_REQUIRED', 'UNAVAILABLE'].includes(connection)) return { state: connection };
+    if (['RECONNECTING', 'UNAVAILABLE'].includes(session.state)) return session;
+    return { state: connection || session.state };
+  }
+
+  async checkConnection() {
+    const pool = await this.getPool();
+    const key = connectionKey(this.config);
+    const generation = this.poolGeneration;
+    const request = pool.request();
+    const timeoutMs = Math.min(Math.max(Number(this.config.requestTimeout) || 10000, 1000), 10000);
+    let timer;
+    try {
+      const deadline = new Promise((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(Object.assign(new Error('MES connection check timed out.'), { code: 'ETIMEOUT' }));
+          try { request.cancel(); }
+          catch { console.warn('MES connection check cancellation could not complete.'); }
+        }, timeoutMs);
+      });
+      await Promise.race([Promise.resolve().then(() => request.query('SELECT 1 AS connected')), deadline]);
+      if (generation === connectionGeneration(key)) connectionStates.set(key, 'CONNECTED');
+    } catch (error) {
+      if (generation === connectionGeneration(key)) {
+        connectionStates.set(key, error.name === 'AuthenticationRequiredError' || error.code === 'ELOGIN' ? 'AUTH_REQUIRED' : 'UNAVAILABLE');
+        // Detach the failed pool immediately; a draining old socket must not block the next retry.
+        this.resetConnection(generation).catch(() => console.warn('MES stale connection cleanup could not complete.'));
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
 
   getConnectionGeneration() {
     return connectionGeneration(connectionKey(this.config));

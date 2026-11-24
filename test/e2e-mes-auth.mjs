@@ -23,6 +23,7 @@ async function createFixture() {
   const repository = {
     getOptions: async () => ({ product: ['NEO', 'SC'], process: [], serie: ['FIXTURE'], case: [], pn: [] }),
     getPartNumbers: async () => ({ items: [], hasMore: false }),
+    getAuthenticationStatus: () => ({ state: state.authenticated ? 'CONNECTED' : 'AUTH_REQUIRED' }),
     getQuantity: read,
     getChartData: read,
     authenticate: async () => {
@@ -36,10 +37,10 @@ async function createFixture() {
       SQL_SERVER: 'fixture', SQL_DATABASE: 'fixture', DATE_COLUMN: 'OccuredOn',
       CHART_COLUMN: 'processName', DASHBOARD_DATA_MODE: 'live'
     },
-    repository
+    repository, scYieldRepository: repository, taYieldRepository: repository
   });
   const wrapper = express();
-  const allowed = new Set(['/api/config', '/api/data-mode', '/api/options', '/api/part-numbers', '/api/auth/login', ...apiPaths]);
+  const allowed = new Set(['/api/config', '/api/data-mode', '/api/options', '/api/part-numbers', '/api/auth/login', '/api/auth/status', ...apiPaths]);
   wrapper.use((request, response, next) => {
     if (request.path === '/api/auth/login') state = { ...state, loginRequests: state.loginRequests + 1 };
     if (!request.path.startsWith('/api/') || allowed.has(request.path)) return next();
@@ -79,11 +80,14 @@ async function scenario(browser, failLogin, repetition) {
     await Promise.all(initialFailures);
     if (failLogin) {
       const retry = page.getByRole('button', { name: 'Sign in to MES', exact: true });
-      await retry.waitFor({ state: 'visible' });
+      await page.waitForFunction(() => !document.getElementById('apply').disabled);
+      assert.equal(await retry.isVisible(), false, 'Sign-in control stays out of the Production dashboard');
       assert.equal(fixture.status().loginRequests, 1, 'failed concurrent requests share one sign-in');
       assert.equal(fixture.status().authenticateCalls, 1);
       await applyAndReadFailures(page);
       assert.equal(fixture.status().loginRequests, 1, 'Apply does not automatically retry failed sign-in');
+      await page.getByRole('button', { name: 'Staging status', exact: true }).click();
+      await retry.waitFor({ state: 'visible' });
       fixture.configure({ failLogin: false, quantity: 789 });
       // Advance only this isolated server fixture's cooldown; browser time is unchanged.
       Date.now = () => originalNow() + 31000;
@@ -111,9 +115,9 @@ async function scenario(browser, failLogin, repetition) {
   }
 }
 
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || (process.platform === 'win32' ? 'msedge' : undefined) });
 try {
-  for (let repetition = 1; repetition <= 3; repetition += 1) {
+  for (let repetition = 1; repetition <= Number(process.env.E2E_REPETITIONS || 3); repetition += 1) {
     await scenario(browser, false, repetition);
     await scenario(browser, true, repetition);
   }

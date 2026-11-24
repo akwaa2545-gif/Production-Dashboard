@@ -15,7 +15,7 @@ function startServer({ error, env = {}, listen } = {}) {
   });
   const process = { env, exitCode: undefined };
   const console = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
-  const app = { listen: vi.fn(listen || ((_port, _host, callback) => callback(error))) };
+  const app = { reconnectMesConnections: vi.fn().mockResolvedValue(), listen: vi.fn(listen || ((_port, _host, callback) => callback(error))) };
   vm.runInNewContext(source, {
     createApp: () => app, process, console, setTimeout: schedule, setInterval: schedule,
   }, { filename: 'server-startup.js' });
@@ -49,14 +49,14 @@ describe('Dashboard server startup', () => {
     expect(result.process.exitCode).not.toBe(1);
     expect(result.console.error).not.toHaveBeenCalled();
     expect(result.console.log.mock.calls.flat().join(' ')).toContain('listening on http://127.0.0.1:4200');
-    expect(result.timers).toHaveLength(16);
+    expect(result.timers).toHaveLength(18);
     expect(result.timers.every((timer) => timer.unref.mock.calls.length === 1)).toBe(true);
     expect(result.timers.map((timer) => timer.delay)).toContain(3600000);
   });
 
   it('continues honoring the disabled cache-warmer setting after successful startup', () => {
     const result = startServer({ env: { DASHBOARD_CACHE_WARMER_ENABLED: 'false' } });
-    expect(result.timers).toHaveLength(14);
+    expect(result.timers).toHaveLength(16);
     expect(result.timers.every((timer) => timer.unref.mock.calls.length === 1)).toBe(true);
     expect(result.process.exitCode).not.toBe(1);
   });
@@ -85,5 +85,25 @@ describe('Dashboard server startup', () => {
       if (attempted?.listening) await new Promise((resolve) => attempted.close(resolve));
       if (occupied.listening) await new Promise((resolve) => occupied.close(resolve));
     }
+  });
+});
+
+describe('automatic MES reconnect scheduling', () => {
+  it('runs a silent check on startup and every minute even when cache warming is disabled', async () => {
+    const result = startServer({ env: { DASHBOARD_CACHE_WARMER_ENABLED: 'false' } });
+    const first = result.timers.find(timer => timer.delay === 1000);
+    const repeated = result.timers.find(timer => timer.delay === 60000 && timer.callback === first.callback);
+    expect(repeated).toBeDefined();
+    await first.callback();
+    await repeated.callback();
+    expect(result.app.reconnectMesConnections).toHaveBeenCalledTimes(2);
+    expect(result.console.warn).not.toHaveBeenCalled();
+  });
+  it('reports scheduler errors without exposing private diagnostics', async () => {
+    const result = startServer();
+    result.app.reconnectMesConnections.mockRejectedValue(new Error('private server diagnostic'));
+    await result.timers.find(timer => timer.delay === 1000).callback();
+    expect(result.console.warn).toHaveBeenCalledWith('MES reconnect check could not complete. See Staging status.');
+    expect(JSON.stringify(result.console.warn.mock.calls)).not.toContain('private server diagnostic');
   });
 });

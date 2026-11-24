@@ -2475,7 +2475,7 @@ async function request(url, options = {}, retriedAfterAuthentication = false) {
     if (retriedAfterAuthentication || databaseAuthentication.blocked) {
       databaseAuthentication = { ...databaseAuthentication, blocked: true };
       renderDatabaseAuthenticationRetry();
-      throw new Error('MES access is still unavailable. Use Sign in to MES to retry, or ask the server operator to verify access.');
+      throw new Error('MES access is still unavailable. Use Sign in to MES in Staging status to retry, or ask the server operator to verify access.');
     }
     const recentlyAuthenticated = databaseAuthentication.completedAt && Date.now() - databaseAuthentication.completedAt < 30000;
     if (authenticationGeneration === databaseAuthentication.generation && !recentlyAuthenticated) {
@@ -2496,6 +2496,50 @@ async function request(url, options = {}, retriedAfterAuthentication = false) {
 // Every MES report shares the same server credential. Parallel failures must share one sign-in.
 let databaseAuthentication = { generation: 0, pending: undefined, blocked: false, completedAt: 0 };
 
+let mesAuthenticationDataset;
+function setMesAuthenticationMessage(message) {
+  const target = byId('mesConnectionMessage');
+  if (target) target.textContent = message;
+}
+
+function mesConnectionMarkup(status) {
+  const states = {
+    CONNECTED: ['Connected', 'healthy', 'MES sessions renew automatically. The server checks the connection every minute.'],
+    AUTH_REQUIRED: ['Sign-in required', 'failed', 'Complete Microsoft sign-in in the browser on the server computer.'],
+    SIGNING_IN: ['Signing in', 'waiting', 'Complete Microsoft sign-in in the browser on the server computer.'],
+    RECONNECTING: ['Reconnecting', 'waiting', 'The server is restoring MES access automatically.'],
+    UNAVAILABLE: ['Connection unavailable', 'failed', 'The server retries automatically every minute. Check the server network or VPN if this continues.'],
+    NOT_CONFIGURED: ['Not configured', 'disabled', 'Configure MES access on the dashboard server.']
+  };
+  const [label, kind, message] = states[status.state] || ['Checking connection', 'waiting', 'The server checks MES access automatically every minute.'];
+  return `<div><span class="staging-state ${kind}" role="status">${label}</span><h3 id="mesConnectionTitle">MES connection</h3><p id="mesConnectionMessage">${message}</p></div><div id="mesConnectionControls"></div>`;
+}
+
+async function renderMesConnectionStatus(view, retried = false) {
+  const generation = databaseAuthentication.generation;
+  let status;
+  try { status = await request('/api/auth/status'); }
+  catch { status = { state: 'UNAVAILABLE' }; }
+  if (generation !== databaseAuthentication.generation) {
+    if (!retried) return renderMesConnectionStatus(view, true);
+    return;
+  }
+  let panel = view.querySelector('#mesConnectionStatus');
+  if (!panel) {
+    panel = document.createElement('section');
+    panel.id = 'mesConnectionStatus';
+    panel.className = 'staging-ta-run mes-connection-status';
+    panel.setAttribute('aria-labelledby', 'mesConnectionTitle');
+    view.prepend(panel);
+  }
+  panel.innerHTML = mesConnectionMarkup(status);
+  if (['closed', 'lot', 'yield', 'ta-yield'].includes(status.dataset)) mesAuthenticationDataset = status.dataset;
+  if (status.needsAuthentication && !databaseAuthentication.pending) databaseAuthentication = { ...databaseAuthentication, blocked: true };
+  else if (status.state === 'CONNECTED') databaseAuthentication = { ...databaseAuthentication, blocked: false };
+  renderDatabaseAuthenticationRetry();
+}
+
+
 function databaseAuthenticationDataset(url) {
   const dataset = new URLSearchParams(String(url).split('?')[1] || '').get('dataset');
   if (['closed', 'lot', 'yield', 'ta-yield'].includes(dataset)) return dataset;
@@ -2505,19 +2549,17 @@ function databaseAuthenticationDataset(url) {
 }
 
 function renderDatabaseAuthenticationRetry() {
+  const controls = byId('mesConnectionControls');
+  if (!controls) return;
   let button = byId('databaseAuthRetry');
   if (!button && databaseAuthentication.blocked) {
-    const status = byId('status');
-    if (!status) return;
     button = document.createElement('button');
     button.id = 'databaseAuthRetry';
     button.type = 'button';
     button.className = 'export-completion';
     button.textContent = 'Sign in to MES';
     button.addEventListener('click', retryDatabaseAuthentication);
-    const dashboard = byId('dashboardView');
-    if (dashboard) dashboard.before(button);
-    else status.after(button);
+    controls.append(button);
   }
   if (button) {
     button.hidden = !databaseAuthentication.blocked;
@@ -2527,8 +2569,8 @@ function renderDatabaseAuthenticationRetry() {
 
 async function refreshDatabaseAuthentication(dataset, explicit = false) {
   if (databaseAuthentication.pending) return databaseAuthentication.pending;
-  if (databaseAuthentication.blocked && !explicit) throw new Error('Use Sign in to MES to retry authentication.');
-  setStatus('Microsoft Entra sign-in is required. Complete the browser sign-in to continue.', true);
+  if (databaseAuthentication.blocked && !explicit) throw new Error('Use Sign in to MES in Staging status to retry authentication.');
+  setMesAuthenticationMessage('Signing in to MES. Complete Microsoft sign-in on the server computer.');
   const pending = (async () => {
     await Promise.resolve();
     try {
@@ -2552,11 +2594,11 @@ async function refreshDatabaseAuthentication(dataset, explicit = false) {
 
 async function retryDatabaseAuthentication() {
   try {
-    await refreshDatabaseAuthentication(selectedDataset(), true);
+    await refreshDatabaseAuthentication(mesAuthenticationDataset || selectedDataset(), true);
     clientResponseCache.clear();
     await reloadDashboardSourceData();
   } catch (error) {
-    setStatus(error.message);
+    setMesAuthenticationMessage(error.message);
   }
 }
 
@@ -3073,6 +3115,14 @@ function renderAccurateStagingPipelineMap(rows) { const lane = (row) => { const 
 function setAccurateStagingMonitorTab(view, tab) { stagingMonitorTab = tab === 'map' ? 'map' : 'overview'; saveDashboardSubtab('staging', stagingMonitorTab); view.querySelectorAll('[data-staging-monitor-tab]').forEach((button) => { const active = button.dataset.stagingMonitorTab === stagingMonitorTab; button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active)); }); view.querySelectorAll('[data-staging-monitor-panel]').forEach((panel) => { panel.hidden = panel.dataset.stagingMonitorPanel !== stagingMonitorTab; }); }
 renderStagingStatus = async function renderStagingStatusWithPersistentPipelineMap() { const view = ensureUtilityView('stagingStatusView'); rememberStaging901RepairRange(view); rememberStagingWipRepairRange(view); await renderStagingStatusWithTabs(); const monitor = view.querySelector('.staging-monitor'); if (!monitor) return; const rows = stagingMonitorPayload?.data || []; const overview = monitor.outerHTML; view.innerHTML = `<div class="staging-monitor-tabs" aria-label="Staging views"><button type="button" class="${stagingMonitorTab === 'overview' ? 'active' : ''}" aria-pressed="${stagingMonitorTab === 'overview'}" data-staging-monitor-tab="overview">Overview</button><button type="button" class="${stagingMonitorTab === 'map' ? 'active' : ''}" aria-pressed="${stagingMonitorTab === 'map'}" data-staging-monitor-tab="map">Pipeline map</button></div><div data-staging-monitor-panel="overview" ${stagingMonitorTab === 'overview' ? '' : 'hidden'}>${overview}</div><div data-staging-monitor-panel="map" ${stagingMonitorTab === 'map' ? '' : 'hidden'}>${renderAccurateStagingPipelineMap(rows)}</div>`; };
 document.addEventListener('click', (event) => { const tab = event.target.closest('[data-staging-monitor-tab]'); if (tab) setAccurateStagingMonitorTab(ensureUtilityView('stagingStatusView'), tab.dataset.stagingMonitorTab); });
+
+const renderStagingStatusWithoutMesConnection = renderStagingStatus;
+renderStagingStatus = async function renderStagingStatusWithMesConnection() {
+  const view = ensureUtilityView('stagingStatusView');
+  try { await renderStagingStatusWithoutMesConnection(); }
+  catch (error) { view.innerHTML = `<p class="staging-error" role="status">${escapeHtml(error.message)}</p>`; }
+  await renderMesConnectionStatus(view);
+};
 
 restoreDashboardSubtabControls();
 initializeDashboardDataModeControls().then(initializeDashboardNavigation).catch((error) => setStatus(error.message));

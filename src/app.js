@@ -1,4 +1,5 @@
 import { settleAll } from './settleAll.js';
+import { createMesConnectionRecovery } from './mesConnectionRecovery.js';
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -861,6 +862,11 @@ export function createApp({ environment = process.env, repository, scYieldReposi
   app.post('/api/comments', (request, response) => { const comment = validCommentScope(request.body, true); if (!comment) return response.status(400).json({ success: false, error: 'Provide a valid cell comment.' }); return useCommentStorage(() => comments.create(comment), response); });
   app.patch('/api/comments/:id', (request, response) => { const id = Number(request.params.id); const commentText = typeof request.body?.commentText === 'string' ? request.body.commentText.trim() : ''; if (!Number.isInteger(id) || id < 1 || !commentText || commentText.length > 1000) return response.status(400).json({ success: false, error: 'Provide a valid comment update.' }); return useCommentStorage(() => comments.update(id, commentText), response); });
   app.delete('/api/comments/:id', (request, response) => { const id = Number(request.params.id); if (!Number.isInteger(id) || id < 1) return response.status(400).json({ success: false, error: 'Provide a valid comment id.' }); return useCommentStorage(async () => { await comments.remove(id); return { removed: true }; }, response); });
+
+  const mesConnectionRecovery = createMesConnectionRecovery(() => ['closed', 'lot', 'yield', 'ta-yield']
+    .map(dataset => contextFor({ query: { dataset } })));
+  app.reconnectMesConnections = mesConnectionRecovery.reconnect;
+  app.get('/api/auth/status', (_request, response) => response.json({ success: true, data: mesConnectionRecovery.status() }));
 
   function useDatabase(action, response, config, allowMetadata = false, cacheEntry, source) {
     // Hold the source binding through connection recovery, even after the client disconnects.

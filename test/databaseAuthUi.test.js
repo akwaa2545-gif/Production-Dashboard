@@ -11,6 +11,8 @@ function harness(fetch) {
   const elements = new Map();
   const status = { after: (element) => elements.set(element.id, element) };
   elements.set('status', status);
+  elements.set('mesConnectionControls', { append: (element) => elements.set(element.id, element) });
+  elements.set('mesConnectionMessage', { textContent: '' });
   for (const [id, value] of Object.entries({ process: 'Taping', case: 'All', product: 'NEO', startDate: '2026-09-19', endDate: '2026-09-20' })) elements.set(id, { value });
   const context = vm.createContext({
     fetch, URLSearchParams, Date, clientResponseCache: new Map(), clientCacheLimit: 20,
@@ -136,10 +138,10 @@ describe('MES authentication recovery in the browser', () => {
     expect(elements.get('databaseAuthRetry').hidden).toBe(false);
     expect(elements.get('databaseAuthRetry').disabled).toBe(false);
     expect(context.loadData).not.toHaveBeenCalled();
-    expect(context.setStatus).toHaveBeenLastCalledWith('Sign-in cancelled.');
+    expect(elements.get('mesConnectionMessage').textContent).toBe('Sign-in cancelled.');
   });
 
-  it('places the retry control outside the hidden report view and refreshes the active secondary view', async () => {
+  it('keeps the retry control inside Staging status and refreshes the active secondary view', async () => {
     const fetch = vi.fn(async (url) => url.startsWith('/api/auth/login')
       ? response(503, { success: false, error: 'Sign-in cancelled.' }) : denied());
     const { context, elements } = harness(fetch);
@@ -148,7 +150,8 @@ describe('MES authentication recovery in the browser', () => {
     context.document.querySelector = () => ({ dataset: { view: 'ta-yield-machine' } });
     context.showView = vi.fn();
     await expect(context.request('/api/ta-yield-machine')).rejects.toThrow();
-    expect(before).toHaveBeenCalledWith(elements.get('databaseAuthRetry'));
+    expect(before).not.toHaveBeenCalled();
+    expect(elements.get('databaseAuthRetry').hidden).toBe(false);
     fetch.mockResolvedValue(success());
     await elements.get('databaseAuthRetry').click();
     expect(context.showView).toHaveBeenCalledWith('ta-yield-machine');
@@ -167,5 +170,33 @@ describe('MES authentication recovery in the browser', () => {
     expect(context.currentConfig.dataset).toBe('yield');
     expect(context.populateOptions).not.toHaveBeenCalled();
     expect(context.loadData).not.toHaveBeenCalled();
+  });
+});
+
+describe('sign-in control placement', () => {
+  it('does not insert a global sign-in control outside Staging status', async () => {
+    const fetch = vi.fn(async () => response(503, { success: false, error: 'Sign-in cancelled.' }));
+    const { context, elements } = harness(fetch);
+    elements.delete('mesConnectionControls');
+    await expect(context.refreshDatabaseAuthentication('closed')).rejects.toThrow('Sign-in cancelled.');
+    expect(elements.has('databaseAuthRetry')).toBe(false);
+  });
+});
+
+describe('late MES status responses', () => {
+  it('discards a stale sign-in-required response after successful authentication', async () => {
+    const oldStatus = deferred();
+    let requests = 0;
+    const fetch = vi.fn(async () => ++requests === 1 ? oldStatus.promise : response(200, { success: true, data: { state: 'CONNECTED' } }));
+    const { context, elements } = harness(fetch);
+    const panel = { innerHTML: '' };
+    const pending = context.renderMesConnectionStatus({ querySelector: () => panel });
+    vm.runInContext('databaseAuthentication = { ...databaseAuthentication, generation: 1, blocked: false };', context);
+    oldStatus.resolve(response(200, { success: true, data: { state: 'AUTH_REQUIRED', needsAuthentication: true, dataset: 'closed' } }));
+    await pending;
+    expect(vm.runInContext('databaseAuthentication.blocked', context)).toBe(false);
+    expect(elements.has('databaseAuthRetry')).toBe(false);
+    expect(panel.innerHTML).toContain('Connected');
+    expect(requests).toBe(2);
   });
 });

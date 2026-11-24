@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ credentials: [], pools: [], token: undefined, silentError: undefined, authenticate: undefined, getToken: undefined, authenticateCredential: undefined }));
+const mocks = vi.hoisted(() => ({ records: new Map(), recordLoads: [], record: undefined, connectPool: undefined, queryPool: undefined, credentials: [], pools: [], token: undefined, silentError: undefined, authenticate: undefined, getToken: undefined, authenticateCredential: undefined }));
 vi.mock('@azure/identity', () => ({
   useIdentityPlugin: vi.fn(),
   InteractiveBrowserCredential: class {
@@ -15,18 +15,22 @@ vi.mock('@azure/identity', () => ({
         if (mocks.authenticateCredential) return mocks.authenticateCredential(this);
         await mocks.authenticate?.();
         mocks.silentError = undefined;
+        return mocks.record;
       });
       mocks.credentials.push(this);
     }
   }
 }));
 vi.mock('@azure/identity-cache-persistence', () => ({ cachePersistencePlugin: {} }));
+vi.mock('../src/mesAuthenticationRecord.js', () => ({ mesAuthenticationRecords: { load: async (tenant) => { mocks.recordLoads.push(tenant); return mocks.records.get(tenant); }, save: async (tenant, record) => { if (record) mocks.records.set(tenant, record); return true; } } }));
 vi.mock('mssql', () => ({ default: {
   ConnectionPool: class {
-    constructor() {
+    constructor(options) {
+      this.options = options;
       this.connected = false;
+      this.request = () => { this.lastRequest = { cancel: vi.fn(), query: vi.fn(async () => mocks.queryPool ? mocks.queryPool(this) : { recordset: [{ connected: 1 }] }) }; return this.lastRequest; };
       this.on = vi.fn();
-      this.connect = vi.fn(async () => { this.connected = true; return this; });
+      this.connect = vi.fn(async () => { await mocks.connectPool?.(this); this.connected = true; return this; });
       this.close = vi.fn(async () => { this.connected = false; });
       mocks.pools.push(this);
     }
@@ -38,6 +42,11 @@ const interactionRequired = () => Object.assign(new Error('Sign in required'), {
 let SqlRepository;
 beforeEach(async () => {
   vi.resetModules();
+  mocks.records.clear();
+  mocks.recordLoads = [];
+  mocks.connectPool = undefined;
+  mocks.queryPool = undefined;
+  mocks.record = { authority: 'https://login.microsoftonline.com', homeAccountId: 'fixture-home', clientId: 'fixture-client', tenantId: config.tenantId, username: 'fixture@example.invalid', version: '1.0' };
   mocks.credentials = [];
   mocks.pools = [];
   mocks.silentError = undefined;
@@ -324,5 +333,115 @@ describe('shared MES connection authentication', () => {
     await expect(repository.authenticate()).rejects.toThrow('User canceled');
     await expect(repository.authenticate()).resolves.toBeUndefined();
     expect(mocks.credentials[0].authenticate).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('MES session restoration and background authentication state', () => {
+  const persistentConfig = { ...config, tokenCachePersistence: true };
+  it('restores the signed-in account after a server-module restart without another browser login', async () => {
+    mocks.silentError = interactionRequired();
+    await new SqlRepository(persistentConfig).authenticate();
+    expect(mocks.records.get(config.tenantId)).toEqual(mocks.record);
+    vi.resetModules();
+    mocks.credentials = [];
+    mocks.pools = [];
+    mocks.getToken = async (credential) => {
+      if (!credential.options.authenticationRecord) throw interactionRequired();
+      return mocks.token;
+    };
+    const { SqlRepository: RestartedRepository } = await import('../src/sqlRepository.js');
+    await new RestartedRepository(persistentConfig).getPool();
+    expect(mocks.credentials[0].options.authenticationRecord).toEqual(mocks.record);
+    expect(mocks.credentials[0].authenticate).not.toHaveBeenCalled();
+  });
+  it('does not load an account record when persistence is disabled', async () => {
+    mocks.records.set(config.tenantId, mocks.record);
+    await new SqlRepository(config).getPool();
+    expect(mocks.credentials[0].options.authenticationRecord).toBeUndefined();
+    expect(mocks.recordLoads).toEqual([]);
+  });
+  it('makes background sign-in failures observable and clears them after silent recovery', async () => {
+    const repository = new SqlRepository(config);
+    mocks.silentError = interactionRequired();
+    await expect(repository.getPool()).rejects.toMatchObject({ name: 'AuthenticationRequiredError' });
+    expect(repository.getAuthenticationStatus()).toMatchObject({ state: 'AUTH_REQUIRED' });
+    mocks.silentError = undefined;
+    await repository.getPool();
+    expect(repository.getAuthenticationStatus()).toMatchObject({ state: 'CONNECTED' });
+    expect(mocks.credentials[0].authenticate).not.toHaveBeenCalled();
+  });
+});
+
+describe('independent MES connection health for one tenant', () => {
+  it.each([['ELOGIN', 'AUTH_REQUIRED'], ['ESOCKET', 'UNAVAILABLE']])('does not hide %s when another database connects', async (code, expected) => {
+    mocks.connectPool = async pool => { if (pool.options.database === 'denied') throw Object.assign(new Error('Fixture failure'), { code }); };
+    const denied = new SqlRepository({ ...config, database: 'denied' });
+    const healthy = new SqlRepository({ ...config, database: 'healthy' });
+    await expect(denied.getPool()).rejects.toMatchObject({ code });
+    await healthy.getPool();
+    expect(denied.getAuthenticationStatus().state).toBe(expected);
+    expect(healthy.getAuthenticationStatus().state).toBe('CONNECTED');
+  });
+  it('ignores a late failed connection after a newer generation connected', async () => {
+    let release;
+    let attempts = 0;
+    mocks.connectPool = async () => {
+      if (++attempts === 1) await new Promise((resolve, reject) => { release = () => reject(Object.assign(new Error('Old connection failed'), { code: 'ESOCKET' })); });
+    };
+    const repository = new SqlRepository(config);
+    const old = repository.getPool();
+    old.catch(() => undefined);
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    await repository.resetConnection();
+    await repository.getPool();
+    release();
+    await expect(old).rejects.toThrow('Old connection failed');
+    expect(repository.getAuthenticationStatus().state).toBe('CONNECTED');
+  });
+});
+
+describe('bounded read-only MES liveness checks', () => {
+  it('probes an existing pooled connection without opening sign-in', async () => {
+    const repository = new SqlRepository({ ...config, requestTimeout: 4000 });
+    await repository.getPool();
+    await repository.checkConnection();
+    expect(mocks.pools).toHaveLength(1);
+    expect(mocks.pools[0].lastRequest.cancel).not.toHaveBeenCalled();
+    expect(mocks.pools[0].lastRequest.query).toHaveBeenCalledWith('SELECT 1 AS connected');
+    expect(mocks.credentials[0].authenticate).not.toHaveBeenCalled();
+  });
+  it('detects network loss on an idle pool and reconnects on the next check', async () => {
+    const repository = new SqlRepository(config);
+    const original = await repository.getPool();
+    mocks.queryPool = async () => { throw Object.assign(new Error('Fixture network lost'), { code: 'ESOCKET' }); };
+    await expect(repository.checkConnection()).rejects.toThrow('Fixture network lost');
+    expect(repository.getAuthenticationStatus().state).toBe('UNAVAILABLE');
+    expect(original.close).toHaveBeenCalledTimes(1);
+    mocks.queryPool = undefined;
+    await repository.checkConnection();
+    expect(mocks.pools).toHaveLength(2);
+    expect(repository.getAuthenticationStatus().state).toBe('CONNECTED');
+    expect(mocks.credentials[0].authenticate).not.toHaveBeenCalled();
+  });
+});
+
+describe('MES probe deadline when the driver stops responding', () => {
+  it.each([[4000, 4000], [120000, 10000]])('cancels an unresponsive query within the configured bound (%i ms)', async (requestTimeout, deadline) => {
+    const repository = new SqlRepository({ ...config, requestTimeout });
+    const pool = await repository.getPool();
+    mocks.queryPool = () => new Promise(() => {});
+    pool.close.mockImplementation(() => new Promise(() => {}));
+    vi.useFakeTimers();
+    try {
+      const check = repository.checkConnection();
+      check.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(deadline - 1);
+      expect(pool.lastRequest.cancel).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(pool.lastRequest.cancel).toHaveBeenCalledTimes(1);
+      await expect(check).rejects.toMatchObject({ code: 'ETIMEOUT' });
+      expect(repository.getAuthenticationStatus().state).toBe('UNAVAILABLE');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
   });
 });

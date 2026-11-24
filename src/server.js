@@ -20,6 +20,9 @@ app.listen(port, host, (error) => {
     return;
   }
   console.log(`OneMES dashboard listening on http://${host}:${port}`);
+  const reconnectMes = () => app.reconnectMesConnections().catch(() => console.warn('MES reconnect check could not complete. See Staging status.'));
+  setTimeout(reconnectMes, 1000).unref();
+  setInterval(reconnectMes, 60000).unref();
   const warm = () => app.warmCurrentMonthCaches().catch((error) => console.warn(`Dashboard cache warmer skipped: ${error.message}`));
   if (warmEnabled) {
     setTimeout(warm, 120000).unref();
